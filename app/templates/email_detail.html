@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}{{ email.subject }} | Email Intelligence Studio{% endblock %}
+
+{% block content %}
+<main class="detail-layout">
+    <section class="panel detail-header reveal">
+        <a class="back-link" href="{{ url_for('main.dashboard') }}">Back to dashboard</a>
+        <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>
+        <h1>{{ email.subject }}</h1>
+        <p class="email-meta">From {{ email.sender or 'Unknown sender' }} · To {{ email.recipient or 'Unknown recipient' }}</p>
+        <p class="email-meta">Received {{ email.received_at|datetimeformat }} · Source {{ email.source_name }}</p>
+    </section>
+
+    <section class="detail-grid">
+        <article class="panel reveal">
+            <div class="section-heading">
+                <div>
+                    <p class="eyebrow">Summary</p>
+                    <h2>Main bullet points</h2>
+                </div>
+            </div>
+            <ul class="bullet-list">
+                {% for bullet in email.bullet_summary %}
+                    <li>{{ bullet }}</li>
+                {% endfor %}
+            </ul>
+        </article>
+
+        <aside class="panel reveal">
+            <div class="section-heading">
+                <div>
+                    <p class="eyebrow">Metadata</p>
+                    <h2>Classification</h2>
+                </div>
+            </div>
+            <dl class="meta-grid">
+                <dt>Priority score</dt>
+                <dd>{{ email.priority_score }}</dd>
+                <dt>Keywords</dt>
+                <dd>{{ email.keywords|join(', ') }}</dd>
+                <dt>CC</dt>
+                <dd>{{ email.cc or 'None' }}</dd>
+            </dl>
+        </aside>
+    </section>
+
+    <section class="panel reveal">
+        <div class="section-heading">
+            <div>
+                <p class="eyebrow">Extracted content</p>
+                <h2>Email body</h2>
+            </div>
+        </div>
+        <pre class="email-body">{{ email.body or 'No readable body was extracted from this message.' }}</pre>
+    </section>
+</main>
+{% endblock %}

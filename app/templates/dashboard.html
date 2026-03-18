@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+
+{% block title %}Inbox Dashboard | Email Intelligence Studio{% endblock %}
+
+{% block content %}
+<main class="dashboard">
+    <section class="hero panel reveal">
+        <div>
+            <p class="eyebrow">Professional email triage</p>
+            <h1>Read the inbox through summaries instead of threads.</h1>
+            <p class="hero-copy">
+                Upload email exports, auto-sort them into categories, cache bullet-point summaries for every message,
+                and search across full text plus the generated takeaways.
+            </p>
+        </div>
+        <form class="upload-card" action="{{ url_for('main.upload') }}" method="post" enctype="multipart/form-data">
+            <label for="email_files">Import email files</label>
+            <input id="email_files" name="email_files" type="file" accept=".eml,.mbox" multiple>
+            <p>Supports individual .eml files and mailbox exports in .mbox format.</p>
+            <button type="submit">Analyze Inbox Files</button>
+        </form>
+    </section>
+
+    <section class="stats-grid reveal">
+        <article class="stat-card panel">
+            <span>Total Emails</span>
+            <strong>{{ stats.total }}</strong>
+            <small>Indexed with cached summaries</small>
+        </article>
+        <article class="stat-card panel accent">
+            <span>Urgent Signals</span>
+            <strong>{{ stats.urgent }}</strong>
+            <small>Messages flagged with higher priority</small>
+        </article>
+        <article class="stat-card panel">
+            <span>Categories</span>
+            <strong>{{ stats.categories }}</strong>
+            <small>Auto-sorted inbox buckets</small>
+        </article>
+        <article class="stat-card panel">
+            <span>Latest Import</span>
+            <strong>{{ stats.latest|default('No data yet') }}</strong>
+            <small>Most recent email timestamp</small>
+        </article>
+    </section>
+
+    <section class="content-grid">
+        <article class="panel digest reveal">
+            <div class="section-heading">
+                <div>
+                    <p class="eyebrow">Inbox brief</p>
+                    <h2>{{ digest.headline }}</h2>
+                </div>
+            </div>
+            <ul class="bullet-list">
+                {% for bullet in digest.bullets %}
+                    <li>{{ bullet }}</li>
+                {% endfor %}
+            </ul>
+        </article>
+
+        <aside class="panel filters reveal">
+            <div class="section-heading">
+                <div>
+                    <p class="eyebrow">Auto sorting</p>
+                    <h2>Categories</h2>
+                </div>
+            </div>
+            <div class="category-list">
+                <a class="category-pill {% if not selected_category %}active{% endif %}" href="{{ url_for('main.dashboard') }}">All mail</a>
+                {% for item in categories %}
+                    <a class="category-pill {% if selected_category == item.category %}active{% endif %}" href="{{ url_for('main.dashboard', category=item.category) }}">
+                        {{ item.category }}
+                        <span>{{ item.count }}</span>
+                    </a>
+                {% endfor %}
+            </div>
+        </aside>
+    </section>
+
+    <section class="panel reveal">
+        <div class="section-heading section-heading-spread">
+            <div>
+                <p class="eyebrow">Cached email summaries</p>
+                <h2>{% if query %}Search results for "{{ query }}"{% else %}Analyzed emails{% endif %}</h2>
+            </div>
+            <p class="section-meta">{{ emails|length }} emails shown</p>
+        </div>
+
+        {% if emails %}
+            <div class="email-list">
+                {% for email in emails %}
+                    <article class="email-card">
+                        <div class="email-card-top">
+                            <div>
+                                <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>
+                                <h3><a href="{{ url_for('main.email_detail', email_id=email.email_id) }}">{{ email.subject }}</a></h3>
+                            </div>
+                            <span class="priority-score">Priority {{ email.priority_score }}</span>
+                        </div>
+                        <p class="email-meta">From {{ email.sender or 'Unknown sender' }} · {{ email.received_at|datetimeformat }}</p>
+                        <p class="email-preview">{{ email.preview or 'No message body could be extracted.' }}</p>
+                        <ul class="bullet-list compact">
+                            {% for bullet in email.bullet_summary %}
+                                <li>{{ bullet }}</li>
+                            {% endfor %}
+                        </ul>
+                        <div class="keyword-row">
+                            {% for keyword in email.keywords %}
+                                <span>{{ keyword }}</span>
+                            {% endfor %}
+                        </div>
+                    </article>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="empty-state">
+                <h3>No emails found</h3>
+                <p>Upload some inbox exports or broaden the search terms.</p>
+            </div>
+        {% endif %}
+    </section>
+</main>
+{% endblock %}

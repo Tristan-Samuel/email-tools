@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+instance/email_tools.db
+instance/uploads/*
+!.gitkeep
+.env

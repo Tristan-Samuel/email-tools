@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Email Intelligence Studio{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <div class="page-shell">
+        <header class="topbar">
+            <a href="{{ url_for('main.dashboard') }}" class="brand">
+                <span class="brand-mark">EI</span>
+                <span>
+                    <strong>Email Intelligence Studio</strong>
+                    <small>Summaries, sorting, and search for your inbox</small>
+                </span>
+            </a>
+            {% if current_user_email %}
+                <div class="topbar-actions">
+                    <form class="searchbar" action="{{ url_for('main.dashboard') }}" method="get">
+                        <input type="search" name="query" value="{{ query|default('') }}" placeholder="Search by topic, sender, task, or bullet point">
+                        <button type="submit">Search</button>
+                    </form>
+                    <div class="session-info">
+                        <span>{{ current_user_email }}</span>
+                        <form action="{{ url_for('main.logout') }}" method="post">
+                            <button type="submit">Log Out</button>
+                        </form>
+                    </div>
+                </div>
+            {% else %}
+                <a class="login-link" href="{{ url_for('main.login') }}">Log In</a>
+            {% endif %}
+        </header>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <section class="flash-stack">
+                    {% for category, message in messages %}
+                        <div class="flash flash-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </section>
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </div>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
