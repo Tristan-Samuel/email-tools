@@ -488,6 +488,323 @@ h2 {
     transform: translateY(0);
 }
 
+/* ------------------------------------------------------------------ */
+/* Account switcher pills                                               */
+/* ------------------------------------------------------------------ */
+.acct-switcher {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.acct-pill {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    background: var(--bg-strong);
+    color: var(--muted);
+    border: 1.5px solid var(--line);
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+    cursor: pointer;
+    text-decoration: none;
+}
+
+.acct-pill:hover {
+    background: var(--panel-strong);
+    color: var(--text);
+}
+
+.acct-pill--active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+
+.acct-pill--manage {
+    background: transparent;
+    color: var(--muted);
+    border-color: var(--line);
+    font-size: 0.75rem;
+}
+
+.acct-pill--manage:hover {
+    background: var(--bg-strong);
+    color: var(--text);
+}
+
+.btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    font-size: 1rem;
+    color: var(--muted);
+    background: transparent;
+    text-decoration: none;
+    transition: background 0.15s, color 0.15s;
+}
+
+.btn-icon:hover {
+    background: var(--bg-strong);
+    color: var(--text);
+}
+
+/* ------------------------------------------------------------------ */
+/* Generic page layout                                                  */
+/* ------------------------------------------------------------------ */
+.page-main {
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+}
+
+.page-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.page-title {
+    font-family: "Fraunces", Georgia, serif;
+    font-size: 2rem;
+    font-weight: 700;
+    margin: 0 0 4px;
+}
+
+.page-subtitle {
+    color: var(--muted);
+    margin: 0;
+}
+
+.page-header-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Buttons                                                              */
+/* ------------------------------------------------------------------ */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 9px 20px;
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    font-size: 0.9rem;
+    cursor: pointer;
+    border: none;
+    text-decoration: none;
+    transition: filter 0.15s, background 0.15s;
+    white-space: nowrap;
+}
+
+.btn-primary {
+    background: var(--accent);
+    color: #fff;
+}
+
+.btn-primary:hover { filter: brightness(1.1); }
+
+.btn-teal {
+    background: var(--teal);
+    color: #fff;
+}
+
+.btn-teal:hover { filter: brightness(1.1); }
+
+.btn-ghost {
+    background: var(--bg-strong);
+    color: var(--text);
+    border: 1.5px solid var(--line);
+}
+
+.btn-ghost:hover { background: var(--panel-strong); }
+
+.btn-danger {
+    background: #e05050;
+    color: #fff;
+}
+
+.btn-danger:hover { filter: brightness(1.1); }
+
+.btn-lg {
+    padding: 12px 28px;
+    font-size: 1rem;
+}
+
+/* ------------------------------------------------------------------ */
+/* Accounts page                                                        */
+/* ------------------------------------------------------------------ */
+.accounts-list {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.account-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 20px 24px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    backdrop-filter: blur(8px);
+    flex-wrap: wrap;
+}
+
+.account-card-info {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.account-avatar {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: 1.2rem;
+    flex-shrink: 0;
+}
+
+.account-email {
+    display: block;
+    font-size: 1rem;
+    color: var(--text);
+}
+
+.account-host {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-top: 2px;
+}
+
+.account-synced {
+    display: block;
+    font-size: 0.78rem;
+    color: var(--muted);
+    margin-top: 2px;
+}
+
+.account-card-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+/* ------------------------------------------------------------------ */
+/* Add account / settings panels                                        */
+/* ------------------------------------------------------------------ */
+.add-account-panel,
+.settings-panel {
+    background: var(--panel-strong);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: 32px 36px;
+    max-width: 600px;
+}
+
+.panel-title {
+    font-family: "Fraunces", Georgia, serif;
+    font-size: 1.4rem;
+    font-weight: 700;
+    margin: 0 0 8px;
+}
+
+.panel-hint {
+    font-size: 0.88rem;
+    color: var(--muted);
+    line-height: 1.6;
+    margin: 0 0 24px;
+}
+
+.add-account-form,
+.settings-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.form-label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-weight: 600;
+    font-size: 0.88rem;
+    color: var(--text);
+}
+
+.form-input {
+    padding: 10px 14px;
+    border-radius: var(--radius-sm);
+    border: 1.5px solid var(--line);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 0.95rem;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+.form-input:focus {
+    border-color: var(--accent);
+}
+
+.form-row {
+    display: flex;
+    gap: 14px;
+}
+
+.form-actions {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.model-badge {
+    font-size: 0.82rem;
+    color: var(--muted);
+    margin: 0;
+}
+
+.model-badge code {
+    font-family: "Menlo", "Consolas", monospace;
+    background: var(--bg-strong);
+    padding: 2px 7px;
+    border-radius: 6px;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--muted);
+    font-size: 1rem;
+}
+
+/* ------------------------------------------------------------------ */
+/* Responsive                                                           */
+/* ------------------------------------------------------------------ */
 @media (max-width: 1024px) {
     .hero,
     .content-grid,
@@ -512,6 +829,10 @@ h2 {
     .topbar {
         flex-direction: column;
         align-items: stretch;
+    }
+
+    .acct-switcher {
+        order: -1;
     }
 }
 

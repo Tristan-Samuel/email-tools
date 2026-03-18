@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block title %}Connected Accounts — Email Intelligence Studio{% endblock %}
+
+{% block content %}
+<main class="page-main">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">Connected Accounts</h1>
+            <p class="page-subtitle">Manage Gmail / IMAP accounts and sync your inbox.</p>
+        </div>
+        <div class="page-header-actions">
+            <a href="{{ url_for('main.settings') }}" class="btn btn-ghost">Settings</a>
+            <a href="{{ url_for('main.accounts_add') }}" class="btn btn-primary">+ Add Account</a>
+        </div>
+    </div>
+
+    {% if imap_accounts %}
+    <section class="accounts-list">
+        {% for acct in imap_accounts %}
+        <div class="account-card">
+            <div class="account-card-info">
+                <div class="account-avatar">{{ acct.account_email[0].upper() }}</div>
+                <div>
+                    <strong class="account-email">{{ acct.account_email }}</strong>
+                    <span class="account-host">{{ acct.imap_host }}:{{ acct.imap_port }}</span>
+                    {% if acct.last_synced %}
+                        <span class="account-synced">Last synced: {{ acct.last_synced }}</span>
+                    {% else %}
+                        <span class="account-synced muted">Never synced</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="account-card-actions">
+                <form action="{{ url_for('main.accounts_sync', account_id=acct.id) }}" method="post">
+                    <button type="submit" class="btn btn-teal">Sync Now</button>
+                </form>
+                <a href="{{ url_for('main.dashboard') }}?source_account={{ acct.account_email | urlencode }}" class="btn btn-ghost">View Emails</a>
+                <form action="{{ url_for('main.accounts_delete', account_id=acct.id) }}" method="post"
+                      onsubmit="return confirm('Remove {{ acct.account_email }}? Your imported emails are kept.');">
+                    <button type="submit" class="btn btn-danger">Remove</button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+    </section>
+    {% endif %}
+
+    {% if show_add_form or not imap_accounts %}
+    <section class="panel add-account-panel">
+        <h2 class="panel-title">Add an IMAP Account</h2>
+        <p class="panel-hint">
+            For Gmail, use an <strong>App Password</strong>
+            (Google Account → Security → 2-Step Verification → App passwords).
+            Your credentials are encrypted before storage.
+        </p>
+        <form action="{{ url_for('main.accounts_add') }}" method="post" class="add-account-form">
+            <label class="form-label">
+                Email Address
+                <input type="email" name="account_email" required placeholder="you@gmail.com" class="form-input">
+            </label>
+            <label class="form-label">
+                App Password
+                <input type="password" name="password" required placeholder="xxxx xxxx xxxx xxxx" class="form-input" autocomplete="new-password">
+            </label>
+            <div class="form-row">
+                <label class="form-label" style="flex:1">
+                    IMAP Host
+                    <input type="text" name="imap_host" value="imap.gmail.com" required class="form-input">
+                </label>
+                <label class="form-label" style="width:110px">
+                    Port
+                    <input type="number" name="imap_port" value="993" required min="1" max="65535" class="form-input">
+                </label>
+            </div>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary btn-lg">Connect Account</button>
+                {% if imap_accounts %}
+                <a href="{{ url_for('main.accounts') }}" class="btn btn-ghost">Cancel</a>
+                {% endif %}
+            </div>
+        </form>
+    </section>
+
+    {% elif not imap_accounts %}
+    <div class="empty-state">
+        <p>No accounts connected yet. Add one above to start syncing your inbox.</p>
+    </div>
+    {% endif %}
+
+</main>
+{% endblock %}

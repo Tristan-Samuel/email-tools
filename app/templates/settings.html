@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}Settings — Email Intelligence Studio{% endblock %}
+
+{% block content %}
+<main class="page-main">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">Settings</h1>
+            <p class="page-subtitle">Configure AI summarization and your preferences.</p>
+        </div>
+        <div class="page-header-actions">
+            <a href="{{ url_for('main.accounts') }}" class="btn btn-ghost">Accounts</a>
+            <a href="{{ url_for('main.dashboard') }}" class="btn btn-ghost">Dashboard</a>
+        </div>
+    </div>
+
+    <section class="panel settings-panel">
+        <h2 class="panel-title">Groq AI — API Key</h2>
+        <p class="panel-hint">
+            Your personal Groq key is used for AI-powered email summaries.
+            Get one free at <strong>console.groq.com</strong>.
+            If left empty the server-level key (if configured) is used.
+            The key is stored encrypted in your account.
+        </p>
+        <form action="{{ url_for('main.settings') }}" method="post" class="settings-form">
+            <label class="form-label">
+                Groq API Key
+                <input
+                    type="password"
+                    name="groq_api_key"
+                    class="form-input"
+                    placeholder="gsk_…"
+                    autocomplete="off"
+                    value="{{ saved_key or '' }}"
+                >
+            </label>
+            {% if active_model %}
+            <p class="model-badge">Active model: <code>{{ active_model }}</code></p>
+            {% endif %}
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Save Settings</button>
+                {% if saved_key %}
+                <form action="{{ url_for('main.settings') }}" method="post" style="display:inline">
+                    <input type="hidden" name="groq_api_key" value="">
+                    <button type="submit" class="btn btn-ghost">Clear Key</button>
+                </form>
+                {% endif %}
+            </div>
+        </form>
+    </section>
+</main>
+{% endblock %}

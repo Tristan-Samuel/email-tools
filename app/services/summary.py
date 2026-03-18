@@ -154,7 +154,7 @@ def preview_text(body: str, limit: int = 180) -> str:
     return compact[: limit - 3].rstrip() + "..."
 
 
-def build_email_record(message: dict, source_name: str, user_email: str, groq_client: GroqClient | None = None) -> dict:
+def build_email_record(message: dict, source_name: str, user_email: str, groq_client: GroqClient | None = None, source_account: str = "") -> dict:
     category, priority_score = choose_category(message["subject"], message["body"])
     keywords = extract_keywords(message["subject"], message["body"])
     bullet_summary = summarize_email_with_groq(
@@ -181,6 +181,7 @@ def build_email_record(message: dict, source_name: str, user_email: str, groq_cl
         "email_id": scoped_email_id,
         "message_id": message["message_id"],
         "source_name": source_name,
+        "source_account": source_account,
         "user_email": user_email,
         "subject": message["subject"],
         "sender": message["sender"],

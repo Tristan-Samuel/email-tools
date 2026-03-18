@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from flask import Flask, g, session
+from flask import Flask, g, request, session
 
 from .routes import register_routes
 from .services.store import EmailStore
@@ -31,7 +31,19 @@ def create_app() -> Flask:
 
     @app.context_processor
     def inject_current_user() -> dict:
-        return {"current_user_email": getattr(g, "current_user_email", "")}
+        user_email = getattr(g, "current_user_email", "")
+        active_accounts: list = []
+        if user_email:
+            try:
+                active_accounts = store.list_imap_accounts(user_email)
+            except Exception:
+                pass
+        source_account = request.args.get("source_account") if request else None
+        return {
+            "current_user_email": user_email,
+            "active_accounts": active_accounts,
+            "source_account": source_account,
+        }
 
     @app.template_filter("datetimeformat")
     def datetimeformat(value: str | None) -> str:
