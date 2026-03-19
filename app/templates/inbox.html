@@ -20,9 +20,24 @@
                 {% if selected_category %}<input type="hidden" name="category" value="{{ selected_category }}">{% endif %}
                 {% if date_from %}<input type="hidden" name="date_from" value="{{ date_from }}">{% endif %}
                 {% if date_to %}<input type="hidden" name="date_to" value="{{ date_to }}">{% endif %}
+                {% if sort != 'date_desc' %}<input type="hidden" name="sort" value="{{ sort }}">{% endif %}
                 <input type="search" name="query" value="{{ query }}" placeholder="Search emails…"
                        list="senders-datalist" autocomplete="off">
                 <button type="submit">Search</button>
+            </form>
+
+            <!-- Sort selector -->
+            <form class="inbox-search" action="{{ url_for('main.inbox') }}" method="get" style="gap:6px">
+                {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
+                {% if selected_category %}<input type="hidden" name="category" value="{{ selected_category }}">{% endif %}
+                {% if date_from %}<input type="hidden" name="date_from" value="{{ date_from }}">{% endif %}
+                {% if date_to %}<input type="hidden" name="date_to" value="{{ date_to }}">{% endif %}
+                {% if query %}<input type="hidden" name="query" value="{{ query }}">{% endif %}
+                <select name="sort" class="sort-select" onchange="this.form.submit()">
+                    <option value="date_desc" {% if sort == 'date_desc' %}selected{% endif %}>Date ↓ Newest</option>
+                    <option value="date_asc"  {% if sort == 'date_asc'  %}selected{% endif %}>Date ↑ Oldest</option>
+                    <option value="priority"  {% if sort == 'priority'  %}selected{% endif %}>Priority</option>
+                </select>
             </form>
 
             <!-- Date range filter -->
@@ -30,6 +45,7 @@
                 {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
                 {% if selected_category %}<input type="hidden" name="category" value="{{ selected_category }}">{% endif %}
                 {% if query %}<input type="hidden" name="query" value="{{ query }}">{% endif %}
+                {% if sort != 'date_desc' %}<input type="hidden" name="sort" value="{{ sort }}">{% endif %}
                 <label class="inbox-date-filter">
                     From <input type="date" name="date_from" value="{{ date_from }}" style="width:130px">
                 </label>

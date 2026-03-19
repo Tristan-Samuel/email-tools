@@ -245,6 +245,7 @@ class EmailStore:
         exclude_hidden: bool = True,
         only_hidden: bool = False,
         tag_filter: int | None = None,
+        sort: str = "date_desc",
     ) -> list[dict]:
         query = "SELECT * FROM emails"
         params: list[object] = []
@@ -292,7 +293,11 @@ class EmailStore:
         else:
             query += where_clause
 
-        query += " ORDER BY priority_score DESC, COALESCE(received_at, created_at) DESC LIMIT ?"
+        _order = {
+            "date_asc":  "COALESCE(received_at, created_at) ASC",
+            "priority":  "priority_score DESC, COALESCE(received_at, created_at) DESC",
+        }.get(sort, "COALESCE(received_at, created_at) DESC")
+        query += f" ORDER BY {_order} LIMIT ?"
         params.append(limit)
 
         with self._connect() as connection:
@@ -315,6 +320,7 @@ class EmailStore:
         exclude_hidden: bool = True,
         only_hidden: bool = False,
         tag_filter: int | None = None,
+        sort: str = "date_desc",
     ) -> list[dict]:
         # Build additional filter clauses for both FTS (JOIN) and LIKE paths.
         fts_extra: list[str] = []
@@ -362,6 +368,12 @@ class EmailStore:
         fts_clause = (" AND " + " AND ".join(fts_extra)) if fts_extra else ""
         like_clause = (" AND " + " AND ".join(like_extra)) if like_extra else ""
 
+        _order = {
+            "date_asc":  "COALESCE(received_at, created_at) ASC",
+            "priority":  "priority_score DESC, COALESCE(received_at, created_at) DESC",
+        }.get(sort, "COALESCE(received_at, created_at) DESC")
+        _fts_order = _order.replace("received_at", "emails.received_at").replace("created_at", "emails.created_at")
+
         with self._connect() as connection:
             wildcard = f"%{search_term}%"
 
@@ -374,7 +386,7 @@ class EmailStore:
                             FROM email_search
                             JOIN emails ON emails.email_id = email_search.email_id
                             WHERE email_search MATCH ? AND emails.user_email = ?{fts_clause}
-                            ORDER BY priority_score DESC, COALESCE(received_at, created_at) DESC
+                            ORDER BY {_fts_order}
                             LIMIT ?
                             """,
                             (search_term, user_email, *fts_params, limit),
@@ -386,7 +398,7 @@ class EmailStore:
                             FROM email_search
                             JOIN emails ON emails.email_id = email_search.email_id
                             WHERE email_search MATCH ?{fts_clause}
-                            ORDER BY priority_score DESC, COALESCE(received_at, created_at) DESC
+                            ORDER BY {_fts_order}
                             LIMIT ?
                             """,
                             (search_term, *fts_params, limit),
@@ -397,7 +409,7 @@ class EmailStore:
                             f"""
                             SELECT * FROM emails
                             WHERE search_blob LIKE ? AND user_email = ?{like_clause}
-                            ORDER BY priority_score DESC, COALESCE(received_at, created_at) DESC
+                            ORDER BY {_order}
                             LIMIT ?
                             """,
                             (wildcard, user_email, *like_params, limit),
@@ -407,7 +419,7 @@ class EmailStore:
                             f"""
                             SELECT * FROM emails
                             WHERE search_blob LIKE ?{like_clause}
-                            ORDER BY priority_score DESC, COALESCE(received_at, created_at) DESC
+                            ORDER BY {_order}
                             LIMIT ?
                             """,
                             (wildcard, *like_params, limit),
@@ -418,7 +430,7 @@ class EmailStore:
                         f"""
                         SELECT * FROM emails
                         WHERE search_blob LIKE ? AND user_email = ?{like_clause}
-                        ORDER BY priority_score DESC, COALESCE(received_at, created_at) DESC
+                        ORDER BY {_order}
                         LIMIT ?
                         """,
                         (wildcard, user_email, *like_params, limit),
@@ -428,7 +440,7 @@ class EmailStore:
                         f"""
                         SELECT * FROM emails
                         WHERE search_blob LIKE ?{like_clause}
-                        ORDER BY priority_score DESC, COALESCE(received_at, created_at) DESC
+                        ORDER BY {_order}
                         LIMIT ?
                         """,
                         (wildcard, *like_params, limit),

@@ -548,6 +548,9 @@ def inbox():
     date_to = request.args.get("date_to", "").strip() or None
     tag_filter_raw = request.args.get("tag_id", "").strip()
     tag_filter = int(tag_filter_raw) if tag_filter_raw.isdigit() else None
+    sort = request.args.get("sort", "date_desc")
+    if sort not in ("date_desc", "date_asc", "priority"):
+        sort = "date_desc"
     user_email = g.current_user_email
 
     common_kwargs = dict(
@@ -557,6 +560,7 @@ def inbox():
         date_from=date_from,
         date_to=date_to,
         tag_filter=tag_filter,
+        sort=sort,
     )
 
     if query:
@@ -582,6 +586,7 @@ def inbox():
         date_from=date_from or "",
         date_to=date_to or "",
         hidden_count=hidden_count,
+        sort=sort,
     )
 
 

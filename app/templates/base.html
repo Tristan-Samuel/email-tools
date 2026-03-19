@@ -34,6 +34,15 @@
                 </form>
                 <div class="topbar-user">
                     <span class="topbar-email">{{ current_user_email }}</span>
+                    <form action="{{ url_for('main.accounts_sync_all') }}" method="post" title="Sync all accounts">
+                        <button type="submit" class="btn-refresh" title="Fetch new emails">
+                            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M13.5 8A5.5 5.5 0 1 1 8 2.5c1.8 0 3.4.87 4.4 2.2"/>
+                                <polyline points="10.5 1 13.5 4.7 10.5 4.7"/>
+                            </svg>
+                            Sync
+                        </button>
+                    </form>
                     <a href="{{ url_for('main.settings') }}" class="btn-icon" title="Settings">⚙</a>
                     <form action="{{ url_for('main.logout') }}" method="post">
                         <button type="submit" class="btn-logout">Log Out</button>

@@ -19,9 +19,14 @@
     box-sizing: border-box;
 }
 
+html {
+    overflow-x: hidden;
+}
+
 body {
     margin: 0;
     min-height: 100vh;
+    overflow-x: hidden;
     font-family: "Manrope", "Segoe UI", sans-serif;
     color: var(--text);
     background:
@@ -36,7 +41,8 @@ a {
 }
 
 .page-shell {
-    width: min(1340px, calc(100% - 32px));
+    max-width: 1340px;
+    width: calc(100% - 32px);
     margin: 0 auto;
     padding: 20px 0 48px;
 }
@@ -1598,4 +1604,47 @@ h2 {
     font: inherit;
     font-size: .84rem;
     color: var(--text);
+}
+
+/* ------------------------------------------------------------------ */
+/* Sort select + refresh button                                         */
+/* ------------------------------------------------------------------ */
+.sort-select {
+    padding: 5px 10px;
+    border-radius: 10px;
+    border: 1.5px solid var(--line);
+    background: var(--bg);
+    font: inherit;
+    font-size: .84rem;
+    color: var(--text);
+    cursor: pointer;
+}
+
+.btn-refresh {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 12px;
+    border-radius: 10px;
+    border: 1.5px solid var(--line);
+    background: transparent;
+    color: var(--muted);
+    font-size: .82rem;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: none;
+    transition: color .15s, border-color .15s, transform .15s;
+    white-space: nowrap;
+}
+
+.btn-refresh:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    transform: none;
+}
+
+.btn-refresh svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
 }
