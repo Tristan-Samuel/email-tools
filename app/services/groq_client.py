@@ -111,3 +111,48 @@ class GroqClient:
             return cleaned[:4] if cleaned else None
         except (requests.RequestException, KeyError, ValueError, TypeError):
             return None
+
+    def answer_about_emails(self, question: str, emails: list[dict]) -> str | None:
+        """Answer a natural-language question using the provided email summaries as context."""
+        if not self.enabled or not emails:
+            return None
+
+        context_parts = []
+        for i, e in enumerate(emails[:20], 1):
+            bullets = e.get("bullet_summary") or []
+            summary = " ".join(bullets) if bullets else (e.get("preview") or "")
+            context_parts.append(
+                f"#{i} From: {e.get('sender', '?')} | Subject: {e.get('subject', '?')}\n{summary}"
+            )
+        context = "\n\n".join(context_parts)
+
+        payload = {
+            "model": self.default_model,
+            "temperature": 0.3,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a helpful email assistant. The user will ask a question about their emails. "
+                        "Answer concisely using only the email summaries provided. "
+                        "If you can't answer from the emails, say so briefly."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"My emails:\n\n{context}\n\nQuestion: {question}",
+                },
+            ],
+        }
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=self._headers(),
+                json=payload,
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"].strip()
+        except (requests.RequestException, KeyError, ValueError, TypeError):
+            return None

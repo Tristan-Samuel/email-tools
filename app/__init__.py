@@ -1,7 +1,11 @@
+from __future__ import annotations
+
+import html as _html
 import os
 from pathlib import Path
 
 from flask import Flask, g, request, session
+from markupsafe import Markup
 
 from .routes import register_routes
 from .services.store import EmailStore
@@ -39,18 +43,38 @@ def create_app() -> Flask:
             except Exception:
                 pass
         source_account = request.args.get("source_account") if request else None
+        query = request.args.get("query", "") if request else ""
         return {
             "current_user_email": user_email,
             "active_accounts": active_accounts,
             "source_account": source_account,
+            "query": query,
         }
 
     @app.template_filter("datetimeformat")
     def datetimeformat(value: str | None) -> str:
         if not value:
             return "Unknown time"
-
         return value.replace("T", " ").replace("+00:00", " UTC")
+
+    @app.template_filter("format_email_body")
+    def format_email_body(body: str | None) -> Markup:
+        """Render plain-text email body as safe HTML paragraphs with blockquote support."""
+        if not body or not body.strip():
+            return Markup("<p><em>No body content.</em></p>")
+        result: list[str] = []
+        for para in body.split("\n\n"):
+            if not para.strip():
+                continue
+            lines = para.split("\n")
+            non_empty = [l for l in lines if l.strip()]
+            if non_empty and all(l.lstrip().startswith(">") for l in non_empty):
+                inner = _html.escape("\n".join(l.lstrip("> ") for l in lines))
+                result.append(f'<blockquote class="email-quote">{inner}</blockquote>')
+            else:
+                content = _html.escape(para).replace("\n", "<br>")
+                result.append(f"<p>{content}</p>")
+        return Markup("\n".join(result) or "<p><em>No body content.</em></p>")
 
     register_routes(app)
     return app

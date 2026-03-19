@@ -5,26 +5,47 @@
 {% block content %}
 <main class="detail-layout">
     <section class="panel detail-header reveal">
-        <a class="back-link" href="{{ url_for('main.dashboard') }}">Back to dashboard</a>
-        <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>
-        <h1>{{ email.subject }}</h1>
-        <p class="email-meta">From {{ email.sender or 'Unknown sender' }} · To {{ email.recipient or 'Unknown recipient' }}</p>
-        <p class="email-meta">Received {{ email.received_at|datetimeformat }} · Source {{ email.source_name }}</p>
+        <div class="detail-nav">
+            <a class="back-link" href="{{ url_for('main.inbox') }}">&#8592; Back to inbox</a>
+        </div>
+        <div class="detail-header-top">
+            <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>
+            <span class="priority-score">Priority {{ email.priority_score }}</span>
+        </div>
+        <h1 class="detail-subject">{{ email.subject }}</h1>
+        <div class="detail-meta-row">
+            <div class="detail-avatar">{{ (email.sender or '?')[0].upper() }}</div>
+            <div>
+                <p class="email-meta"><strong>From</strong> {{ email.sender or 'Unknown sender' }}</p>
+                <p class="email-meta"><strong>To</strong> {{ email.recipient or 'Unknown recipient' }}{% if email.cc %} &nbsp;&middot;&nbsp; <strong>CC</strong> {{ email.cc }}{% endif %}</p>
+                <p class="email-meta">{{ email.received_at|datetimeformat }} &nbsp;&middot;&nbsp; {{ email.source_name }}</p>
+            </div>
+        </div>
     </section>
 
     <section class="detail-grid">
         <article class="panel reveal">
             <div class="section-heading">
                 <div>
-                    <p class="eyebrow">Summary</p>
-                    <h2>Main bullet points</h2>
+                    <p class="eyebrow">AI summary</p>
+                    <h2>Key points</h2>
                 </div>
+                <form action="{{ url_for('main.email_reanalyze', email_id=email.email_id) }}" method="post">
+                    <button type="submit" class="btn {% if groq_available %}btn-teal{% else %}btn-ghost{% endif %}" title="{% if groq_available %}Re-run AI analysis{% else %}Add a Groq key in Settings to enable AI analysis{% endif %}">
+                        &#10024; {% if groq_available %}Re-analyse{% else %}Add Groq key{% endif %}
+                    </button>
+                </form>
             </div>
             <ul class="bullet-list">
                 {% for bullet in email.bullet_summary %}
                     <li>{{ bullet }}</li>
                 {% endfor %}
             </ul>
+            {% if email.keywords %}
+            <div class="keyword-row" style="margin-top:1.2rem">
+                {% for kw in email.keywords %}<span>{{ kw }}</span>{% endfor %}
+            </div>
+            {% endif %}
         </article>
 
         <aside class="panel reveal">
@@ -35,12 +56,14 @@
                 </div>
             </div>
             <dl class="meta-grid">
-                <dt>Priority score</dt>
-                <dd>{{ email.priority_score }}</dd>
-                <dt>Keywords</dt>
-                <dd>{{ email.keywords|join(', ') }}</dd>
-                <dt>CC</dt>
-                <dd>{{ email.cc or 'None' }}</dd>
+                <dt>Category</dt>
+                <dd>{{ email.category }}</dd>
+                <dt>Priority</dt>
+                <dd>{{ email.priority_score }} / 100</dd>
+                <dt>Source</dt>
+                <dd>{{ email.source_name }}</dd>
+                <dt>Message-ID</dt>
+                <dd style="word-break:break-all;font-size:.8rem">{{ email.message_id or '—' }}</dd>
             </dl>
         </aside>
     </section>
@@ -48,11 +71,13 @@
     <section class="panel reveal">
         <div class="section-heading">
             <div>
-                <p class="eyebrow">Extracted content</p>
+                <p class="eyebrow">Message content</p>
                 <h2>Email body</h2>
             </div>
         </div>
-        <pre class="email-body">{{ email.body or 'No readable body was extracted from this message.' }}</pre>
+        <div class="email-body-formatted">
+            {{ email.body | format_email_body }}
+        </div>
     </section>
 </main>
 {% endblock %}

@@ -11,6 +11,11 @@
         </div>
         <div class="page-header-actions">
             <a href="{{ url_for('main.settings') }}" class="btn btn-ghost">Settings</a>
+            {% if imap_accounts|length > 1 %}
+            <form action="{{ url_for('main.accounts_sync_all') }}" method="post">
+                <button type="submit" class="btn btn-teal">Sync All</button>
+            </form>
+            {% endif %}
             <a href="{{ url_for('main.accounts_add') }}" class="btn btn-primary">+ Add Account</a>
         </div>
     </div>

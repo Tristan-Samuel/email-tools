@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block title %}Inbox | Email Intelligence Studio{% endblock %}
+
+{% block content %}
+<main class="page-main">
+    <div class="inbox-toolbar">
+        <div class="inbox-toolbar-left">
+            <h1 class="inbox-title">Inbox</h1>
+            <span class="inbox-count">{{ emails|length }} message{{ 's' if emails|length != 1 else '' }}</span>
+        </div>
+        <div class="inbox-toolbar-right">
+            <form class="inbox-search" action="{{ url_for('main.inbox') }}" method="get">
+                {% if source_account %}
+                    <input type="hidden" name="source_account" value="{{ source_account }}">
+                {% endif %}
+                {% if selected_category %}
+                    <input type="hidden" name="category" value="{{ selected_category }}">
+                {% endif %}
+                <input type="search" name="query" value="{{ query }}" placeholder="Search emails…">
+                <button type="submit">Search</button>
+            </form>
+            {% if imap_accounts %}
+            <div class="inbox-account-tabs">
+                <a href="{{ url_for('main.inbox') }}{% if selected_category %}?category={{ selected_category }}{% endif %}"
+                   class="inbox-tab {% if not source_account %}inbox-tab--active{% endif %}">All</a>
+                {% for acct in imap_accounts %}
+                <a href="{{ url_for('main.inbox') }}?source_account={{ acct.account_email | urlencode }}{% if selected_category %}&category={{ selected_category }}{% endif %}"
+                   class="inbox-tab {% if source_account == acct.account_email %}inbox-tab--active{% endif %}">
+                    {{ acct.account_email.split('@')[0] }}
+                    <span class="inbox-tab-domain">@{{ acct.account_email.split('@')[1] }}</span>
+                </a>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if categories %}
+    <div class="inbox-categories">
+        <a href="{{ url_for('main.inbox') }}{% if source_account %}?source_account={{ source_account | urlencode }}{% endif %}"
+           class="category-pill {% if not selected_category %}active{% endif %}">All</a>
+        {% for item in categories %}
+        <a href="{{ url_for('main.inbox') }}?category={{ item.category | urlencode }}{% if source_account %}&source_account={{ source_account | urlencode }}{% endif %}"
+           class="category-pill {% if selected_category == item.category %}active{% endif %}">
+            {{ item.category }} <span>{{ item.count }}</span>
+        </a>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if emails %}
+    <div class="inbox-list panel">
+        {% for email in emails %}
+        <a class="inbox-row {% if email.priority_score >= 80 %}inbox-row--urgent{% endif %}"
+           href="{{ url_for('main.email_detail', email_id=email.email_id) }}">
+            <div class="inbox-row-avatar">{{ (email.sender or '?')[0].upper() }}</div>
+            <div class="inbox-row-body">
+                <div class="inbox-row-top">
+                    <span class="inbox-row-sender">{{ email.sender or 'Unknown sender' }}</span>
+                    <span class="inbox-row-date">{{ email.received_at|datetimeformat }}</span>
+                </div>
+                <div class="inbox-row-subject">{{ email.subject }}</div>
+                <div class="inbox-row-preview">{{ email.preview or 'No preview available.' }}</div>
+            </div>
+            <div class="inbox-row-meta">
+                <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>
+                {% if email.priority_score >= 80 %}
+                <span class="inbox-urgent-dot" title="Urgent">●</span>
+                {% endif %}
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+
+    {% else %}
+    <div class="empty-state" style="margin-top:1.5rem">
+        <h3>No emails here</h3>
+        {% if not imap_accounts %}
+        <p>Connect an inbox account to start seeing your emails. <a href="{{ url_for('main.accounts_add') }}">Add an account →</a></p>
+        {% else %}
+        <p>
+            {% if query %}No results for "{{ query }}".{% else %}Sync your inbox to load emails.{% endif %}
+            {% for acct in imap_accounts %}
+            <form action="{{ url_for('main.accounts_sync', account_id=acct.id) }}" method="post" style="display:inline">
+                <button type="submit" class="btn btn-teal" style="margin:.25rem">Sync {{ acct.account_email }}</button>
+            </form>
+            {% endfor %}
+        </p>
+        {% endif %}
+    </div>
+    {% endif %}
+</main>
+{% endblock %}

@@ -192,6 +192,8 @@ class EmailStore:
         category: str | None = None,
         user_email: str | None = None,
         source_account: str | None = None,
+        sender_filter: str | None = None,
+        recipient_filter: str | None = None,
     ) -> list[dict]:
         query = "SELECT * FROM emails"
         params: list[object] = []
@@ -206,6 +208,12 @@ class EmailStore:
         if category:
             conditions.append("category = ?")
             params.append(category)
+        if sender_filter:
+            conditions.append("sender LIKE ?")
+            params.append(f"%{sender_filter}%")
+        if recipient_filter:
+            conditions.append("recipient LIKE ?")
+            params.append(f"%{recipient_filter}%")
 
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
@@ -218,10 +226,42 @@ class EmailStore:
 
         return [self._deserialize_row(row) for row in rows]
 
-    def search(self, search_term: str, limit: int = 100, user_email: str | None = None, source_account: str | None = None) -> list[dict]:
+    def search(
+        self,
+        search_term: str,
+        limit: int = 100,
+        user_email: str | None = None,
+        source_account: str | None = None,
+        sender_filter: str | None = None,
+        recipient_filter: str | None = None,
+        category: str | None = None,
+    ) -> list[dict]:
+        # Build additional filter clauses for both FTS (JOIN) and LIKE paths.
+        fts_extra: list[str] = []
+        fts_params: list[object] = []
+        like_extra: list[str] = []
+        like_params: list[object] = []
+
+        def _add(fts_col: str, like_col: str, op: str, value: object) -> None:
+            fts_extra.append(f"emails.{fts_col} {op} ?")
+            fts_params.append(value)
+            like_extra.append(f"{like_col} {op} ?")
+            like_params.append(value)
+
+        if source_account:
+            _add("source_account", "source_account", "=", source_account)
+        if sender_filter:
+            _add("sender", "sender", "LIKE", f"%{sender_filter}%")
+        if recipient_filter:
+            _add("recipient", "recipient", "LIKE", f"%{recipient_filter}%")
+        if category:
+            _add("category", "category", "=", category)
+
+        fts_clause = (" AND " + " AND ".join(fts_extra)) if fts_extra else ""
+        like_clause = (" AND " + " AND ".join(like_extra)) if like_extra else ""
+
         with self._connect() as connection:
-            acct_clause = " AND emails.source_account = ?" if source_account else ""
-            acct_like_clause = " AND source_account = ?" if source_account else ""
+            wildcard = f"%{search_term}%"
 
             if self.fts_enabled:
                 try:
@@ -231,11 +271,11 @@ class EmailStore:
                             SELECT emails.*
                             FROM email_search
                             JOIN emails ON emails.email_id = email_search.email_id
-                            WHERE email_search MATCH ? AND emails.user_email = ?{acct_clause}
+                            WHERE email_search MATCH ? AND emails.user_email = ?{fts_clause}
                             ORDER BY priority_score DESC, COALESCE(received_at, created_at) DESC
                             LIMIT ?
                             """,
-                            (search_term, user_email, *([source_account] if source_account else []), limit),
+                            (search_term, user_email, *fts_params, limit),
                         ).fetchall()
                     else:
                         rows = connection.execute(
@@ -243,55 +283,53 @@ class EmailStore:
                             SELECT emails.*
                             FROM email_search
                             JOIN emails ON emails.email_id = email_search.email_id
-                            WHERE email_search MATCH ?{acct_clause}
+                            WHERE email_search MATCH ?{fts_clause}
                             ORDER BY priority_score DESC, COALESCE(received_at, created_at) DESC
                             LIMIT ?
                             """,
-                            (search_term, *([source_account] if source_account else []), limit),
+                            (search_term, *fts_params, limit),
                         ).fetchall()
                 except sqlite3.OperationalError:
-                    wildcard = f"%{search_term}%"
                     if user_email:
                         rows = connection.execute(
                             f"""
                             SELECT * FROM emails
-                            WHERE search_blob LIKE ? AND user_email = ?{acct_like_clause}
+                            WHERE search_blob LIKE ? AND user_email = ?{like_clause}
                             ORDER BY priority_score DESC, COALESCE(received_at, created_at) DESC
                             LIMIT ?
                             """,
-                            (wildcard, user_email, *([source_account] if source_account else []), limit),
+                            (wildcard, user_email, *like_params, limit),
                         ).fetchall()
                     else:
                         rows = connection.execute(
                             f"""
                             SELECT * FROM emails
-                            WHERE search_blob LIKE ?{acct_like_clause}
+                            WHERE search_blob LIKE ?{like_clause}
                             ORDER BY priority_score DESC, COALESCE(received_at, created_at) DESC
                             LIMIT ?
                             """,
-                            (wildcard, *([source_account] if source_account else []), limit),
+                            (wildcard, *like_params, limit),
                         ).fetchall()
             else:
-                wildcard = f"%{search_term}%"
                 if user_email:
                     rows = connection.execute(
                         f"""
                         SELECT * FROM emails
-                        WHERE search_blob LIKE ? AND user_email = ?{acct_like_clause}
+                        WHERE search_blob LIKE ? AND user_email = ?{like_clause}
                         ORDER BY priority_score DESC, COALESCE(received_at, created_at) DESC
                         LIMIT ?
                         """,
-                        (wildcard, user_email, *([source_account] if source_account else []), limit),
+                        (wildcard, user_email, *like_params, limit),
                     ).fetchall()
                 else:
                     rows = connection.execute(
                         f"""
                         SELECT * FROM emails
-                        WHERE search_blob LIKE ?{acct_like_clause}
+                        WHERE search_blob LIKE ?{like_clause}
                         ORDER BY priority_score DESC, COALESCE(received_at, created_at) DESC
                         LIMIT ?
                         """,
-                        (wildcard, *([source_account] if source_account else []), limit),
+                        (wildcard, *like_params, limit),
                     ).fetchall()
 
         return [self._deserialize_row(row) for row in rows]
@@ -452,3 +490,15 @@ class EmailStore:
                 ).fetchone()
             return row["groq_api_key"] if row else ""
         return ""
+
+    def update_email_summary(self, email_id: str, user_email: str, bullet_summary: list[str]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE emails SET bullet_summary = ? WHERE email_id = ? AND user_email = ?",
+                (json.dumps(bullet_summary), email_id, user_email),
+            )
+            if self.fts_enabled:
+                connection.execute(
+                    "UPDATE email_search SET bullet_summary = ? WHERE email_id = ?",
+                    (" ".join(bullet_summary), email_id),
+                )

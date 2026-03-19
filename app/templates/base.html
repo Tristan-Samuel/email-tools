@@ -20,32 +20,22 @@
                 </span>
             </a>
             {% if current_user_email %}
-                <div class="topbar-actions">
-                    <form class="searchbar" action="{{ url_for('main.dashboard') }}" method="get">
-                        <input type="search" name="query" value="{{ query|default('') }}" placeholder="Search by topic, sender, task, or bullet point">
-                        <button type="submit">Search</button>
+                <nav class="topbar-nav">
+                    <a href="{{ url_for('main.inbox') }}" class="topbar-nav-link {% if request.endpoint == 'main.inbox' %}topbar-nav-link--active{% endif %}">Inbox</a>
+                    <a href="{{ url_for('main.dashboard') }}" class="topbar-nav-link {% if request.endpoint == 'main.dashboard' %}topbar-nav-link--active{% endif %}">Dashboard</a>
+                    <a href="{{ url_for('main.search_page') }}" class="topbar-nav-link {% if request.endpoint == 'main.search_page' %}topbar-nav-link--active{% endif %}">Search</a>
+                    <a href="{{ url_for('main.accounts') }}" class="topbar-nav-link {% if request.endpoint in ['main.accounts','main.accounts_add'] %}topbar-nav-link--active{% endif %}">Accounts</a>
+                </nav>
+                <form class="searchbar" action="{{ url_for('main.search_page') }}" method="get">
+                    <input type="search" name="query" value="{{ query|default('') }}" placeholder="Search emails…">
+                    <button type="submit">Search</button>
+                </form>
+                <div class="topbar-user">
+                    <span class="topbar-email">{{ current_user_email }}</span>
+                    <a href="{{ url_for('main.settings') }}" class="btn-icon" title="Settings">⚙</a>
+                    <form action="{{ url_for('main.logout') }}" method="post">
+                        <button type="submit" class="btn-logout">Log Out</button>
                     </form>
-                    <nav class="acct-switcher" aria-label="Account filter">
-                        <a href="{{ url_for('main.dashboard') }}"
-                           class="acct-pill {% if not source_account %}acct-pill--active{% endif %}">
-                            All
-                        </a>
-                        {% for acct in active_accounts %}
-                        <a href="{{ url_for('main.dashboard') }}?source_account={{ acct.account_email | urlencode }}"
-                           class="acct-pill {% if source_account == acct.account_email %}acct-pill--active{% endif %}"
-                           title="{{ acct.account_email }}">
-                            {{ acct.account_email.split('@')[0] }}
-                        </a>
-                        {% endfor %}
-                        <a href="{{ url_for('main.accounts') }}" class="acct-pill acct-pill--manage" title="Manage accounts">⚙ Accounts</a>
-                    </nav>
-                    <div class="session-info">
-                        <span>{{ current_user_email }}</span>
-                        <a href="{{ url_for('main.settings') }}" class="btn-icon" title="Settings">⚙</a>
-                        <form action="{{ url_for('main.logout') }}" method="post">
-                            <button type="submit">Log Out</button>
-                        </form>
-                    </div>
                 </div>
             {% else %}
                 <a class="login-link" href="{{ url_for('main.login') }}">Log In</a>

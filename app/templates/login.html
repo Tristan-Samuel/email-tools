@@ -1,20 +1,71 @@
 {% extends "base.html" %}
 
-{% block title %}Login | Email Intelligence Studio{% endblock %}
+{% block title %}Log In | Email Intelligence Studio{% endblock %}
 
 {% block content %}
 <main class="login-layout">
     <section class="panel login-panel reveal is-visible">
         <p class="eyebrow">Account access</p>
-        <h1>Log in with your email</h1>
+        <h1>Connect your inbox</h1>
         <p class="hero-copy">
-            This creates your local session and automatically scopes the dashboard to this account.
+            Enter your email to get started. Add your App Password below to connect your inbox
+            directly and pull emails automatically — no file exports needed.
         </p>
         <form action="{{ url_for('main.login') }}" method="post" class="login-form">
-            <label for="email">Email address</label>
-            <input id="email" name="email" type="email" required placeholder="you@example.com">
-            <button type="submit">Continue</button>
+            <label for="login-email">Email address</label>
+            <input id="login-email" name="email" type="email" required placeholder="you@gmail.com"
+                   autocomplete="email" oninput="autoFillHost(this.value)">
+
+            <label for="login-password" style="margin-top:1.2rem">
+                App Password <span style="font-weight:400;opacity:.65">(optional — needed to fetch emails directly)</span>
+            </label>
+            <input id="login-password" name="password" type="password"
+                   placeholder="xxxx xxxx xxxx xxxx" autocomplete="current-password">
+            <small style="opacity:.7;font-size:.82rem;line-height:1.5;display:block;margin-top:.35rem">
+                Gmail: Google Account → Security → 2-Step Verification → App passwords.<br>
+                Outlook / Yahoo: generate an app password in your account security settings.
+            </small>
+
+            <details style="margin-top:1rem">
+                <summary style="cursor:pointer;font-size:.9rem;opacity:.8">Advanced IMAP settings</summary>
+                <div class="form-row" style="margin-top:.75rem">
+                    <label class="form-label" style="flex:1">
+                        IMAP Host
+                        <input id="imap_host" name="imap_host" type="text" value="imap.gmail.com" class="form-input">
+                    </label>
+                    <label class="form-label" style="width:110px">
+                        Port
+                        <input name="imap_port" type="number" value="993" min="1" max="65535" class="form-input">
+                    </label>
+                </div>
+            </details>
+
+            <button type="submit" style="margin-top:1.5rem">Continue →</button>
         </form>
     </section>
 </main>
+<script>
+const IMAP_HOSTS = {
+    'gmail.com': 'imap.gmail.com',
+    'googlemail.com': 'imap.gmail.com',
+    'yahoo.com': 'imap.mail.yahoo.com',
+    'yahoo.co.uk': 'imap.mail.yahoo.com',
+    'outlook.com': 'outlook.office365.com',
+    'hotmail.com': 'outlook.office365.com',
+    'live.com': 'outlook.office365.com',
+    'icloud.com': 'imap.mail.me.com',
+    'me.com': 'imap.mail.me.com',
+    'mac.com': 'imap.mail.me.com',
+};
+function autoFillHost(email) {
+    const domain = (email.split('@')[1] || '').toLowerCase();
+    const hostInput = document.getElementById('imap_host');
+    if (!hostInput) return;
+    if (IMAP_HOSTS[domain]) {
+        hostInput.value = IMAP_HOSTS[domain];
+    } else if (domain) {
+        hostInput.value = 'imap.' + domain;
+    }
+}
+</script>
 {% endblock %}

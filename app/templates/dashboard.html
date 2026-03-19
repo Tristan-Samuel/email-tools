@@ -9,16 +9,33 @@
             <p class="eyebrow">Professional email triage</p>
             <h1>Read the inbox through summaries instead of threads.</h1>
             <p class="hero-copy">
-                Upload email exports, auto-sort them into categories, cache bullet-point summaries for every message,
-                and search across full text plus the generated takeaways.
+                Connect your inbox accounts, auto-sort emails into categories, cache bullet-point summaries
+                for every message, and search across full text plus the generated takeaways.
             </p>
         </div>
-        <form class="upload-card" action="{{ url_for('main.upload') }}" method="post" enctype="multipart/form-data">
-            <label for="email_files">Import email files</label>
-            <input id="email_files" name="email_files" type="file" accept=".eml,.mbox" multiple>
-            <p>Supports individual .eml files and mailbox exports in .mbox format.</p>
-            <button type="submit">Analyze Inbox Files</button>
-        </form>
+        <div class="upload-card">
+            {% if imap_accounts %}
+                <p class="eyebrow" style="margin-bottom:.75rem">Connected accounts</p>
+                {% for acct in imap_accounts %}
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;margin-bottom:.5rem">
+                    <span style="font-size:.9rem">{{ acct.account_email }}</span>
+                    <form action="{{ url_for('main.accounts_sync', account_id=acct.id) }}" method="post">
+                        <button type="submit" class="btn btn-teal" style="font-size:.8rem;padding:.3rem .8rem">Sync</button>
+                    </form>
+                </div>
+                {% endfor %}
+                {% if imap_accounts|length > 1 %}
+                <form action="{{ url_for('main.accounts_sync_all') }}" method="post" style="margin-top:.75rem">
+                    <button type="submit" class="btn btn-primary" style="width:100%">Sync All Accounts</button>
+                </form>
+                {% endif %}
+                <a href="{{ url_for('main.accounts_add') }}" class="btn btn-ghost" style="width:100%;margin-top:.5rem;text-align:center">+ Add Another Account</a>
+            {% else %}
+                <p class="eyebrow" style="margin-bottom:.75rem">Get started</p>
+                <p style="font-size:.9rem;margin-bottom:1rem">No inbox connected yet. Log in with your App Password, or add an account below.</p>
+                <a href="{{ url_for('main.accounts_add') }}" class="btn btn-primary" style="width:100%;text-align:center">Connect Your Inbox →</a>
+            {% endif %}
+        </div>
     </section>
 
     <section class="stats-grid reveal">
@@ -116,9 +133,22 @@
         {% else %}
             <div class="empty-state">
                 <h3>No emails found</h3>
-                <p>Upload some inbox exports or broaden the search terms.</p>
+                <p>Sync an inbox account above, or broaden your search terms.</p>
             </div>
         {% endif %}
     </section>
+
+    <details class="panel reveal" style="margin-top:1.5rem">
+        <summary style="cursor:pointer;padding:.1rem 0;font-weight:600;font-size:.95rem">
+            Import email files (.eml / .mbox)
+        </summary>
+        <form class="upload-card" action="{{ url_for('main.upload') }}" method="post"
+              enctype="multipart/form-data" style="border:none;padding:1rem 0 0">
+            <label for="email_files">Select files</label>
+            <input id="email_files" name="email_files" type="file" accept=".eml,.mbox" multiple>
+            <p>Supports individual .eml files and mailbox exports in .mbox format.</p>
+            <button type="submit">Analyze Inbox Files</button>
+        </form>
+    </details>
 </main>
 {% endblock %}
