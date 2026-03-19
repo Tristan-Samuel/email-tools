@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Tag: {{ tag.name }} — Email Intelligence Studio{% endblock %}
+
+{% block content %}
+<main class="page-main">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">Edit Tag</h1>
+            <p class="page-subtitle">Update rules, AI settings and colour for <strong>{{ tag.name }}</strong>.</p>
+        </div>
+        <div class="page-header-actions">
+            <a href="{{ url_for('main.tags') }}" class="btn btn-ghost">← Back to Tags</a>
+        </div>
+    </div>
+
+    <section class="panel tag-editor-panel">
+        <form action="{{ url_for('main.tags_edit', tag_id=tag.id) }}" method="post">
+            <div class="form-row" style="gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px">
+                <label class="form-label" style="flex:2;min-width:160px">
+                    Tag name
+                    <input type="text" name="name" class="form-input" value="{{ tag.name }}" required>
+                </label>
+                <label class="form-label" style="flex:0 0 auto">
+                    Colour
+                    <div class="tag-color-row">
+                        <input type="color" name="color" value="{{ tag.color }}" id="edit-tag-color">
+                        <span id="edit-tag-preview" class="tag-chip" style="background:{{ tag.color }}">Preview</span>
+                    </div>
+                </label>
+                <label class="form-label" style="flex:1;min-width:120px">
+                    <div style="display:flex;align-items:center;gap:8px">
+                        <label class="toggle-switch" style="margin-top:6px">
+                            <input type="checkbox" name="hide_matching" id="hide-matching-toggle" {% if tag.hide_matching %}checked{% endif %}>
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <span>Hide matching emails</span>
+                    </div>
+                </label>
+            </div>
+
+            <!-- AI section -->
+            <div style="margin-bottom:18px;padding:16px;background:rgba(45,143,133,.07);border-radius:14px">
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+                    <label class="toggle-switch">
+                        <input type="checkbox" name="use_ai" id="edit-use-ai" {% if tag.use_ai %}checked{% endif %}>
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span style="font-weight:700;font-size:.9rem">Use AI to classify emails for this tag</span>
+                    {% if not groq_available %}
+                    <small style="color:var(--muted)">— <a href="{{ url_for('main.settings') }}">Add Groq key</a> to enable</small>
+                    {% endif %}
+                </div>
+                <label class="form-label" id="ai-instruction-label"
+                       style="{% if not tag.use_ai %}display:none{% endif %}">
+                    AI instruction
+                    <input type="text" name="ai_instruction" class="form-input"
+                           value="{{ tag.ai_instruction }}"
+                           placeholder="e.g. Tag if this email is about school assignments or due-dates">
+                </label>
+            </div>
+
+            <!-- Manual filter rules -->
+            <div style="margin-bottom:18px">
+                <p style="font-weight:700;font-size:.9rem;margin:0 0 12px">Manual filter rules</p>
+                <p style="font-size:.82rem;color:var(--muted);margin:0 0 12px">An email is tagged if it matches <strong>any</strong> rule below.</p>
+                <div id="rules-container" class="tag-rules-list">
+                    {% for rule in tag.rules %}
+                    <div class="tag-rule-row">
+                        <select name="rule_field">
+                            {% for f in ['sender','recipient','subject','body','category'] %}
+                            <option value="{{ f }}" {% if rule.field == f %}selected{% endif %}>{{ f|capitalize }}</option>
+                            {% endfor %}
+                        </select>
+                        <select name="rule_operator">
+                            {% for op in ['contains','equals','starts_with','ends_with','not_contains'] %}
+                            <option value="{{ op }}" {% if rule.operator == op %}selected{% endif %}>{{ op|replace('_',' ') }}</option>
+                            {% endfor %}
+                        </select>
+                        <input type="text" name="rule_value" value="{{ rule.value }}"
+                               style="flex:1;min-width:120px;padding:7px 10px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg);font:inherit;font-size:.88rem" required>
+                        <button type="button" class="btn btn-ghost" style="padding:5px 10px;font-size:.8rem"
+                                onclick="this.closest('.tag-rule-row').remove()">✕</button>
+                    </div>
+                    {% endfor %}
+                </div>
+                <button type="button" class="tag-add-rule" onclick="addRule('rules-container')" style="margin-top:8px">+ Add rule</button>
+            </div>
+
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Save Changes</button>
+                {% if tag.use_ai %}
+                <form action="{{ url_for('main.tags_apply_ai', tag_id=tag.id) }}" method="post" style="display:inline">
+                    <button type="submit" class="btn btn-teal" {% if not groq_available %}disabled title="Add Groq key to use AI"{% endif %}>
+                        ✨ Apply AI now
+                    </button>
+                </form>
+                {% endif %}
+                <form action="{{ url_for('main.tags_apply') }}" method="post" style="display:inline">
+                    <button type="submit" class="btn btn-ghost">⚡ Apply all manual rules</button>
+                </form>
+            </div>
+        </form>
+    </section>
+</main>
+
+<script>
+document.getElementById('edit-tag-color').addEventListener('input', function() {
+    document.getElementById('edit-tag-preview').style.background = this.value;
+});
+document.getElementById('edit-use-ai').addEventListener('change', function() {
+    document.getElementById('ai-instruction-label').style.display = this.checked ? 'flex' : 'none';
+});
+function addRule(containerId) {
+    const container = document.getElementById(containerId);
+    const row = document.createElement('div');
+    row.className = 'tag-rule-row';
+    row.innerHTML = `
+        <select name="rule_field">
+            <option value="sender">Sender</option>
+            <option value="recipient">Recipient</option>
+            <option value="subject">Subject</option>
+            <option value="body">Body</option>
+            <option value="category">Category</option>
+        </select>
+        <select name="rule_operator">
+            <option value="contains">contains</option>
+            <option value="equals">equals</option>
+            <option value="starts_with">starts with</option>
+            <option value="ends_with">ends with</option>
+            <option value="not_contains">does not contain</option>
+        </select>
+        <input type="text" name="rule_value" placeholder="value" required
+               style="flex:1;min-width:120px;padding:7px 10px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg);font:inherit;font-size:.88rem">
+        <button type="button" class="btn btn-ghost" style="padding:5px 10px;font-size:.8rem"
+                onclick="this.closest('.tag-rule-row').remove()">✕</button>
+    `;
+    container.appendChild(row);
+}
+</script>
+{% endblock %}

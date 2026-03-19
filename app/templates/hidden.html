@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}Hidden Emails — Email Intelligence Studio{% endblock %}
+
+{% block content %}
+<main class="page-main">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">Hidden Emails</h1>
+            <p class="page-subtitle">{{ emails|length }} email{{ 's' if emails|length != 1 else '' }} filtered from your inbox.</p>
+        </div>
+        <div class="page-header-actions">
+            <a href="{{ url_for('main.inbox') }}" class="btn btn-ghost">← Back to Inbox</a>
+        </div>
+    </div>
+
+    {% if emails %}
+    <div class="inbox-list panel">
+        {% for email in emails %}
+        <div style="position:relative;display:flex;align-items:stretch">
+            <a class="inbox-row" href="{{ url_for('main.email_detail', email_id=email.email_id) }}"
+               style="flex:1;opacity:.75">
+                <div class="inbox-row-avatar">{{ (email.sender or '?')[0].upper() }}</div>
+                <div class="inbox-row-body">
+                    <div class="inbox-row-top">
+                        <span class="inbox-row-sender">{{ email.sender or 'Unknown sender' }}</span>
+                        <span class="inbox-row-date">{{ email.received_at|datetimeformat }}</span>
+                    </div>
+                    <div class="inbox-row-subject">{{ email.subject }}</div>
+                    <div class="inbox-row-preview">{{ email.preview or 'No preview available.' }}</div>
+                </div>
+                <div class="inbox-row-meta">
+                    <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>
+                </div>
+            </a>
+            <form action="{{ url_for('main.email_unhide', email_id=email.email_id) }}" method="post"
+                  style="display:flex;align-items:center;padding:0 12px;border-left:1px solid var(--line)">
+                <button type="submit" class="btn btn-teal" style="padding:5px 12px;font-size:.78rem;box-shadow:none">
+                    ↑ Restore
+                </button>
+            </form>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <h3>No hidden emails</h3>
+        <p>Emails you hide from the inbox or via tag filters will appear here.</p>
+    </div>
+    {% endif %}
+</main>
+{% endblock %}

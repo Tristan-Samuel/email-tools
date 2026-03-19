@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+
+{% block title %}Tags — Email Intelligence Studio{% endblock %}
+
+{% block content %}
+<main class="page-main">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">Tags</h1>
+            <p class="page-subtitle">Create custom tags with manual filter rules or AI classification.</p>
+        </div>
+        <div class="page-header-actions">
+            <form action="{{ url_for('main.tags_apply') }}" method="post">
+                <button type="submit" class="btn btn-ghost">⚡ Apply all manual rules</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Create new tag form -->
+    <section class="panel tag-editor-panel">
+        <h2 class="panel-title" style="margin-bottom:1.2rem">New Tag</h2>
+        <form action="{{ url_for('main.tags') }}" method="post" id="new-tag-form">
+            <div class="form-row" style="gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px">
+                <label class="form-label" style="flex:2;min-width:160px">
+                    Tag name
+                    <input type="text" name="name" class="form-input" placeholder="e.g. Important, School, Finance" required>
+                </label>
+                <label class="form-label" style="flex:0 0 auto">
+                    Colour
+                    <div class="tag-color-row">
+                        <input type="color" name="color" value="#2d8f85" id="new-tag-color">
+                        <span id="new-tag-preview" class="tag-chip" style="background:#2d8f85">Preview</span>
+                    </div>
+                </label>
+                <label class="form-label" style="flex:1;min-width:120px">
+                    <div style="display:flex;align-items:center;gap:8px">
+                        <label class="toggle-switch" style="margin-top:6px">
+                            <input type="checkbox" name="hide_matching" id="hide-matching-toggle">
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <span>Hide matching emails</span>
+                    </div>
+                </label>
+            </div>
+
+            <!-- AI section -->
+            <div style="margin-bottom:18px;padding:16px;background:rgba(45,143,133,.07);border-radius:14px">
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+                    <label class="toggle-switch">
+                        <input type="checkbox" name="use_ai" id="new-use-ai">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span style="font-weight:700;font-size:.9rem">Use AI to classify emails for this tag</span>
+                    {% if not groq_available %}
+                    <small style="color:var(--muted)">— <a href="{{ url_for('main.settings') }}">Add Groq key</a> to enable</small>
+                    {% endif %}
+                </div>
+                <label class="form-label" id="ai-instruction-label" style="display:none">
+                    AI instruction
+                    <input type="text" name="ai_instruction" class="form-input"
+                           placeholder="e.g. Tag if this email is about school assignments or due-dates">
+                </label>
+            </div>
+
+            <!-- Manual filter rules -->
+            <div style="margin-bottom:18px">
+                <p style="font-weight:700;font-size:.9rem;margin:0 0 12px">Manual filter rules</p>
+                <p style="font-size:.82rem;color:var(--muted);margin:0 0 12px">An email is tagged if it matches <strong>any</strong> rule below.</p>
+                <div id="rules-container" class="tag-rules-list"></div>
+                <button type="button" class="tag-add-rule" onclick="addRule('rules-container')">+ Add rule</button>
+            </div>
+
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Create Tag</button>
+            </div>
+        </form>
+    </section>
+
+    <!-- Existing tags -->
+    {% if tags %}
+    <section>
+        <h2 style="font-family:'Fraunces',Georgia,serif;font-size:1.4rem;margin:0 0 16px">Your Tags</h2>
+        <div class="tags-list">
+            {% for tag in tags %}
+            <div class="tag-card">
+                <div class="tag-card-left">
+                    <div class="tag-dot" style="background:{{ tag.color }}"></div>
+                    <div class="tag-info">
+                        <p class="tag-name">
+                            <span class="tag-chip" style="background:{{ tag.color }}">{{ tag.name }}</span>
+                        </p>
+                        <p class="tag-meta">
+                            {{ tag.email_count }} email(s) tagged
+                            {% if tag.use_ai %} &middot; AI classification enabled{% endif %}
+                            {% if tag.hide_matching %} &middot; <strong>Hides matching emails</strong>{% endif %}
+                            {% if tag.rules %} &middot; {{ tag.rules|length }} rule(s){% endif %}
+                        </p>
+                        {% if tag.rules %}
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+                            {% for rule in tag.rules %}
+                            <span style="font-size:.75rem;background:var(--bg-strong);border-radius:8px;padding:2px 8px;color:var(--muted)">
+                                {{ rule.field }} {{ rule.operator }} "{{ rule.value }}"
+                            </span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="account-card-actions">
+                    <a href="{{ url_for('main.tags_edit', tag_id=tag.id) }}" class="btn btn-ghost">Edit</a>
+                    {% if tag.use_ai %}
+                    <form action="{{ url_for('main.tags_apply_ai', tag_id=tag.id) }}" method="post">
+                        <button type="submit" class="btn btn-teal" {% if not groq_available %}disabled title="Add Groq key to use AI"{% endif %}>
+                            ✨ Apply AI
+                        </button>
+                    </form>
+                    {% endif %}
+                    <a href="{{ url_for('main.inbox') }}?tag_id={{ tag.id }}" class="btn btn-ghost">View emails</a>
+                    <form action="{{ url_for('main.tags_delete', tag_id=tag.id) }}" method="post"
+                          onsubmit="return confirm('Delete tag {{ tag.name|e }}?')">
+                        <button type="submit" class="btn btn-danger">Delete</button>
+                    </form>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+    {% else %}
+    <div class="empty-state">
+        <h3>No tags yet</h3>
+        <p>Create your first tag above to start organizing your inbox.</p>
+    </div>
+    {% endif %}
+</main>
+
+<script>
+// Color preview
+document.getElementById('new-tag-color').addEventListener('input', function() {
+    document.getElementById('new-tag-preview').style.background = this.value;
+});
+
+// AI instruction toggle
+document.getElementById('new-use-ai').addEventListener('change', function() {
+    document.getElementById('ai-instruction-label').style.display = this.checked ? 'flex' : 'none';
+});
+
+// Dynamic rule rows
+function addRule(containerId) {
+    const container = document.getElementById(containerId);
+    const row = document.createElement('div');
+    row.className = 'tag-rule-row';
+    row.innerHTML = `
+        <select name="rule_field">
+            <option value="sender">Sender</option>
+            <option value="recipient">Recipient</option>
+            <option value="subject">Subject</option>
+            <option value="body">Body</option>
+            <option value="category">Category</option>
+        </select>
+        <select name="rule_operator">
+            <option value="contains">contains</option>
+            <option value="equals">equals</option>
+            <option value="starts_with">starts with</option>
+            <option value="ends_with">ends with</option>
+            <option value="not_contains">does not contain</option>
+        </select>
+        <input type="text" name="rule_value" placeholder="value" required style="flex:1;min-width:120px">
+        <button type="button" class="btn btn-ghost" style="padding:5px 10px;font-size:.8rem"
+                onclick="this.closest('.tag-rule-row').remove()">✕</button>
+    `;
+    container.appendChild(row);
+}
+</script>
+{% endblock %}

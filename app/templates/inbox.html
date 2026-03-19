@@ -8,18 +8,41 @@
         <div class="inbox-toolbar-left">
             <h1 class="inbox-title">Inbox</h1>
             <span class="inbox-count">{{ emails|length }} message{{ 's' if emails|length != 1 else '' }}</span>
+            {% if hidden_count > 0 %}
+            <a href="{{ url_for('main.hidden') }}" class="hidden-link">
+                Hidden <span class="hidden-badge">{{ hidden_count }}</span>
+            </a>
+            {% endif %}
         </div>
         <div class="inbox-toolbar-right">
             <form class="inbox-search" action="{{ url_for('main.inbox') }}" method="get">
-                {% if source_account %}
-                    <input type="hidden" name="source_account" value="{{ source_account }}">
-                {% endif %}
-                {% if selected_category %}
-                    <input type="hidden" name="category" value="{{ selected_category }}">
-                {% endif %}
-                <input type="search" name="query" value="{{ query }}" placeholder="Search emails…">
+                {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
+                {% if selected_category %}<input type="hidden" name="category" value="{{ selected_category }}">{% endif %}
+                {% if date_from %}<input type="hidden" name="date_from" value="{{ date_from }}">{% endif %}
+                {% if date_to %}<input type="hidden" name="date_to" value="{{ date_to }}">{% endif %}
+                <input type="search" name="query" value="{{ query }}" placeholder="Search emails…"
+                       list="senders-datalist" autocomplete="off">
                 <button type="submit">Search</button>
             </form>
+
+            <!-- Date range filter -->
+            <form class="inbox-search" action="{{ url_for('main.inbox') }}" method="get" style="gap:6px">
+                {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
+                {% if selected_category %}<input type="hidden" name="category" value="{{ selected_category }}">{% endif %}
+                {% if query %}<input type="hidden" name="query" value="{{ query }}">{% endif %}
+                <label class="inbox-date-filter">
+                    From <input type="date" name="date_from" value="{{ date_from }}" style="width:130px">
+                </label>
+                <label class="inbox-date-filter">
+                    To <input type="date" name="date_to" value="{{ date_to }}" style="width:130px">
+                </label>
+                <button type="submit" class="btn btn-ghost" style="padding:5px 12px;font-size:.82rem">Filter</button>
+                {% if date_from or date_to %}
+                <a href="{{ url_for('main.inbox') }}{% if source_account %}?source_account={{ source_account }}{% endif %}"
+                   class="btn btn-ghost" style="padding:5px 12px;font-size:.82rem">Clear</a>
+                {% endif %}
+            </form>
+
             {% if imap_accounts %}
             <div class="inbox-account-tabs">
                 <a href="{{ url_for('main.inbox') }}{% if selected_category %}?category={{ selected_category }}{% endif %}"
@@ -36,14 +59,24 @@
         </div>
     </div>
 
+    <!-- Category pills -->
     {% if categories %}
     <div class="inbox-categories">
         <a href="{{ url_for('main.inbox') }}{% if source_account %}?source_account={{ source_account | urlencode }}{% endif %}"
-           class="category-pill {% if not selected_category %}active{% endif %}">All</a>
+           class="category-pill {% if not selected_category and not selected_tag %}active{% endif %}">All</a>
         {% for item in categories %}
         <a href="{{ url_for('main.inbox') }}?category={{ item.category | urlencode }}{% if source_account %}&source_account={{ source_account | urlencode }}{% endif %}"
            class="category-pill {% if selected_category == item.category %}active{% endif %}">
             {{ item.category }} <span>{{ item.count }}</span>
+        </a>
+        {% endfor %}
+        <!-- Custom tag pills -->
+        {% for tag in tags %}
+        <a href="{{ url_for('main.inbox') }}?tag_id={{ tag.id }}{% if source_account %}&source_account={{ source_account | urlencode }}{% endif %}"
+           class="category-pill {% if selected_tag == tag.id %}active{% endif %}"
+           style="{% if selected_tag == tag.id %}background:{{ tag.color }};border-color:{{ tag.color }};color:#fff{% endif %}">
+            <span class="tag-dot" style="background:{{ tag.color }};width:8px;height:8px;margin-right:2px"></span>
+            {{ tag.name }} <span>{{ tag.email_count }}</span>
         </a>
         {% endfor %}
     </div>
@@ -52,24 +85,34 @@
     {% if emails %}
     <div class="inbox-list panel">
         {% for email in emails %}
-        <a class="inbox-row {% if email.priority_score >= 80 %}inbox-row--urgent{% endif %}"
-           href="{{ url_for('main.email_detail', email_id=email.email_id) }}">
-            <div class="inbox-row-avatar">{{ (email.sender or '?')[0].upper() }}</div>
-            <div class="inbox-row-body">
-                <div class="inbox-row-top">
-                    <span class="inbox-row-sender">{{ email.sender or 'Unknown sender' }}</span>
-                    <span class="inbox-row-date">{{ email.received_at|datetimeformat }}</span>
+        <div style="position:relative;display:flex;align-items:stretch">
+            <a class="inbox-row {% if email.priority_score >= 80 %}inbox-row--urgent{% endif %}"
+               href="{{ url_for('main.email_detail', email_id=email.email_id) }}" style="flex:1">
+                <div class="inbox-row-avatar">{{ (email.sender or '?')[0].upper() }}</div>
+                <div class="inbox-row-body">
+                    <div class="inbox-row-top">
+                        <span class="inbox-row-sender">{{ email.sender or 'Unknown sender' }}</span>
+                        <span class="inbox-row-date">{{ email.received_at|datetimeformat }}</span>
+                    </div>
+                    <div class="inbox-row-subject">{{ email.subject }}</div>
+                    <div class="inbox-row-preview">{{ email.preview or 'No preview available.' }}</div>
                 </div>
-                <div class="inbox-row-subject">{{ email.subject }}</div>
-                <div class="inbox-row-preview">{{ email.preview or 'No preview available.' }}</div>
-            </div>
-            <div class="inbox-row-meta">
-                <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>
-                {% if email.priority_score >= 80 %}
-                <span class="inbox-urgent-dot" title="Urgent">●</span>
-                {% endif %}
-            </div>
-        </a>
+                <div class="inbox-row-meta">
+                    <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>
+                    {% if email.priority_score >= 80 %}
+                    <span class="inbox-urgent-dot" title="Urgent">●</span>
+                    {% endif %}
+                    {% if not email.ai_analyzed %}
+                    <span title="Not yet AI-analyzed" style="font-size:.65rem;color:var(--muted)">◌ AI</span>
+                    {% endif %}
+                </div>
+            </a>
+            <form action="{{ url_for('main.email_hide', email_id=email.email_id) }}" method="post"
+                  style="display:flex;align-items:center;padding:0 12px;border-left:1px solid var(--line)">
+                <button type="submit" class="btn btn-ghost" style="padding:4px 10px;font-size:.72rem;box-shadow:none"
+                        title="Hide email">⊗</button>
+            </form>
+        </div>
         {% endfor %}
     </div>
 
@@ -91,4 +134,12 @@
     </div>
     {% endif %}
 </main>
+
+<datalist id="senders-datalist"></datalist>
+<script>
+fetch('/api/senders').then(r=>r.json()).then(senders=>{
+    const dl = document.getElementById('senders-datalist');
+    senders.forEach(s=>{ const o=document.createElement('option'); o.value=s; dl.appendChild(o); });
+});
+</script>
 {% endblock %}

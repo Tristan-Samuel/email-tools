@@ -5,8 +5,23 @@
 {% block content %}
 <main class="detail-layout">
     <section class="panel detail-header reveal">
-        <div class="detail-nav">
+        <div class="detail-nav" style="display:flex;justify-content:space-between;align-items:center">
             <a class="back-link" href="{{ url_for('main.inbox') }}">&#8592; Back to inbox</a>
+            <div style="display:flex;gap:8px;align-items:center">
+                {% if tags %}
+                <div style="display:flex;gap:6px;flex-wrap:wrap">
+                    {% for tag in tags %}
+                    <span class="tag-chip" style="background:{{ tag.color }}">{{ tag.name }}</span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+                <form action="{{ url_for('main.email_hide' if not email.is_hidden else 'main.email_unhide', email_id=email.email_id) }}" method="post">
+                    <button type="submit" class="btn btn-ghost" style="padding:5px 12px;font-size:.8rem"
+                            title="{% if email.is_hidden %}Restore to inbox{% else %}Hide this email{% endif %}">
+                        {% if email.is_hidden %}↑ Restore{% else %}⊗ Hide{% endif %}
+                    </button>
+                </form>
+            </div>
         </div>
         <div class="detail-header-top">
             <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>
@@ -27,15 +42,26 @@
         <article class="panel reveal">
             <div class="section-heading">
                 <div>
-                    <p class="eyebrow">AI summary</p>
+                    <p class="eyebrow">{% if email.ai_analyzed %}AI summary{% else %}Heuristic summary{% endif %}</p>
                     <h2>Key points</h2>
                 </div>
                 <form action="{{ url_for('main.email_reanalyze', email_id=email.email_id) }}" method="post">
-                    <button type="submit" class="btn {% if groq_available %}btn-teal{% else %}btn-ghost{% endif %}" title="{% if groq_available %}Re-run AI analysis{% else %}Add a Groq key in Settings to enable AI analysis{% endif %}">
+                    <button type="submit" class="btn {% if groq_available %}btn-teal{% else %}btn-ghost{% endif %}"
+                            title="{% if groq_available %}Re-run AI analysis{% else %}Add a Groq key in Settings to enable AI analysis{% endif %}">
                         &#10024; {% if groq_available %}Re-analyse{% else %}Add Groq key{% endif %}
                     </button>
                 </form>
             </div>
+            {% if auto_analyzed %}
+            <div class="flash flash-success" style="margin-bottom:14px;font-size:.85rem">
+                ✨ AI analysis ran automatically on first view.
+            </div>
+            {% endif %}
+            {% if not email.ai_analyzed and not groq_available %}
+            <div class="flash" style="margin-bottom:14px;font-size:.85rem">
+                This is a heuristic summary. <a href="{{ url_for('main.settings') }}">Add a Groq key</a> for AI analysis.
+            </div>
+            {% endif %}
             <ul class="bullet-list">
                 {% for bullet in email.bullet_summary %}
                     <li>{{ bullet }}</li>
@@ -60,6 +86,8 @@
                 <dd>{{ email.category }}</dd>
                 <dt>Priority</dt>
                 <dd>{{ email.priority_score }} / 100</dd>
+                <dt>AI analysed</dt>
+                <dd>{% if email.ai_analyzed %}Yes ✓{% else %}No{% endif %}</dd>
                 <dt>Source</dt>
                 <dd>{{ email.source_name }}</dd>
                 <dt>Message-ID</dt>
@@ -78,6 +106,9 @@
         <div class="email-body-formatted">
             {{ email.body | format_email_body }}
         </div>
+    </section>
+</main>
+{% endblock %}
     </section>
 </main>
 {% endblock %}

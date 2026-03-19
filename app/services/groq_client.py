@@ -156,3 +156,101 @@ class GroqClient:
             return response.json()["choices"][0]["message"]["content"].strip()
         except (requests.RequestException, KeyError, ValueError, TypeError):
             return None
+
+    def classify_email_for_tag(
+        self,
+        tag_name: str,
+        ai_instruction: str,
+        sender: str,
+        subject: str,
+        body: str,
+    ) -> bool:
+        """Return True if AI decides this email should receive the given tag."""
+        if not self.enabled:
+            return False
+
+        instruction = ai_instruction or f"Does this email relate to or belong in the '{tag_name}' tag/category?"
+        payload = {
+            "model": self.default_model,
+            "temperature": 0.1,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": "You produce strict JSON with a single boolean field 'match'."},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Tag name: {tag_name}\n"
+                        f"Question: {instruction}\n\n"
+                        f"Sender: {sender or 'Unknown'}\n"
+                        f"Subject: {subject}\n"
+                        f"Body (first 3000 chars):\n{body[:3000]}\n\n"
+                        "Respond with JSON: {\"match\": true} or {\"match\": false}"
+                    ),
+                },
+            ],
+        }
+        try:
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=self._headers(),
+                json=payload,
+                timeout=20,
+            )
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            parsed = content if isinstance(content, dict) else json.loads(content)
+            return bool(parsed.get("match", False))
+        except (requests.RequestException, KeyError, ValueError, TypeError):
+            return False
+
+    def identify_action_items(self, emails: list[dict], today: str = "") -> list[dict]:
+        """Return a list of {email_id, subject, sender, reason} for emails needing a response."""
+        if not self.enabled or not emails:
+            return []
+
+        context_parts = []
+        for e in emails[:30]:
+            bullets = e.get("bullet_summary") or []
+            summary = " ".join(bullets) if bullets else (e.get("preview") or "")
+            context_parts.append(
+                f"ID: {e['email_id']}\n"
+                f"Date: {e.get('received_at', 'unknown')}\n"
+                f"From: {e.get('sender', '?')}\n"
+                f"Subject: {e.get('subject', '?')}\n"
+                f"Summary: {summary}"
+            )
+        context = "\n\n---\n\n".join(context_parts)
+        today_line = f"Today's date: {today}\n" if today else ""
+
+        payload = {
+            "model": self.default_model,
+            "temperature": 0.3,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an email triage assistant. Given a list of emails, identify which ones "
+                        "require a response or action from the user. Consider recency — emails sent recently "
+                        "are more urgent. Return JSON: {\"items\": [{\"email_id\": \"...\", \"reason\": \"...\"}]}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"{today_line}Emails:\n\n{context}\n\nWhich of these emails require a response or action now?",
+                },
+            ],
+        }
+        try:
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=self._headers(),
+                json=payload,
+                timeout=40,
+            )
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            parsed = content if isinstance(content, dict) else json.loads(content)
+            return parsed.get("items", [])
+        except (requests.RequestException, KeyError, ValueError, TypeError):
+            return []

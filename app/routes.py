@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 
-from flask import Blueprint, current_app, flash, g, redirect, render_template, request, session, url_for
+from flask import Blueprint, current_app, flash, g, jsonify, redirect, render_template, request, session, url_for
 
 from .services import crypto, imap_service
 from .services.email_parser import parse_email_upload
@@ -222,13 +223,30 @@ def email_detail(email_id: str):
     if login_redirect is not None:
         return login_redirect
 
-    email = get_store().get_email(email_id, user_email=g.current_user_email)
+    store = get_store()
+    email = store.get_email(email_id, user_email=g.current_user_email)
     if email is None:
         flash("That email could not be found.", "error")
         return redirect(url_for("main.dashboard"))
 
-    groq_available = get_groq_client().enabled
-    return render_template("email_detail.html", email=email, groq_available=groq_available)
+    groq = get_groq_client()
+    # Auto-analyze on first view if not yet AI-analyzed
+    auto_analyzed = False
+    if groq.enabled and not email.get("ai_analyzed"):
+        bullets = groq.summarize_email(
+            sender=email["sender"],
+            subject=email["subject"],
+            body=email["body"],
+        )
+        if bullets:
+            store.update_email_summary(email_id, g.current_user_email, bullets)
+            email["bullet_summary"] = bullets
+            email["ai_analyzed"] = 1
+            auto_analyzed = True
+
+    tags = store.get_email_tags(email_id)
+    return render_template("email_detail.html", email=email, groq_available=groq.enabled,
+                           auto_analyzed=auto_analyzed, tags=tags)
 
 
 @bp.post("/email/<email_id>/reanalyze")
@@ -259,6 +277,26 @@ def email_reanalyze(email_id: str):
     else:
         flash("AI analysis failed — check your Groq key in Settings.", "error")
     return redirect(url_for("main.email_detail", email_id=email_id))
+
+
+@bp.post("/email/<email_id>/hide")
+def email_hide(email_id: str):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    get_store().set_email_hidden(email_id, g.current_user_email, True)
+    flash("Email hidden.", "success")
+    return redirect(request.referrer or url_for("main.inbox"))
+
+
+@bp.post("/email/<email_id>/unhide")
+def email_unhide(email_id: str):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    get_store().set_email_hidden(email_id, g.current_user_email, False)
+    flash("Email restored to inbox.", "success")
+    return redirect(request.referrer or url_for("main.hidden"))
 
 
 # ---------------------------------------------------------------------------
@@ -434,33 +472,36 @@ def search_page():
     query = request.args.get("query", "").strip()
     sender_filter = request.args.get("from_", "").strip()
     recipient_filter = request.args.get("to_", "").strip()
+    subject_filter = request.args.get("subject_", "").strip()
     category = request.args.get("category") or None
     source_account = request.args.get("source_account") or None
+    date_from = request.args.get("date_from", "").strip() or None
+    date_to = request.args.get("date_to", "").strip() or None
+    tag_filter_raw = request.args.get("tag_id", "").strip()
+    tag_filter = int(tag_filter_raw) if tag_filter_raw.isdigit() else None
     ai_mode = request.args.get("ai") == "1"
     user_email = g.current_user_email
 
     emails: list = []
     ai_answer: str | None = None
-    searched = bool(query or sender_filter or recipient_filter or category)
+    searched = bool(query or sender_filter or recipient_filter or subject_filter or category or date_from or date_to or tag_filter)
 
     if searched:
+        common_kwargs = dict(
+            user_email=user_email,
+            source_account=source_account,
+            sender_filter=sender_filter or None,
+            recipient_filter=recipient_filter or None,
+            subject_filter=subject_filter or None,
+            category=category,
+            date_from=date_from,
+            date_to=date_to,
+            tag_filter=tag_filter,
+        )
         if query:
-            emails = store.search(
-                query,
-                user_email=user_email,
-                source_account=source_account,
-                sender_filter=sender_filter or None,
-                recipient_filter=recipient_filter or None,
-                category=category,
-            )
+            emails = store.search(query, **common_kwargs)
         else:
-            emails = store.list_emails(
-                user_email=user_email,
-                source_account=source_account,
-                sender_filter=sender_filter or None,
-                recipient_filter=recipient_filter or None,
-                category=category,
-            )
+            emails = store.list_emails(**common_kwargs)
 
         if ai_mode and query:
             groq = get_groq_client()
@@ -470,6 +511,7 @@ def search_page():
                 flash("Add a Groq API key in Settings to use AI search.", "error")
 
     categories = store.get_categories(user_email=user_email)
+    tags = store.list_tags(user_email)
     groq_available = get_groq_client().enabled
     return render_template(
         "search.html",
@@ -477,6 +519,7 @@ def search_page():
         query=query,
         sender_filter=sender_filter,
         recipient_filter=recipient_filter,
+        subject_filter=subject_filter,
         selected_category=category,
         categories=categories,
         source_account=source_account,
@@ -484,6 +527,10 @@ def search_page():
         ai_answer=ai_answer,
         searched=searched,
         groq_available=groq_available,
+        date_from=date_from or "",
+        date_to=date_to or "",
+        tags=tags,
+        selected_tag=tag_filter,
     )
 
 
@@ -497,15 +544,30 @@ def inbox():
     source_account = request.args.get("source_account") or None
     query = request.args.get("query", "").strip()
     category = request.args.get("category") or None
+    date_from = request.args.get("date_from", "").strip() or None
+    date_to = request.args.get("date_to", "").strip() or None
+    tag_filter_raw = request.args.get("tag_id", "").strip()
+    tag_filter = int(tag_filter_raw) if tag_filter_raw.isdigit() else None
     user_email = g.current_user_email
 
+    common_kwargs = dict(
+        user_email=user_email,
+        source_account=source_account,
+        category=category,
+        date_from=date_from,
+        date_to=date_to,
+        tag_filter=tag_filter,
+    )
+
     if query:
-        emails = store.search(query, user_email=user_email, source_account=source_account)
+        emails = store.search(query, **common_kwargs)
     else:
-        emails = store.list_emails(limit=200, category=category, user_email=user_email, source_account=source_account)
+        emails = store.list_emails(limit=200, **common_kwargs)
 
     imap_accounts = store.list_imap_accounts(user_email)
     categories = store.get_categories(user_email=user_email, source_account=source_account)
+    tags = store.list_tags(user_email)
+    hidden_count = len(store.list_emails(user_email=user_email, only_hidden=True, exclude_hidden=False, limit=1000))
 
     return render_template(
         "inbox.html",
@@ -515,6 +577,11 @@ def inbox():
         source_account=source_account,
         selected_category=category,
         query=query,
+        tags=tags,
+        selected_tag=tag_filter,
+        date_from=date_from or "",
+        date_to=date_to or "",
+        hidden_count=hidden_count,
     )
 
 
@@ -535,6 +602,214 @@ def settings():
     active_model = current_app.config.get("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile")
     return render_template("settings.html", saved_key=saved_key, active_model=active_model)
 
+
+# ---------------------------------------------------------------------------
+# Senders / recipients API (for autofill datalists)
+# ---------------------------------------------------------------------------
+
+@bp.get("/api/senders")
+def api_senders():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return jsonify([])
+    senders = get_store().get_senders(g.current_user_email)
+    return jsonify(senders)
+
+
+@bp.get("/api/recipients")
+def api_recipients():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return jsonify([])
+    recipients = get_store().get_recipients(g.current_user_email)
+    return jsonify(recipients)
+
+
+# ---------------------------------------------------------------------------
+# Hidden / filtered emails
+# ---------------------------------------------------------------------------
+
+@bp.get("/hidden")
+def hidden():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    user_email = g.current_user_email
+    emails = store.list_emails(user_email=user_email, only_hidden=True, exclude_hidden=False, limit=500)
+    return render_template("hidden.html", emails=emails)
+
+
+# ---------------------------------------------------------------------------
+# Respond-now AI digest
+# ---------------------------------------------------------------------------
+
+@bp.get("/respond-now")
+def respond_now():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    groq = get_groq_client()
+    if not groq.enabled:
+        flash("Add a Groq API key in Settings to use AI triage.", "error")
+        return redirect(url_for("main.inbox"))
+
+    store = get_store()
+    user_email = g.current_user_email
+    # Use recent emails for triage
+    recent = store.list_emails(user_email=user_email, limit=50)
+    today = datetime.date.today().isoformat()
+    action_items = groq.identify_action_items(recent, today=today)
+
+    # Build a map for quick lookup
+    email_map = {e["email_id"]: e for e in recent}
+    results = []
+    for item in action_items:
+        eid = item.get("email_id", "")
+        if eid in email_map:
+            results.append({"email": email_map[eid], "reason": item.get("reason", "")})
+
+    return render_template("respond_now.html", results=results, total=len(recent))
+
+
+# ---------------------------------------------------------------------------
+# Custom tags management
+# ---------------------------------------------------------------------------
+
+@bp.route("/tags", methods=["GET", "POST"])
+def tags():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    user_email = g.current_user_email
+
+    if request.method == "POST":
+        name = (request.form.get("name") or "").strip()
+        color = (request.form.get("color") or "#888888").strip()
+        use_ai = bool(request.form.get("use_ai"))
+        ai_instruction = (request.form.get("ai_instruction") or "").strip()
+        hide_matching = bool(request.form.get("hide_matching"))
+
+        if not name:
+            flash("Tag name is required.", "error")
+        else:
+            tag_id = store.save_tag(user_email, name, color, use_ai, ai_instruction, hide_matching)
+
+            # Process rules
+            fields = request.form.getlist("rule_field")
+            operators = request.form.getlist("rule_operator")
+            values = request.form.getlist("rule_value")
+            store.clear_tag_rules(tag_id)
+            for field, operator, value in zip(fields, operators, values):
+                if field and operator and value.strip():
+                    store.save_tag_rule(tag_id, field, operator, value.strip())
+
+            flash(f"Tag '{name}' saved.", "success")
+        return redirect(url_for("main.tags"))
+
+    user_tags = store.list_tags(user_email)
+    groq_available = get_groq_client().enabled
+    return render_template("tags.html", tags=user_tags, groq_available=groq_available)
+
+
+@bp.route("/tags/<int:tag_id>/edit", methods=["GET", "POST"])
+def tags_edit(tag_id: int):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    user_email = g.current_user_email
+    tag = store.get_tag(tag_id, user_email)
+    if tag is None:
+        flash("Tag not found.", "error")
+        return redirect(url_for("main.tags"))
+
+    if request.method == "POST":
+        name = (request.form.get("name") or "").strip()
+        color = (request.form.get("color") or "#888888").strip()
+        use_ai = bool(request.form.get("use_ai"))
+        ai_instruction = (request.form.get("ai_instruction") or "").strip()
+        hide_matching = bool(request.form.get("hide_matching"))
+
+        if not name:
+            flash("Tag name is required.", "error")
+        else:
+            store.update_tag(tag_id, user_email, name, color, use_ai, ai_instruction, hide_matching)
+            fields = request.form.getlist("rule_field")
+            operators = request.form.getlist("rule_operator")
+            values = request.form.getlist("rule_value")
+            store.clear_tag_rules(tag_id)
+            for field, operator, value in zip(fields, operators, values):
+                if field and operator and value.strip():
+                    store.save_tag_rule(tag_id, field, operator, value.strip())
+            flash(f"Tag '{name}' updated.", "success")
+            return redirect(url_for("main.tags"))
+
+    groq_available = get_groq_client().enabled
+    return render_template("tags_edit.html", tag=tag, groq_available=groq_available)
+
+
+@bp.post("/tags/<int:tag_id>/delete")
+def tags_delete(tag_id: int):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    get_store().delete_tag(tag_id, g.current_user_email)
+    flash("Tag deleted.", "success")
+    return redirect(url_for("main.tags"))
+
+
+@bp.post("/tags/apply")
+def tags_apply():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    updated = get_store().apply_all_manual_tags(g.current_user_email)
+    flash(f"Manual tag rules applied — {updated} new tag assignment(s).", "success")
+    return redirect(url_for("main.tags"))
+
+
+@bp.post("/tags/<int:tag_id>/apply-ai")
+def tags_apply_ai(tag_id: int):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    user_email = g.current_user_email
+    tag = store.get_tag(tag_id, user_email)
+    if tag is None:
+        flash("Tag not found.", "error")
+        return redirect(url_for("main.tags"))
+
+    groq = get_groq_client()
+    if not groq.enabled:
+        flash("Add a Groq API key in Settings to use AI tagging.", "error")
+        return redirect(url_for("main.tags"))
+
+    emails = store.list_emails(user_email=user_email, limit=200, exclude_hidden=False)
+    tagged = 0
+    for email in emails:
+        match = groq.classify_email_for_tag(
+            tag_name=tag["name"],
+            ai_instruction=tag["ai_instruction"],
+            sender=email.get("sender", ""),
+            subject=email.get("subject", ""),
+            body=email.get("body", ""),
+        )
+        if match:
+            store.set_email_tags(email["email_id"], list({t["id"] for t in store.get_email_tags(email["email_id"])} | {tag_id}))
+            tagged += 1
+            if tag["hide_matching"]:
+                store.set_email_hidden(email["email_id"], user_email, True)
+
+    flash(f"AI tagging complete — {tagged} email(s) tagged as '{tag['name']}'.", "success")
+    return redirect(url_for("main.tags"))
 
 def register_routes(app):
     app.register_blueprint(bp)

@@ -25,6 +25,8 @@
                     <a href="{{ url_for('main.dashboard') }}" class="topbar-nav-link {% if request.endpoint == 'main.dashboard' %}topbar-nav-link--active{% endif %}">Dashboard</a>
                     <a href="{{ url_for('main.search_page') }}" class="topbar-nav-link {% if request.endpoint == 'main.search_page' %}topbar-nav-link--active{% endif %}">Search</a>
                     <a href="{{ url_for('main.accounts') }}" class="topbar-nav-link {% if request.endpoint in ['main.accounts','main.accounts_add'] %}topbar-nav-link--active{% endif %}">Accounts</a>
+                    <a href="{{ url_for('main.tags') }}" class="topbar-nav-link {% if request.endpoint in ['main.tags','main.tags_edit'] %}topbar-nav-link--active{% endif %}">Tags</a>
+                    <a href="{{ url_for('main.respond_now') }}" class="topbar-nav-link {% if request.endpoint == 'main.respond_now' %}topbar-nav-link--active{% endif %}">Respond Now</a>
                 </nav>
                 <form class="searchbar" action="{{ url_for('main.search_page') }}" method="get">
                     <input type="search" name="query" value="{{ query|default('') }}" placeholder="Search emails…">

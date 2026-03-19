@@ -25,8 +25,8 @@ body {
     font-family: "Manrope", "Segoe UI", sans-serif;
     color: var(--text);
     background:
-        radial-gradient(circle at top left, rgba(198, 97, 50, 0.18), transparent 28%),
-        radial-gradient(circle at top right, rgba(45, 143, 133, 0.12), transparent 32%),
+        radial-gradient(circle at 38% top, rgba(198, 97, 50, 0.15), transparent 32%),
+        radial-gradient(circle at 72% top, rgba(45, 143, 133, 0.10), transparent 30%),
         linear-gradient(180deg, #f7f2ea 0%, #f3eee7 44%, #ece4d7 100%);
 }
 
@@ -36,7 +36,7 @@ a {
 }
 
 .page-shell {
-    width: min(1020px, calc(100% - 32px));
+    width: min(1340px, calc(100% - 32px));
     margin: 0 auto;
     padding: 20px 0 48px;
 }
@@ -1366,4 +1366,236 @@ h2 {
     font-size: .78rem;
     color: var(--muted);
     margin: 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Custom tags                                                          */
+/* ------------------------------------------------------------------ */
+.tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: .78rem;
+    font-weight: 700;
+    color: #fff;
+    white-space: nowrap;
+}
+
+.tag-chip-sm {
+    padding: 2px 8px;
+    font-size: .72rem;
+}
+
+.tags-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.tag-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 18px 24px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    flex-wrap: wrap;
+}
+
+.tag-card-left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex: 1;
+    min-width: 0;
+}
+
+.tag-dot {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.tag-info {
+    min-width: 0;
+}
+
+.tag-name {
+    font-size: 1rem;
+    font-weight: 700;
+    margin: 0 0 2px;
+}
+
+.tag-meta {
+    font-size: .8rem;
+    color: var(--muted);
+    margin: 0;
+}
+
+.tag-rules-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 8px;
+}
+
+.tag-rule-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.tag-rule-row select,
+.tag-rule-row input[type="text"] {
+    padding: 7px 10px;
+    border-radius: 10px;
+    border: 1.5px solid var(--line);
+    background: var(--bg);
+    font: inherit;
+    font-size: .88rem;
+}
+
+.tag-add-rule {
+    background: none;
+    border: 1.5px dashed var(--line);
+    border-radius: 10px;
+    padding: 7px 14px;
+    font-size: .82rem;
+    color: var(--muted);
+    cursor: pointer;
+    box-shadow: none;
+    transition: border-color .15s, color .15s;
+    text-decoration: none;
+    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.tag-add-rule:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    transform: none;
+}
+
+.tag-editor-panel {
+    background: var(--panel-strong);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: 32px 36px;
+}
+
+.tag-color-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.tag-color-row input[type="color"] {
+    width: 40px;
+    height: 36px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    padding: 2px;
+    background: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* Hidden emails page                                                   */
+/* ------------------------------------------------------------------ */
+.hidden-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 14px;
+    border-radius: 999px;
+    background: rgba(30,36,48,.07);
+    font-size: .8rem;
+    font-weight: 600;
+    color: var(--muted);
+    text-decoration: none;
+    transition: background .15s, color .15s;
+    white-space: nowrap;
+}
+
+.hidden-link:hover {
+    background: var(--bg-strong);
+    color: var(--text);
+}
+
+.hidden-badge {
+    background: rgba(198,97,50,.15);
+    color: var(--accent-deep);
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-size: .72rem;
+    font-weight: 800;
+}
+
+/* ------------------------------------------------------------------ */
+/* Respond-now page                                                     */
+/* ------------------------------------------------------------------ */
+.respond-list {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.respond-card {
+    display: flex;
+    gap: 18px;
+    padding: 20px 24px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+
+.respond-card-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.respond-reason {
+    font-size: .87rem;
+    color: var(--teal);
+    font-weight: 600;
+    margin: 6px 0 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Date filter extras                                                   */
+/* ------------------------------------------------------------------ */
+.search-date-row {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    align-items: flex-end;
+}
+
+.inbox-date-filter {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: .82rem;
+    font-weight: 600;
+    color: var(--muted);
+}
+
+.inbox-date-filter input[type="date"] {
+    padding: 5px 9px;
+    border-radius: 10px;
+    border: 1.5px solid var(--line);
+    background: var(--bg);
+    font: inherit;
+    font-size: .84rem;
+    color: var(--text);
 }

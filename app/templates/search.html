@@ -12,7 +12,8 @@
         <form action="{{ url_for('main.search_page') }}" method="get" class="search-form">
             <div class="search-main-row">
                 <input type="search" name="query" value="{{ query }}"
-                       placeholder="Keywords, topics, phrases…" class="search-query-input" autofocus>
+                       placeholder="Keywords, topics, phrases…" class="search-query-input" autofocus
+                       id="search-query">
                 <button type="submit" class="btn btn-primary btn-lg">Search</button>
             </div>
 
@@ -20,12 +21,19 @@
                 <label class="search-filter-label">
                     <span>From</span>
                     <input type="text" name="from_" value="{{ sender_filter }}"
-                           placeholder="sender@example.com" class="form-input">
+                           placeholder="sender@example.com" class="form-input"
+                           list="senders-datalist" autocomplete="off">
                 </label>
                 <label class="search-filter-label">
                     <span>To</span>
                     <input type="text" name="to_" value="{{ recipient_filter }}"
-                           placeholder="recipient@example.com" class="form-input">
+                           placeholder="recipient@example.com" class="form-input"
+                           list="recipients-datalist" autocomplete="off">
+                </label>
+                <label class="search-filter-label">
+                    <span>Subject</span>
+                    <input type="text" name="subject_" value="{{ subject_filter }}"
+                           placeholder="Subject contains…" class="form-input">
                 </label>
                 <label class="search-filter-label">
                     <span>Category</span>
@@ -37,6 +45,30 @@
                         </option>
                         {% endfor %}
                     </select>
+                </label>
+                {% if tags %}
+                <label class="search-filter-label">
+                    <span>Tag</span>
+                    <select name="tag_id" class="form-input">
+                        <option value="">All tags</option>
+                        {% for tag in tags %}
+                        <option value="{{ tag.id }}" {% if selected_tag == tag.id %}selected{% endif %}>
+                            {{ tag.name }} ({{ tag.email_count }})
+                        </option>
+                        {% endfor %}
+                    </select>
+                </label>
+                {% endif %}
+            </div>
+
+            <div class="search-filters-row">
+                <label class="search-filter-label">
+                    <span>Date from</span>
+                    <input type="date" name="date_from" value="{{ date_from }}" class="form-input">
+                </label>
+                <label class="search-filter-label">
+                    <span>Date to</span>
+                    <input type="date" name="date_to" value="{{ date_to }}" class="form-input">
                 </label>
                 <label class="search-filter-label search-ai-toggle">
                     <span>Ask AI</span>
@@ -52,6 +84,10 @@
             </div>
         </form>
     </section>
+
+    <!-- Autofill datalists (populated via JS) -->
+    <datalist id="senders-datalist"></datalist>
+    <datalist id="recipients-datalist"></datalist>
 
     {% if ai_answer %}
     <section class="panel search-ai-answer reveal">
@@ -76,22 +112,29 @@
         {% if emails %}
         <div class="inbox-list">
             {% for email in emails %}
-            <a class="inbox-row {% if email.priority_score >= 80 %}inbox-row--urgent{% endif %}"
-               href="{{ url_for('main.email_detail', email_id=email.email_id) }}">
-                <div class="inbox-row-avatar">{{ (email.sender or '?')[0].upper() }}</div>
-                <div class="inbox-row-body">
-                    <div class="inbox-row-top">
-                        <span class="inbox-row-sender">{{ email.sender or 'Unknown sender' }}</span>
-                        <span class="inbox-row-date">{{ email.received_at|datetimeformat }}</span>
+            <div class="inbox-row-wrapper" style="position:relative">
+                <a class="inbox-row {% if email.priority_score >= 80 %}inbox-row--urgent{% endif %}"
+                   href="{{ url_for('main.email_detail', email_id=email.email_id) }}">
+                    <div class="inbox-row-avatar">{{ (email.sender or '?')[0].upper() }}</div>
+                    <div class="inbox-row-body">
+                        <div class="inbox-row-top">
+                            <span class="inbox-row-sender">{{ email.sender or 'Unknown sender' }}</span>
+                            <span class="inbox-row-date">{{ email.received_at|datetimeformat }}</span>
+                        </div>
+                        <div class="inbox-row-subject">{{ email.subject }}</div>
+                        <div class="inbox-row-preview">{{ email.preview or 'No preview available.' }}</div>
                     </div>
-                    <div class="inbox-row-subject">{{ email.subject }}</div>
-                    <div class="inbox-row-preview">{{ email.preview or 'No preview available.' }}</div>
-                </div>
-                <div class="inbox-row-meta">
-                    <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>
-                    {% if email.priority_score >= 80 %}<span class="inbox-urgent-dot">●</span>{% endif %}
-                </div>
-            </a>
+                    <div class="inbox-row-meta">
+                        <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>
+                        {% if email.priority_score >= 80 %}<span class="inbox-urgent-dot">●</span>{% endif %}
+                    </div>
+                </a>
+                <form action="{{ url_for('main.email_hide', email_id=email.email_id) }}" method="post"
+                      style="position:absolute;right:8px;top:50%;transform:translateY(-50%);z-index:2">
+                    <button type="submit" class="btn btn-ghost" style="padding:4px 8px;font-size:.72rem"
+                            title="Hide this email">Hide</button>
+                </form>
+            </div>
             {% endfor %}
         </div>
         {% else %}
@@ -104,4 +147,15 @@
     {% endif %}
 
 </main>
+<script>
+// Populate autofill datalists
+fetch('/api/senders').then(r=>r.json()).then(senders=>{
+    const dl = document.getElementById('senders-datalist');
+    senders.forEach(s=>{ const o=document.createElement('option'); o.value=s; dl.appendChild(o); });
+});
+fetch('/api/recipients').then(r=>r.json()).then(recipients=>{
+    const dl = document.getElementById('recipients-datalist');
+    recipients.forEach(s=>{ const o=document.createElement('option'); o.value=s; dl.appendChild(o); });
+});
+</script>
 {% endblock %}
