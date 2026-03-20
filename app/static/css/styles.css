@@ -20,7 +20,7 @@
 }
 
 html {
-    overflow-x: hidden;
+    overflow-x: clip;
 }
 
 body {
@@ -41,10 +41,10 @@ a {
 }
 
 .page-shell {
-    max-width: 1340px;
-    width: calc(100% - 32px);
+    max-width: 1372px;
+    width: 100%;
     margin: 0 auto;
-    padding: 20px 0 48px;
+    padding: 20px 16px 48px;
 }
 
 .topbar {
@@ -1721,6 +1721,8 @@ h2 {
 
 .inbox-list.compact .inbox-row-top {
     flex-shrink: 0;
+    max-width: 42%;
+    overflow: hidden;
 }
 
 .inbox-list.compact .inbox-row-subject {
@@ -1769,11 +1771,17 @@ h2 {
 }
 
 .inbox-list.card-grid .inbox-row {
-    padding: 14px;
+    display: flex;
     flex-direction: column;
     align-items: flex-start;
+    padding: 14px;
     gap: 6px;
     border-bottom: none;
+    width: 100%;
+}
+
+.inbox-list.card-grid > div > form {
+    display: none;
 }
 
 .inbox-list.card-grid .inbox-row-top {
