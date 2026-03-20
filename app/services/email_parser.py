@@ -96,6 +96,26 @@ def build_message_id(message, body: str) -> str:
     return hashlib.sha1(source.encode("utf-8", errors="ignore")).hexdigest()
 
 
+MAILING_LIST_HEADERS = frozenset([
+    "list-id", "list-unsubscribe", "list-post", "list-archive",
+    "list-help", "x-mailchimp-id", "x-campaign", "x-mailer",
+    "precedence",
+])
+MAILING_LIST_PRECEDENCE = frozenset(["bulk", "list", "junk"])
+
+
+def is_mailing_list_message(message) -> bool:
+    """Return True if the message looks like a bulk/mailing-list email."""
+    for header in MAILING_LIST_HEADERS:
+        if message.get(header):
+            if header == "precedence":
+                if (message.get(header) or "").strip().lower() in MAILING_LIST_PRECEDENCE:
+                    return True
+            else:
+                return True
+    return False
+
+
 def parse_message(message) -> dict:
     body = extract_body(message)
     return {
@@ -107,6 +127,7 @@ def parse_message(message) -> dict:
         "cc": parse_address_header(message.get("cc")),
         "received_at": parsed_timestamp(message),
         "body": body,
+        "is_mailing_list": 1 if is_mailing_list_message(message) else 0,
     }
 
 

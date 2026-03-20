@@ -7,7 +7,13 @@
     <div class="inbox-toolbar">
         <div class="inbox-toolbar-left">
             <h1 class="inbox-title">Inbox</h1>
-            <span class="inbox-count">{{ emails|length }} message{{ 's' if emails|length != 1 else '' }}</span>
+            <span class="inbox-count">{{ emails|length }} shown</span>
+            {% if unread_count > 0 %}
+            <a href="{{ url_for('main.inbox') }}?unread=1{% if source_account %}&source_account={{ source_account }}{% endif %}"
+               class="hidden-link {% if only_unread %}hidden-link--active{% endif %}">
+                Unread <span class="hidden-badge">{{ unread_count }}</span>
+            </a>
+            {% endif %}
             {% if hidden_count > 0 %}
             <a href="{{ url_for('main.hidden') }}" class="hidden-link">
                 Hidden <span class="hidden-badge">{{ hidden_count }}</span>
@@ -58,6 +64,32 @@
                    class="btn btn-ghost" style="padding:5px 12px;font-size:.82rem">Clear</a>
                 {% endif %}
             </form>
+
+            <!-- Quick filter toggles -->
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <a href="{{ url_for('main.inbox') }}?unread={{ '0' if only_unread else '1' }}{% if source_account %}&source_account={{ source_account }}{% endif %}{% if selected_category %}&category={{ selected_category }}{% endif %}{% if sort != 'date_desc' %}&sort={{ sort }}{% endif %}"
+                   class="btn btn-ghost {% if only_unread %}btn-ghost--active{% endif %}" style="padding:5px 12px;font-size:.82rem">
+                    Unread only
+                </a>
+                <a href="{{ url_for('main.inbox') }}?no_lists={{ '0' if exclude_mailing_list else '1' }}{% if source_account %}&source_account={{ source_account }}{% endif %}{% if selected_category %}&category={{ selected_category }}{% endif %}{% if sort != 'date_desc' %}&sort={{ sort }}{% endif %}{% if only_unread %}&unread=1{% endif %}"
+                   class="btn btn-ghost {% if exclude_mailing_list %}btn-ghost--active{% endif %}" style="padding:5px 12px;font-size:.82rem">
+                    No lists
+                </a>
+                <select class="sort-select" onchange="location.href=this.value">
+                    <option value="{{ url_for('main.inbox') }}?limit=50{% if source_account %}&source_account={{ source_account }}{% endif %}{% if sort != 'date_desc' %}&sort={{ sort }}{% endif %}{% if only_unread %}&unread=1{% endif %}{% if exclude_mailing_list %}&no_lists=1{% endif %}" {% if limit == 50 %}selected{% endif %}>Show 50</option>
+                    <option value="{{ url_for('main.inbox') }}?limit=200{% if source_account %}&source_account={{ source_account }}{% endif %}{% if sort != 'date_desc' %}&sort={{ sort }}{% endif %}{% if only_unread %}&unread=1{% endif %}{% if exclude_mailing_list %}&no_lists=1{% endif %}" {% if limit == 200 %}selected{% endif %}>Show 200</option>
+                    <option value="{{ url_for('main.inbox') }}?limit=500{% if source_account %}&source_account={{ source_account }}{% endif %}{% if sort != 'date_desc' %}&sort={{ sort }}{% endif %}{% if only_unread %}&unread=1{% endif %}{% if exclude_mailing_list %}&no_lists=1{% endif %}" {% if limit == 500 %}selected{% endif %}>Show 500</option>
+                    <option value="{{ url_for('main.inbox') }}?limit=5000{% if source_account %}&source_account={{ source_account }}{% endif %}{% if sort != 'date_desc' %}&sort={{ sort }}{% endif %}{% if only_unread %}&unread=1{% endif %}{% if exclude_mailing_list %}&no_lists=1{% endif %}" {% if limit == 5000 %}selected{% endif %}>Show all</option>
+                </select>
+            </div>
+
+            <!-- View toggle -->
+            <div class="view-toggle">
+                <button class="view-toggle-btn active" data-view="normal" title="Normal view">≡</button>
+                <button class="view-toggle-btn" data-view="compact" title="Compact view">☰</button>
+                <button class="view-toggle-btn" data-view="titles-only" title="Titles only">—</button>
+                <button class="view-toggle-btn" data-view="card-grid" title="Card grid">⊞</button>
+            </div>
 
             {% if imap_accounts %}
             <div class="inbox-account-tabs">
@@ -157,5 +189,20 @@ fetch('/api/senders').then(r=>r.json()).then(senders=>{
     const dl = document.getElementById('senders-datalist');
     senders.forEach(s=>{ const o=document.createElement('option'); o.value=s; dl.appendChild(o); });
 });
+
+// View toggle
+const list = document.querySelector('.inbox-list');
+const btns = document.querySelectorAll('.view-toggle-btn');
+const VIEWS = ['normal','compact','titles-only','card-grid'];
+const saved = localStorage.getItem('inboxView') || 'normal';
+const setView = v => {
+    if (!list) return;
+    VIEWS.forEach(x => list.classList.remove(x));
+    if (v !== 'normal') list.classList.add(v);
+    btns.forEach(b => b.classList.toggle('active', b.dataset.view === v));
+    localStorage.setItem('inboxView', v);
+};
+setView(saved);
+btns.forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
 </script>
 {% endblock %}

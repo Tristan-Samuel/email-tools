@@ -1,9 +1,33 @@
 {% extends "base.html" %}
 
-{% block title %}Inbox Dashboard | Email Intelligence Studio{% endblock %}
+{% block title %}Dashboard | Email Intelligence Studio{% endblock %}
 
 {% block content %}
 <main class="dashboard">
+
+    <!-- ── Recent unread (top priority panel) ─────────────────────── -->
+    {% if recent_unread %}
+    <section class="panel reveal" style="padding:22px 28px">
+        <div class="section-heading" style="margin-bottom:14px">
+            <div>
+                <p class="eyebrow">Action needed</p>
+                <h2 style="font-size:1.35rem">Recent unread</h2>
+            </div>
+            <a href="{{ url_for('main.inbox') }}?unread=1" class="btn btn-ghost" style="padding:5px 14px;font-size:.82rem;flex-shrink:0">View all →</a>
+        </div>
+        <div class="unread-list">
+            {% for email in recent_unread %}
+            <a class="unread-row" href="{{ url_for('main.email_detail', email_id=email.email_id) }}">
+                <span class="unread-sender">{{ (email.sender or 'Unknown').split('<')[0].strip() or email.sender }}</span>
+                <span class="unread-subject">{{ email.subject }}</span>
+                <span class="unread-date">{{ email.received_at|datetimeformat }}</span>
+            </a>
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
+
+    <!-- ── Hero + sync ────────────────────────────────────────────── -->
     <section class="hero panel reveal">
         <div>
             <p class="eyebrow">Professional email triage</p>
@@ -32,7 +56,7 @@
                 <a href="{{ url_for('main.accounts_add') }}" class="btn btn-ghost" style="width:100%;margin-top:.5rem;text-align:center">+ Add Another Account</a>
             {% else %}
                 <p class="eyebrow" style="margin-bottom:.75rem">Get started</p>
-                <p style="font-size:.9rem;margin-bottom:1rem">No inbox connected yet. Log in with your App Password, or add an account below.</p>
+                <p style="font-size:.9rem;margin-bottom:1rem">No inbox connected yet.</p>
                 <a href="{{ url_for('main.accounts_add') }}" class="btn btn-primary" style="width:100%;text-align:center">Connect Your Inbox →</a>
             {% endif %}
         </div>

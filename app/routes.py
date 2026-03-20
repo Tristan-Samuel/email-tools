@@ -160,6 +160,8 @@ def dashboard():
     categories = store.get_categories(user_email=user_email, source_account=source_account)
     digest = build_digest(store.list_emails(limit=50, user_email=user_email, source_account=source_account))
     imap_accounts = store.list_imap_accounts(user_email)
+    recent_unread = store.list_emails(limit=20, user_email=user_email, only_unread=True,
+                                      source_account=source_account, sort="date_desc")
 
     return render_template(
         "dashboard.html",
@@ -171,6 +173,7 @@ def dashboard():
         query=query,
         imap_accounts=imap_accounts,
         source_account=source_account,
+        recent_unread=recent_unread,
     )
 
 
@@ -245,6 +248,9 @@ def email_detail(email_id: str):
             auto_analyzed = True
 
     tags = store.get_email_tags(email_id)
+    # Mark as read on first open
+    if not email.get("is_read"):
+        store.set_email_read(email_id, g.current_user_email, True)
     return render_template("email_detail.html", email=email, groq_available=groq.enabled,
                            auto_analyzed=auto_analyzed, tags=tags)
 
@@ -551,6 +557,10 @@ def inbox():
     sort = request.args.get("sort", "date_desc")
     if sort not in ("date_desc", "date_asc", "priority"):
         sort = "date_desc"
+    only_unread = request.args.get("unread") == "1"
+    exclude_mailing_list = request.args.get("no_lists") == "1"
+    limit_raw = request.args.get("limit", "200")
+    limit = int(limit_raw) if limit_raw.isdigit() and 1 <= int(limit_raw) <= 5000 else 200
     user_email = g.current_user_email
 
     common_kwargs = dict(
@@ -561,17 +571,20 @@ def inbox():
         date_to=date_to,
         tag_filter=tag_filter,
         sort=sort,
+        only_unread=only_unread,
+        exclude_mailing_list=exclude_mailing_list,
     )
 
     if query:
-        emails = store.search(query, **common_kwargs)
+        emails = store.search(query, limit=limit, **common_kwargs)
     else:
-        emails = store.list_emails(limit=200, **common_kwargs)
+        emails = store.list_emails(limit=limit, **common_kwargs)
 
     imap_accounts = store.list_imap_accounts(user_email)
     categories = store.get_categories(user_email=user_email, source_account=source_account)
     tags = store.list_tags(user_email)
     hidden_count = len(store.list_emails(user_email=user_email, only_hidden=True, exclude_hidden=False, limit=1000))
+    unread_count = len(store.list_emails(user_email=user_email, only_unread=True, limit=5000))
 
     return render_template(
         "inbox.html",
@@ -586,7 +599,11 @@ def inbox():
         date_from=date_from or "",
         date_to=date_to or "",
         hidden_count=hidden_count,
+        unread_count=unread_count,
         sort=sort,
+        only_unread=only_unread,
+        exclude_mailing_list=exclude_mailing_list,
+        limit=limit,
     )
 
 

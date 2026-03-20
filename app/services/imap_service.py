@@ -135,6 +135,13 @@ def _parse_raw_bytes(uid_bytes: bytes, raw_bytes: bytes) -> dict | None:
 
     body = _body_text(msg).strip()
 
+    _mailing_list_headers = ("List-ID", "List-Unsubscribe", "List-Post", "List-Archive", "List-Help",
+                              "X-Mailchimp-ID", "X-Campaign")
+    is_mailing_list = any(msg.get(h) for h in _mailing_list_headers)
+    if not is_mailing_list:
+        prec = (_header_str(msg, "Precedence") or "").strip().lower()
+        is_mailing_list = prec in ("bulk", "list", "junk")
+
     return {
         "email_id": email_id,
         "message_id": message_id,
@@ -144,6 +151,7 @@ def _parse_raw_bytes(uid_bytes: bytes, raw_bytes: bytes) -> dict | None:
         "cc": cc,
         "received_at": received_at,
         "body": body or "(no body)",
+        "is_mailing_list": 1 if is_mailing_list else 0,
     }
 
 

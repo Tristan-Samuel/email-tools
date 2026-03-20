@@ -39,7 +39,9 @@ class EmailStore:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     source_account TEXT NOT NULL DEFAULT '',
                     ai_analyzed INTEGER NOT NULL DEFAULT 0,
-                    is_hidden INTEGER NOT NULL DEFAULT 0
+                    is_hidden INTEGER NOT NULL DEFAULT 0,
+                    is_read INTEGER NOT NULL DEFAULT 0,
+                    is_mailing_list INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
@@ -54,6 +56,10 @@ class EmailStore:
                 connection.execute("ALTER TABLE emails ADD COLUMN ai_analyzed INTEGER NOT NULL DEFAULT 0")
             if "is_hidden" not in columns:
                 connection.execute("ALTER TABLE emails ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0")
+            if "is_read" not in columns:
+                connection.execute("ALTER TABLE emails ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0")
+            if "is_mailing_list" not in columns:
+                connection.execute("ALTER TABLE emails ADD COLUMN is_mailing_list INTEGER NOT NULL DEFAULT 0")
 
             connection.execute(
                 """
@@ -162,8 +168,9 @@ class EmailStore:
                         category,
                         priority_score,
                         keywords,
-                        search_blob
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        search_blob,
+                        is_mailing_list
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(email_id) DO UPDATE SET
                         user_email=excluded.user_email,
                         message_id=excluded.message_id,
@@ -181,7 +188,8 @@ class EmailStore:
                         category=excluded.category,
                         priority_score=excluded.priority_score,
                         keywords=excluded.keywords,
-                        search_blob=excluded.search_blob
+                        search_blob=excluded.search_blob,
+                        is_mailing_list=excluded.is_mailing_list
                     """,
                     (
                         record["email_id"],
@@ -201,6 +209,7 @@ class EmailStore:
                         record["priority_score"],
                         json.dumps(record["keywords"]),
                         record["search_blob"],
+                        record.get("is_mailing_list", 0),
                     ),
                 )
                 if self.fts_enabled:
@@ -246,6 +255,8 @@ class EmailStore:
         only_hidden: bool = False,
         tag_filter: int | None = None,
         sort: str = "date_desc",
+        only_unread: bool = False,
+        exclude_mailing_list: bool = False,
     ) -> list[dict]:
         query = "SELECT * FROM emails"
         params: list[object] = []
@@ -279,6 +290,10 @@ class EmailStore:
             conditions.append("is_hidden = 1")
         elif exclude_hidden:
             conditions.append("is_hidden = 0")
+        if only_unread:
+            conditions.append("is_read = 0")
+        if exclude_mailing_list:
+            conditions.append("is_mailing_list = 0")
 
         where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
@@ -321,6 +336,8 @@ class EmailStore:
         only_hidden: bool = False,
         tag_filter: int | None = None,
         sort: str = "date_desc",
+        only_unread: bool = False,
+        exclude_mailing_list: bool = False,
     ) -> list[dict]:
         # Build additional filter clauses for both FTS (JOIN) and LIKE paths.
         fts_extra: list[str] = []
@@ -364,6 +381,10 @@ class EmailStore:
             fts_params.append(tag_filter)
             like_extra.append("email_id IN (SELECT email_id FROM email_tags WHERE tag_id = ?)")
             like_params.append(tag_filter)
+        if only_unread:
+            _add("is_read", "is_read", "=", 0)
+        if exclude_mailing_list:
+            _add("is_mailing_list", "is_mailing_list", "=", 0)
 
         fts_clause = (" AND " + " AND ".join(fts_extra)) if fts_extra else ""
         like_clause = (" AND " + " AND ".join(like_extra)) if like_extra else ""
@@ -622,6 +643,13 @@ class EmailStore:
             connection.execute(
                 "UPDATE emails SET is_hidden = ? WHERE email_id = ? AND user_email = ?",
                 (1 if hidden else 0, email_id, user_email),
+            )
+
+    def set_email_read(self, email_id: str, user_email: str, read: bool = True) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE emails SET is_read = ? WHERE email_id = ? AND user_email = ?",
+                (1 if read else 0, email_id, user_email),
             )
 
     def get_senders(self, user_email: str, limit: int = 150) -> list[str]:
