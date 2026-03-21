@@ -5,9 +5,10 @@
 {% block content %}
 <main class="dashboard">
 
-    <!-- ── Recent unread (top priority panel) ─────────────────────── -->
+    <!-- ── Top row: recent-unread + hero side by side ──────────────── -->
+    <div class="dashboard-top">
     {% if recent_unread %}
-    <section class="panel reveal" style="padding:22px 28px">
+    <section class="panel reveal" style="padding:22px 28px;min-width:0">
         <div class="section-heading" style="margin-bottom:14px">
             <div>
                 <p class="eyebrow">Action needed</p>
@@ -61,6 +62,7 @@
             {% endif %}
         </div>
     </section>
+    </div><!-- /.dashboard-top -->
 
     <section class="stats-grid reveal">
         <article class="stat-card panel">
