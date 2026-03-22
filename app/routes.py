@@ -640,7 +640,7 @@ def settings():
             elif len(new_pw) < 6:
                 flash("Password must be at least 6 characters.", "error")
             else:
-                store.set_app_password(g.current_user_email, generate_password_hash(new_pw))
+                store.set_app_password(g.current_user_email, generate_password_hash(new_pw, method="pbkdf2:sha256"))
                 flash("Account password set. You'll need it the next time you log in.", "success")
             return redirect(url_for("main.settings"))
 
