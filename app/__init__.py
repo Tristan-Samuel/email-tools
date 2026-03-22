@@ -20,6 +20,7 @@ def create_app() -> Flask:
         MAX_CONTENT_LENGTH=50 * 1024 * 1024,
         GROQ_API_KEY=os.environ.get("GROQ_API_KEY", ""),
         GROQ_DEFAULT_MODEL=os.environ.get("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile"),
+        STATIC_VERSION="14",
     )
 
     Path(app.instance_path).mkdir(parents=True, exist_ok=True)
@@ -49,6 +50,7 @@ def create_app() -> Flask:
             "active_accounts": active_accounts,
             "source_account": source_account,
             "query": query,
+            "static_version": app.config.get("STATIC_VERSION", "1"),
         }
 
     @app.template_filter("datetimeformat")

@@ -6,37 +6,54 @@
 <main class="login-layout">
     <section class="panel login-panel reveal is-visible">
         <p class="eyebrow">Account access</p>
-        <h1>Connect your inbox</h1>
+        <h1>Log in to your account</h1>
         <p class="hero-copy">
-            Enter your email to get started. Add your App Password below to connect your inbox
-            directly and pull emails automatically — no file exports needed.
+            Enter your email to access your inbox tools. If you've already connected your inbox,
+            you don't need to enter anything else.
         </p>
         <form action="{{ url_for('main.login') }}" method="post" class="login-form">
             <label for="login-email">Email address</label>
             <input id="login-email" name="email" type="email" required placeholder="you@gmail.com"
+                   value="{{ prefill_email or '' }}"
                    autocomplete="email" oninput="autoFillHost(this.value)">
 
-            <label for="login-password" style="margin-top:1.2rem">
-                App Password <span style="font-weight:400;opacity:.65">(optional — needed to fetch emails directly)</span>
+            {% if needs_app_password %}
+            <label for="app-password" style="margin-top:1.2rem">Account password</label>
+            <input id="app-password" name="app_password" type="password"
+                   placeholder="Your email-tools account password" autocomplete="current-password" autofocus>
+            {% else %}
+            <label for="app-password" style="margin-top:1.2rem">
+                Account password <span style="font-weight:400;opacity:.65">(if you've set one in Settings)</span>
             </label>
-            <input id="login-password" name="password" type="password"
-                   placeholder="xxxx xxxx xxxx xxxx" autocomplete="current-password">
-            <small style="opacity:.7;font-size:.82rem;line-height:1.5;display:block;margin-top:.35rem">
-                Gmail: Google Account → Security → 2-Step Verification → App passwords.<br>
-                Outlook / Yahoo: generate an app password in your account security settings.
-            </small>
+            <input id="app-password" name="app_password" type="password"
+                   placeholder="Leave blank if you haven't set one" autocomplete="current-password">
+            {% endif %}
 
-            <details style="margin-top:1rem">
-                <summary style="cursor:pointer;font-size:.9rem;opacity:.8">Advanced IMAP settings</summary>
-                <div class="form-row" style="margin-top:.75rem">
-                    <label class="form-label" style="flex:1">
-                        IMAP Host
-                        <input id="imap_host" name="imap_host" type="text" value="imap.gmail.com" class="form-input">
-                    </label>
-                    <label class="form-label" style="width:110px">
-                        Port
-                        <input name="imap_port" type="number" value="993" min="1" max="65535" class="form-input">
-                    </label>
+            <hr style="margin:1.5rem 0;border:none;border-top:1px solid var(--line)">
+            <details {% if not needs_app_password %}{% endif %}>
+                <summary style="cursor:pointer;font-weight:700;font-size:.9rem;opacity:.8">Connect a new inbox (first time setup)</summary>
+                <div style="margin-top:1rem;display:grid;gap:.75rem">
+                    <p style="font-size:.85rem;color:var(--muted);margin:0">
+                        Enter your Gmail App Password <em>only</em> if you're connecting an inbox for the first time.
+                        Gmail: Google Account → Security → 2-Step Verification → App passwords.
+                    </p>
+                    <label for="login-password">App Password (Gmail / Outlook / Yahoo)</label>
+                    <input id="login-password" name="password" type="password"
+                           placeholder="xxxx xxxx xxxx xxxx" autocomplete="off">
+
+                    <details>
+                        <summary style="cursor:pointer;font-size:.9rem;opacity:.8">Advanced IMAP settings</summary>
+                        <div class="form-row" style="margin-top:.75rem">
+                            <label class="form-label" style="flex:1">
+                                IMAP Host
+                                <input id="imap_host" name="imap_host" type="text" value="imap.gmail.com" class="form-input">
+                            </label>
+                            <label class="form-label" style="width:110px">
+                                Port
+                                <input name="imap_port" type="number" value="993" min="1" max="65535" class="form-input">
+                            </label>
+                        </div>
+                    </details>
                 </div>
             </details>
 

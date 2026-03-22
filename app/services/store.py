@@ -61,6 +61,13 @@ class EmailStore:
             if "is_mailing_list" not in columns:
                 connection.execute("ALTER TABLE emails ADD COLUMN is_mailing_list INTEGER NOT NULL DEFAULT 0")
 
+            # Migrate user_settings table
+            settings_cols = {
+                row[1] for row in connection.execute("PRAGMA table_info(user_settings)").fetchall()
+            }
+            if "app_password_hash" not in settings_cols:
+                connection.execute("ALTER TABLE user_settings ADD COLUMN app_password_hash TEXT NOT NULL DEFAULT ''")
+
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS imap_accounts (
@@ -83,6 +90,7 @@ class EmailStore:
                 CREATE TABLE IF NOT EXISTS user_settings (
                     user_email TEXT PRIMARY KEY,
                     groq_api_key TEXT NOT NULL DEFAULT '',
+                    app_password_hash TEXT NOT NULL DEFAULT '',
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -624,6 +632,35 @@ class EmailStore:
                     (user_email,),
                 ).fetchone()
             return row["groq_api_key"] if row else ""
+        return ""
+
+    # ------------------------------------------------------------------
+    # App-level account password (separate from Gmail/IMAP credentials)
+    # ------------------------------------------------------------------
+
+    def set_app_password(self, user_email: str, password_hash: str) -> None:
+        """Store a hashed account password for this email-tools user."""
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_settings (user_email, app_password_hash, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_email) DO UPDATE SET
+                    app_password_hash=excluded.app_password_hash,
+                    updated_at=excluded.updated_at
+                """,
+                (user_email, password_hash),
+            )
+
+    def get_app_password_hash(self, user_email: str) -> str:
+        """Return the stored app-password hash, or '' if none set."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT app_password_hash FROM user_settings WHERE user_email = ?",
+                (user_email,),
+            ).fetchone()
+        if row and row["app_password_hash"]:
+            return row["app_password_hash"]
         return ""
 
     def update_email_summary(self, email_id: str, user_email: str, bullet_summary: list[str]) -> None:

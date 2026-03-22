@@ -27,7 +27,6 @@ body {
     margin: 0;
     min-height: 100vh;
     overflow-x: clip;
-    max-width: 100%;
     font-family: "Manrope", "Segoe UI", sans-serif;
     color: var(--text);
     background:
@@ -42,8 +41,7 @@ a {
 }
 
 .page-shell {
-    max-width: 1372px;
-    width: 100%;
+    width: min(1372px, 100%);
     margin: 0 auto;
     padding: 20px 16px 48px;
 }
@@ -61,7 +59,7 @@ a {
     backdrop-filter: blur(14px);
     box-shadow: var(--shadow);
     flex-wrap: nowrap;
-    overflow: hidden;
+    overflow: clip;
 }
 
 .brand {

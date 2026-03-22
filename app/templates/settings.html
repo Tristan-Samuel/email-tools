@@ -15,6 +15,43 @@
         </div>
     </div>
 
+    <!-- Account password -->
+    <section class="panel settings-panel">
+        <h2 class="panel-title">Account Password</h2>
+        <p class="panel-hint">
+            Set a password for your email-tools account so you can log back in securely with just
+            your email + this password — no Gmail App Password needed every time.
+            {% if has_app_password %}
+            <strong style="color:var(--teal)">✓ A password is currently set.</strong>
+            {% else %}
+            No password set — anyone who knows your email can log in on this server.
+            {% endif %}
+        </p>
+        <form action="{{ url_for('main.settings') }}" method="post" class="settings-form">
+            <input type="hidden" name="action" value="set_app_password">
+            <label class="form-label">
+                New account password
+                <input type="password" name="new_app_password" class="form-input"
+                       placeholder="At least 6 characters" autocomplete="new-password">
+            </label>
+            <label class="form-label">
+                Confirm password
+                <input type="password" name="confirm_app_password" class="form-input"
+                       placeholder="Repeat password" autocomplete="new-password">
+            </label>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">{{ 'Change Password' if has_app_password else 'Set Password' }}</button>
+                {% if has_app_password %}
+                <form action="{{ url_for('main.settings') }}" method="post" style="display:inline">
+                    <input type="hidden" name="action" value="remove_app_password">
+                    <button type="submit" class="btn btn-ghost">Remove Password</button>
+                </form>
+                {% endif %}
+            </div>
+        </form>
+    </section>
+
+    <!-- Groq API key -->
     <section class="panel settings-panel">
         <h2 class="panel-title">Groq AI — API Key</h2>
         <p class="panel-hint">
@@ -24,6 +61,7 @@
             The key is stored encrypted in your account.
         </p>
         <form action="{{ url_for('main.settings') }}" method="post" class="settings-form">
+            <input type="hidden" name="action" value="save_groq">
             <label class="form-label">
                 Groq API Key
                 <input
@@ -42,6 +80,7 @@
                 <button type="submit" class="btn btn-primary">Save Settings</button>
                 {% if saved_key %}
                 <form action="{{ url_for('main.settings') }}" method="post" style="display:inline">
+                    <input type="hidden" name="action" value="save_groq">
                     <input type="hidden" name="groq_api_key" value="">
                     <button type="submit" class="btn btn-ghost">Clear Key</button>
                 </form>

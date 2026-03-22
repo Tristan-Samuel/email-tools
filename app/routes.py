@@ -4,6 +4,7 @@ import datetime
 from pathlib import Path
 
 from flask import Blueprint, current_app, flash, g, jsonify, redirect, render_template, request, session, url_for
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from .services import crypto, imap_service
 from .services.email_parser import parse_email_upload
@@ -69,8 +70,20 @@ def login():
             flash("Enter a valid email address.", "error")
             return render_template("login.html")
 
-        session["user_email"] = user_email
         store = get_store()
+
+        # --- Check app-level account password if one has been set ---
+        stored_hash = store.get_app_password_hash(user_email)
+        app_pw = (request.form.get("app_password") or "").strip()
+        if stored_hash:
+            if not app_pw:
+                flash("This account has a password set. Enter it to log in.", "error")
+                return render_template("login.html", needs_app_password=True, prefill_email=user_email)
+            if not check_password_hash(stored_hash, app_pw):
+                flash("Incorrect account password.", "error")
+                return render_template("login.html", needs_app_password=True, prefill_email=user_email)
+
+        session["user_email"] = user_email
 
         password = (request.form.get("password") or "").strip()
         if password:
@@ -615,6 +628,27 @@ def settings():
 
     store = get_store()
     if request.method == "POST":
+        action = request.form.get("action", "save_groq")
+
+        if action == "set_app_password":
+            new_pw = (request.form.get("new_app_password") or "").strip()
+            confirm_pw = (request.form.get("confirm_app_password") or "").strip()
+            if not new_pw:
+                flash("Enter a password to set.", "error")
+            elif new_pw != confirm_pw:
+                flash("Passwords do not match.", "error")
+            elif len(new_pw) < 6:
+                flash("Password must be at least 6 characters.", "error")
+            else:
+                store.set_app_password(g.current_user_email, generate_password_hash(new_pw))
+                flash("Account password set. You'll need it the next time you log in.", "success")
+            return redirect(url_for("main.settings"))
+
+        if action == "remove_app_password":
+            store.set_app_password(g.current_user_email, "")
+            flash("Account password removed. Log in with email only.", "success")
+            return redirect(url_for("main.settings"))
+
         groq_key = (request.form.get("groq_api_key") or "").strip()
         store.save_setting(g.current_user_email, "groq_api_key", groq_key)
         flash("Settings saved.", "success")
@@ -622,7 +656,9 @@ def settings():
 
     saved_key = store.get_setting(g.current_user_email, "groq_api_key")
     active_model = current_app.config.get("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile")
-    return render_template("settings.html", saved_key=saved_key, active_model=active_model)
+    has_app_password = bool(store.get_app_password_hash(g.current_user_email))
+    return render_template("settings.html", saved_key=saved_key, active_model=active_model,
+                           has_app_password=has_app_password)
 
 
 # ---------------------------------------------------------------------------
