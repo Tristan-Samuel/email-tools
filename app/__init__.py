@@ -20,7 +20,7 @@ def create_app() -> Flask:
         MAX_CONTENT_LENGTH=50 * 1024 * 1024,
         GROQ_API_KEY=os.environ.get("GROQ_API_KEY", ""),
         GROQ_DEFAULT_MODEL=os.environ.get("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile"),
-        STATIC_VERSION="14",
+        STATIC_VERSION="15",
     )
 
     Path(app.instance_path).mkdir(parents=True, exist_ok=True)

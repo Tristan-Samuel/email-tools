@@ -20,13 +20,12 @@
 }
 
 html {
-    overflow-x: clip;
+    /* no overflow-x here — causes viewport propagation issues */
 }
 
 body {
     margin: 0;
     min-height: 100vh;
-    overflow-x: clip;
     font-family: "Manrope", "Segoe UI", sans-serif;
     color: var(--text);
     background:
@@ -41,9 +40,10 @@ a {
 }
 
 .page-shell {
-    width: min(1372px, 100%);
+    max-width: 1340px;
     margin: 0 auto;
     padding: 20px 16px 48px;
+    overflow-x: hidden;
 }
 
 .topbar {
@@ -938,8 +938,7 @@ h2 {
 
 @media (max-width: 720px) {
     .page-shell {
-        width: calc(100% - 20px);
-        padding-top: 14px;
+        padding: 14px 10px 48px;
     }
 
     .hero,
