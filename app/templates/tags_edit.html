@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Edit Tag: {{ tag.name }} — Email Intelligence Studio{% endblock %}
+{% block title %}Edit Tag: {{ tag.name }} — Inbox Tools{% endblock %}
 
 {% block content %}
 <main class="page-main">
@@ -16,6 +16,8 @@
 
     <section class="panel tag-editor-panel">
         <form action="{{ url_for('main.tags_edit', tag_id=tag.id) }}" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="save">
             <div class="form-row" style="gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px">
                 <label class="form-label" style="flex:2;min-width:160px">
                     Tag name
@@ -24,25 +26,26 @@
                 <label class="form-label" style="flex:0 0 auto">
                     Colour
                     <div class="tag-color-row">
-                        <input type="color" name="color" value="{{ tag.color }}" id="edit-tag-color">
+                        <input type="color" name="color" value="{{ tag.color }}" id="edit-tag-color" aria-label="Tag colour">
                         <span id="edit-tag-preview" class="tag-chip" style="background:{{ tag.color }}">Preview</span>
                     </div>
                 </label>
                 <label class="form-label" style="flex:1;min-width:120px">
-                    <div style="display:flex;align-items:center;gap:8px">
-                        <label class="toggle-switch" style="margin-top:6px">
-                            <input type="checkbox" name="hide_matching" id="hide-matching-toggle" {% if tag.hide_matching %}checked{% endif %}>
+                    <span id="edit-hide-matching-label">Hide matching emails</span>
+                    <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+                        <label class="toggle-switch" for="hide-matching-toggle">
+                            <input type="checkbox" name="hide_matching" id="hide-matching-toggle"
+                                   aria-labelledby="edit-hide-matching-label"
+                                   {% if tag.hide_matching %}checked{% endif %}>
                             <span class="toggle-slider"></span>
                         </label>
-                        <span>Hide matching emails</span>
                     </div>
                 </label>
             </div>
 
-            <!-- AI section -->
-            <div style="margin-bottom:18px;padding:16px;background:rgba(45,143,133,.07);border-radius:14px">
+            <div style="margin-bottom:18px;padding:16px;background:rgba(45,143,133,.07);border-radius:8px">
                 <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-                    <label class="toggle-switch">
+                    <label class="toggle-switch" for="edit-use-ai">
                         <input type="checkbox" name="use_ai" id="edit-use-ai" {% if tag.use_ai %}checked{% endif %}>
                         <span class="toggle-slider"></span>
                     </label>
@@ -60,7 +63,6 @@
                 </label>
             </div>
 
-            <!-- Manual filter rules -->
             <div style="margin-bottom:18px">
                 <p style="font-weight:700;font-size:.9rem;margin:0 0 12px">Manual filter rules</p>
                 <p style="font-size:.82rem;color:var(--muted);margin:0 0 12px">An email is tagged if it matches <strong>any</strong> rule below.</p>
@@ -78,64 +80,47 @@
                             {% endfor %}
                         </select>
                         <input type="text" name="rule_value" value="{{ rule.value }}"
-                               style="flex:1;min-width:120px;padding:7px 10px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg);font:inherit;font-size:.88rem" required>
+                               style="flex:1;min-width:120px;padding:7px 10px;border-radius:6px;border:1.5px solid var(--line);background:var(--bg);font:inherit;font-size:.88rem" required>
                         <button type="button" class="btn btn-ghost" style="padding:5px 10px;font-size:.8rem"
                                 onclick="this.closest('.tag-rule-row').remove()">✕</button>
                     </div>
                     {% endfor %}
                 </div>
-                <button type="button" class="tag-add-rule" onclick="addRule('rules-container')" style="margin-top:8px">+ Add rule</button>
+                <button type="button" class="tag-add-rule" onclick="addTagRule('rules-container')" style="margin-top:8px">+ Add rule</button>
             </div>
 
             <div class="form-actions">
                 <button type="submit" class="btn btn-primary">Save Changes</button>
-                {% if tag.use_ai %}
-                <form action="{{ url_for('main.tags_apply_ai', tag_id=tag.id) }}" method="post" style="display:inline">
-                    <button type="submit" class="btn btn-teal" {% if not groq_available %}disabled title="Add Groq key to use AI"{% endif %}>
-                        ✨ Apply AI now
-                    </button>
-                </form>
-                {% endif %}
-                <form action="{{ url_for('main.tags_apply') }}" method="post" style="display:inline">
-                    <button type="submit" class="btn btn-ghost">⚡ Apply all manual rules</button>
-                </form>
             </div>
         </form>
+
+        <div class="form-actions" style="margin-top:16px;gap:8px">
+            {% if tag.use_ai %}
+            <form action="{{ url_for('main.tags_edit', tag_id=tag.id) }}" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="action" value="apply_ai">
+                <button type="submit" class="btn btn-teal" {% if not groq_available %}disabled title="Add Groq key to use AI"{% endif %}>
+                    ✨ Apply AI now
+                </button>
+            </form>
+            {% endif %}
+            <form action="{{ url_for('main.tags_edit', tag_id=tag.id) }}" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="action" value="apply_manual">
+                <button type="submit" class="btn btn-ghost">⚡ Apply all manual rules</button>
+            </form>
+        </div>
     </section>
 </main>
+{% endblock %}
 
+{% block scripts %}
 <script>
-document.getElementById('edit-tag-color').addEventListener('input', function() {
+document.getElementById('edit-tag-color')?.addEventListener('input', function() {
     document.getElementById('edit-tag-preview').style.background = this.value;
 });
-document.getElementById('edit-use-ai').addEventListener('change', function() {
+document.getElementById('edit-use-ai')?.addEventListener('change', function() {
     document.getElementById('ai-instruction-label').style.display = this.checked ? 'flex' : 'none';
 });
-function addRule(containerId) {
-    const container = document.getElementById(containerId);
-    const row = document.createElement('div');
-    row.className = 'tag-rule-row';
-    row.innerHTML = `
-        <select name="rule_field">
-            <option value="sender">Sender</option>
-            <option value="recipient">Recipient</option>
-            <option value="subject">Subject</option>
-            <option value="body">Body</option>
-            <option value="category">Category</option>
-        </select>
-        <select name="rule_operator">
-            <option value="contains">contains</option>
-            <option value="equals">equals</option>
-            <option value="starts_with">starts with</option>
-            <option value="ends_with">ends with</option>
-            <option value="not_contains">does not contain</option>
-        </select>
-        <input type="text" name="rule_value" placeholder="value" required
-               style="flex:1;min-width:120px;padding:7px 10px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg);font:inherit;font-size:.88rem">
-        <button type="button" class="btn btn-ghost" style="padding:5px 10px;font-size:.8rem"
-                onclick="this.closest('.tag-rule-row').remove()">✕</button>
-    `;
-    container.appendChild(row);
-}
 </script>
 {% endblock %}

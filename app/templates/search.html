@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Search | Email Intelligence Studio{% endblock %}
+{% block title %}Search | Inbox Tools{% endblock %}
 
 {% block content %}
 <main class="page-main">
@@ -9,7 +9,7 @@
         <p class="eyebrow">Advanced search</p>
         <h1 class="page-title" style="margin-bottom:1.5rem">Search your inbox</h1>
 
-        <form action="{{ url_for('main.search_page') }}" method="get" class="search-form">
+        <form action="{{ url_for('main.search_page') }}" method="get" class="search-form" id="search-form">
             <div class="search-main-row">
                 <input type="search" name="query" value="{{ query }}"
                        placeholder="Keywords, topics, phrases…" class="search-query-input" autofocus
@@ -46,20 +46,24 @@
                         {% endfor %}
                     </select>
                 </label>
-                {% if tags %}
-                <label class="search-filter-label">
-                    <span>Tag</span>
-                    <select name="tag_id" class="form-input">
-                        <option value="">All tags</option>
-                        {% for tag in tags %}
-                        <option value="{{ tag.id }}" {% if selected_tag == tag.id %}selected{% endif %}>
-                            {{ tag.name }} ({{ tag.email_count }})
-                        </option>
-                        {% endfor %}
-                    </select>
-                </label>
-                {% endif %}
             </div>
+
+            {% if tags %}
+            <div>
+                <span class="search-filter-label" style="display:block;margin-bottom:6px">Tags</span>
+                <div class="search-tag-chips">
+                    <a href="{{ url_for('main.search_page', query=query, from_=sender_filter, to_=recipient_filter, subject_=subject_filter, category=selected_category, date_from=date_from, date_to=date_to, ai=1 if ai_mode else None) }}"
+                       class="search-tag-chip {% if not selected_tag %}search-tag-chip--active{% endif %}">All</a>
+                    {% for tag in tags %}
+                    <a href="{{ url_for('main.search_page', tag_id=tag.id, query=query, from_=sender_filter, to_=recipient_filter, subject_=subject_filter, category=selected_category, date_from=date_from, date_to=date_to, ai=1 if ai_mode else None) }}"
+                       class="search-tag-chip {% if selected_tag == tag.id %}search-tag-chip--active{% endif %}">
+                        <span class="tag-dot" style="background:{{ tag.color }}"></span>
+                        {{ tag.name }} ({{ tag.email_count }})
+                    </a>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
 
             <div class="search-filters-row">
                 <label class="search-filter-label">
@@ -83,9 +87,22 @@
                 </label>
             </div>
         </form>
+
+        {% if searched %}
+        <form action="{{ url_for('main.search_save_tag') }}" method="post" class="sync-form-row" style="margin-top:20px;padding-top:16px;border-top:1px solid var(--line)">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="query" value="{{ query }}">
+            <input type="hidden" name="from_" value="{{ sender_filter }}">
+            <input type="hidden" name="subject_" value="{{ subject_filter }}">
+            <label style="flex:1">
+                Save as auto-tag
+                <input type="text" name="tag_name" class="form-input" placeholder="Tag name for these filters" required>
+            </label>
+            <button type="submit" class="btn btn-teal">Create tag</button>
+        </form>
+        {% endif %}
     </section>
 
-    <!-- Autofill datalists (populated via JS) -->
     <datalist id="senders-datalist"></datalist>
     <datalist id="recipients-datalist"></datalist>
 
@@ -94,6 +111,11 @@
         <p class="eyebrow">AI answer</p>
         <div class="ai-answer-body">{{ ai_answer }}</div>
         <p class="ai-answer-note">Based on {{ emails|length }} matching email(s). AI can make mistakes — always verify.</p>
+    </section>
+    {% elif ai_no_candidates and ai_mode %}
+    <section class="panel search-ai-answer reveal" role="status">
+        <p class="eyebrow">Ask AI</p>
+        <p>No matching emails found for &ldquo;{{ query }}&rdquo;. Try different keywords before asking AI.</p>
     </section>
     {% endif %}
 
@@ -126,11 +148,12 @@
                     </div>
                     <div class="inbox-row-meta">
                         <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>
-                        {% if email.priority_score >= 80 %}<span class="inbox-urgent-dot">●</span>{% endif %}
+                        {% if email.priority_score >= 80 %}<span class="inbox-urgent-dot">P{{ email.priority_score }}</span>{% endif %}
                     </div>
                 </a>
                 <form action="{{ url_for('main.email_hide', email_id=email.email_id) }}" method="post"
                       style="position:absolute;right:8px;top:50%;transform:translateY(-50%);z-index:2">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <button type="submit" class="btn btn-ghost" style="padding:4px 8px;font-size:.72rem"
                             title="Hide this email">Hide</button>
                 </form>
@@ -148,7 +171,6 @@
 
 </main>
 <script>
-// Populate autofill datalists
 fetch('/api/senders').then(r=>r.json()).then(senders=>{
     const dl = document.getElementById('senders-datalist');
     senders.forEach(s=>{ const o=document.createElement('option'); o.value=s; dl.appendChild(o); });

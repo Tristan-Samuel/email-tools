@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Tags — Email Intelligence Studio{% endblock %}
+{% block title %}Tags — Inbox Tools{% endblock %}
 
 {% block content %}
 <main class="page-main">
@@ -11,6 +11,7 @@
         </div>
         <div class="page-header-actions">
             <form action="{{ url_for('main.tags_apply') }}" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-ghost">⚡ Apply all manual rules</button>
             </form>
         </div>
@@ -20,6 +21,7 @@
     <section class="panel tag-editor-panel">
         <h2 class="panel-title" style="margin-bottom:1.2rem">New Tag</h2>
         <form action="{{ url_for('main.tags') }}" method="post" id="new-tag-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="form-row" style="gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px">
                 <label class="form-label" style="flex:2;min-width:160px">
                     Tag name
@@ -33,12 +35,12 @@
                     </div>
                 </label>
                 <label class="form-label" style="flex:1;min-width:120px">
-                    <div style="display:flex;align-items:center;gap:8px">
-                        <label class="toggle-switch" style="margin-top:6px">
-                            <input type="checkbox" name="hide_matching" id="hide-matching-toggle">
+                    <span id="hide-matching-label">Hide matching emails</span>
+                    <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+                        <label class="toggle-switch" for="hide-matching-toggle">
+                            <input type="checkbox" name="hide_matching" id="hide-matching-toggle" aria-labelledby="hide-matching-label">
                             <span class="toggle-slider"></span>
                         </label>
-                        <span>Hide matching emails</span>
                     </div>
                 </label>
             </div>
@@ -46,11 +48,11 @@
             <!-- AI section -->
             <div style="margin-bottom:18px;padding:16px;background:rgba(45,143,133,.07);border-radius:14px">
                 <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-                    <label class="toggle-switch">
-                        <input type="checkbox" name="use_ai" id="new-use-ai">
+                    <label class="toggle-switch" for="new-use-ai">
+                        <input type="checkbox" name="use_ai" id="new-use-ai" aria-describedby="ai-toggle-desc">
                         <span class="toggle-slider"></span>
                     </label>
-                    <span style="font-weight:700;font-size:.9rem">Use AI to classify emails for this tag</span>
+                    <span id="ai-toggle-desc" style="font-weight:700;font-size:.9rem">Use AI to classify emails for this tag</span>
                     {% if not groq_available %}
                     <small style="color:var(--muted)">— <a href="{{ url_for('main.settings') }}">Add Groq key</a> to enable</small>
                     {% endif %}
@@ -79,7 +81,7 @@
     <!-- Existing tags -->
     {% if tags %}
     <section>
-        <h2 style="font-family:'Fraunces',Georgia,serif;font-size:1.4rem;margin:0 0 16px">Your Tags</h2>
+        <h2 style="font-size:1.4rem;margin:0 0 16px">Your Tags</h2>
         <div class="tags-list">
             {% for tag in tags %}
             <div class="tag-card">
@@ -110,6 +112,7 @@
                     <a href="{{ url_for('main.tags_edit', tag_id=tag.id) }}" class="btn btn-ghost">Edit</a>
                     {% if tag.use_ai %}
                     <form action="{{ url_for('main.tags_apply_ai', tag_id=tag.id) }}" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <button type="submit" class="btn btn-teal" {% if not groq_available %}disabled title="Add Groq key to use AI"{% endif %}>
                             ✨ Apply AI
                         </button>
@@ -118,6 +121,7 @@
                     <a href="{{ url_for('main.inbox') }}?tag_id={{ tag.id }}" class="btn btn-ghost">View emails</a>
                     <form action="{{ url_for('main.tags_delete', tag_id=tag.id) }}" method="post"
                           onsubmit="return confirm('Delete tag {{ tag.name|e }}?')">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <button type="submit" class="btn btn-danger">Delete</button>
                     </form>
                 </div>
@@ -132,43 +136,15 @@
     </div>
     {% endif %}
 </main>
+{% endblock %}
 
+{% block scripts %}
 <script>
-// Color preview
-document.getElementById('new-tag-color').addEventListener('input', function() {
+document.getElementById('new-tag-color')?.addEventListener('input', function() {
     document.getElementById('new-tag-preview').style.background = this.value;
 });
-
-// AI instruction toggle
-document.getElementById('new-use-ai').addEventListener('change', function() {
+document.getElementById('new-use-ai')?.addEventListener('change', function() {
     document.getElementById('ai-instruction-label').style.display = this.checked ? 'flex' : 'none';
 });
-
-// Dynamic rule rows
-function addRule(containerId) {
-    const container = document.getElementById(containerId);
-    const row = document.createElement('div');
-    row.className = 'tag-rule-row';
-    row.innerHTML = `
-        <select name="rule_field">
-            <option value="sender">Sender</option>
-            <option value="recipient">Recipient</option>
-            <option value="subject">Subject</option>
-            <option value="body">Body</option>
-            <option value="category">Category</option>
-        </select>
-        <select name="rule_operator">
-            <option value="contains">contains</option>
-            <option value="equals">equals</option>
-            <option value="starts_with">starts with</option>
-            <option value="ends_with">ends with</option>
-            <option value="not_contains">does not contain</option>
-        </select>
-        <input type="text" name="rule_value" placeholder="value" required style="flex:1;min-width:120px">
-        <button type="button" class="btn btn-ghost" style="padding:5px 10px;font-size:.8rem"
-                onclick="this.closest('.tag-rule-row').remove()">✕</button>
-    `;
-    container.appendChild(row);
-}
 </script>
 {% endblock %}

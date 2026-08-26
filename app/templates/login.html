@@ -1,88 +1,55 @@
 {% extends "base.html" %}
 
-{% block title %}Log In | Email Intelligence Studio{% endblock %}
+{% block title %}Log In | Inbox Tools{% endblock %}
 
 {% block content %}
-<main class="login-layout">
+<main class="login-layout" id="main-content">
     <section class="panel login-panel reveal is-visible">
         <p class="eyebrow">Account access</p>
-        <h1>Log in to your account</h1>
+        <h1>Log in</h1>
         <p class="hero-copy">
-            Enter your email to access your inbox tools. If you've already connected your inbox,
-            you don't need to enter anything else.
+            Sign in with your Inbox Tools account password. If you removed your account password,
+            verify with a mailbox <strong>App Password</strong> from a connected inbox instead.
         </p>
         <form action="{{ url_for('main.login') }}" method="post" class="login-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <label for="login-email">Email address</label>
             <input id="login-email" name="email" type="email" required placeholder="you@gmail.com"
-                   value="{{ prefill_email or '' }}"
-                   autocomplete="email" oninput="autoFillHost(this.value)">
+                   value="{{ prefill_email or request.args.get('email', '') }}"
+                   autocomplete="email">
 
             {% if needs_app_password %}
             <label for="app-password" style="margin-top:1.2rem">Account password</label>
             <input id="app-password" name="app_password" type="password"
-                   placeholder="Your email-tools account password" autocomplete="current-password" autofocus>
+                   placeholder="Your account password" autocomplete="current-password" autofocus required>
+            {% elif needs_imap_login %}
+            <label for="imap-password" style="margin-top:1.2rem">Mailbox App Password</label>
+            <input id="imap-password" name="imap_password" type="password"
+                   placeholder="App Password from your email provider" autocomplete="current-password" autofocus required>
+            <p class="panel-hint" style="margin-top:.5rem">
+                Your account password was removed. Verify with the App Password from any connected inbox.
+                <a href="{{ url_for('main.help_page') }}#app-passwords">How to get an App Password</a>
+            </p>
+            {% if show_set_password %}
+            <label for="new-app-password">Set a new account password (optional)</label>
+            <input id="new-app-password" name="new_app_password" type="password"
+                   placeholder="At least 6 characters" autocomplete="new-password" minlength="6">
+            <label for="confirm-app-password">Confirm password</label>
+            <input id="confirm-app-password" name="confirm_app_password" type="password"
+                   placeholder="Repeat password" autocomplete="new-password">
+            {% endif %}
             {% else %}
-            <label for="app-password" style="margin-top:1.2rem">
-                Account password <span style="font-weight:400;opacity:.65">(if you've set one in Settings)</span>
-            </label>
+            <label for="app-password" style="margin-top:1.2rem">Account password</label>
             <input id="app-password" name="app_password" type="password"
-                   placeholder="Leave blank if you haven't set one" autocomplete="current-password">
+                   placeholder="Your Inbox Tools password" autocomplete="current-password" required>
             {% endif %}
 
-            <hr style="margin:1.5rem 0;border:none;border-top:1px solid var(--line)">
-            <details {% if not needs_app_password %}{% endif %}>
-                <summary style="cursor:pointer;font-weight:700;font-size:.9rem;opacity:.8">Connect a new inbox (first time setup)</summary>
-                <div style="margin-top:1rem;display:grid;gap:.75rem">
-                    <p style="font-size:.85rem;color:var(--muted);margin:0">
-                        Enter your Gmail App Password <em>only</em> if you're connecting an inbox for the first time.
-                        Gmail: Google Account → Security → 2-Step Verification → App passwords.
-                    </p>
-                    <label for="login-password">App Password (Gmail / Outlook / Yahoo)</label>
-                    <input id="login-password" name="password" type="password"
-                           placeholder="xxxx xxxx xxxx xxxx" autocomplete="off">
-
-                    <details>
-                        <summary style="cursor:pointer;font-size:.9rem;opacity:.8">Advanced IMAP settings</summary>
-                        <div class="form-row" style="margin-top:.75rem">
-                            <label class="form-label" style="flex:1">
-                                IMAP Host
-                                <input id="imap_host" name="imap_host" type="text" value="imap.gmail.com" class="form-input">
-                            </label>
-                            <label class="form-label" style="width:110px">
-                                Port
-                                <input name="imap_port" type="number" value="993" min="1" max="65535" class="form-input">
-                            </label>
-                        </div>
-                    </details>
-                </div>
-            </details>
-
-            <button type="submit" style="margin-top:1.5rem">Continue →</button>
+            <button type="submit" style="margin-top:1.5rem">Log in →</button>
         </form>
+        <p class="panel-hint auth-footer-hint">
+            New here? <a href="{{ url_for('main.signup') }}">Create an account</a>
+            · <a href="{{ url_for('main.help_page') }}">App Password help</a>
+        </p>
     </section>
 </main>
-<script>
-const IMAP_HOSTS = {
-    'gmail.com': 'imap.gmail.com',
-    'googlemail.com': 'imap.gmail.com',
-    'yahoo.com': 'imap.mail.yahoo.com',
-    'yahoo.co.uk': 'imap.mail.yahoo.com',
-    'outlook.com': 'outlook.office365.com',
-    'hotmail.com': 'outlook.office365.com',
-    'live.com': 'outlook.office365.com',
-    'icloud.com': 'imap.mail.me.com',
-    'me.com': 'imap.mail.me.com',
-    'mac.com': 'imap.mail.me.com',
-};
-function autoFillHost(email) {
-    const domain = (email.split('@')[1] || '').toLowerCase();
-    const hostInput = document.getElementById('imap_host');
-    if (!hostInput) return;
-    if (IMAP_HOSTS[domain]) {
-        hostInput.value = IMAP_HOSTS[domain];
-    } else if (domain) {
-        hostInput.value = 'imap.' + domain;
-    }
-}
-</script>
 {% endblock %}

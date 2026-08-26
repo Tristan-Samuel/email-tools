@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 
-{% block title %}{{ email.subject }} | Email Intelligence Studio{% endblock %}
+{% block title %}{{ email.subject }} | Inbox Tools{% endblock %}
 
 {% block content %}
 <main class="detail-layout">
     <section class="panel detail-header reveal">
-        <div class="detail-nav" style="display:flex;justify-content:space-between;align-items:center">
+        <div class="detail-nav" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
             <a class="back-link" href="{{ url_for('main.inbox') }}">&#8592; Back to inbox</a>
-            <div style="display:flex;gap:8px;align-items:center">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                 {% if tags %}
                 <div style="display:flex;gap:6px;flex-wrap:wrap">
                     {% for tag in tags %}
@@ -15,9 +15,16 @@
                     {% endfor %}
                 </div>
                 {% endif %}
+                <form action="{{ url_for('main.email_mark_read', email_id=email.email_id) }}" method="post">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="read" value="{{ '0' if email.is_read else '1' }}">
+                    <button type="submit" class="btn btn-ghost" style="padding:5px 12px;font-size:.8rem">
+                        {% if email.is_read %}Mark unread{% else %}Mark read{% endif %}
+                    </button>
+                </form>
                 <form action="{{ url_for('main.email_hide' if not email.is_hidden else 'main.email_unhide', email_id=email.email_id) }}" method="post">
-                    <button type="submit" class="btn btn-ghost" style="padding:5px 12px;font-size:.8rem"
-                            title="{% if email.is_hidden %}Restore to inbox{% else %}Hide this email{% endif %}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-ghost" style="padding:5px 12px;font-size:.8rem">
                         {% if email.is_hidden %}↑ Restore{% else %}⊗ Hide{% endif %}
                     </button>
                 </form>
@@ -38,6 +45,66 @@
         </div>
     </section>
 
+    {% if all_tags %}
+    <section class="panel reveal" style="margin-top:12px;padding:16px 20px">
+        <form action="{{ url_for('main.email_set_tags', email_id=email.email_id) }}" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <p class="eyebrow" style="margin-bottom:8px">Tags</p>
+            <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+                {% for tag in all_tags %}
+                <label style="display:flex;align-items:center;gap:6px;font-size:.88rem">
+                    <input type="checkbox" name="tag_ids" value="{{ tag.id }}"
+                           {% if tag.id in assigned_tag_ids %}checked{% endif %}>
+                    <span class="tag-chip" style="background:{{ tag.color }}">{{ tag.name }}</span>
+                </label>
+                {% endfor %}
+                <button type="submit" class="btn btn-ghost" style="font-size:.82rem">Save tags</button>
+            </div>
+        </form>
+    </section>
+    {% endif %}
+
+    {% if draft_reply %}
+    <section class="panel reveal" style="margin-top:12px;padding:16px 20px">
+        <p class="eyebrow">Draft reply</p>
+        <pre class="draft-reply-text">{{ draft_reply }}</pre>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+            <button type="button" class="btn btn-primary" onclick="navigator.clipboard.writeText(document.querySelector('.draft-reply-text').textContent)">Copy</button>
+            {% if mailto_link %}
+            <a href="{{ mailto_link }}" class="btn btn-teal">Open in mail app</a>
+            {% endif %}
+            {% if groq_available %}
+            <form action="{{ url_for('main.email_draft_reply', email_id=email.email_id) }}" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-teal">Regenerate</button>
+            </form>
+            {% endif %}
+        </div>
+    </section>
+    {% elif groq_available %}
+    <section class="panel reveal" style="margin-top:12px;padding:16px 20px">
+        <form action="{{ url_for('main.email_draft_reply', email_id=email.email_id) }}" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-teal">✨ Draft reply with AI</button>
+        </form>
+    </section>
+    {% endif %}
+
+    {% if thread_emails|length > 1 %}
+    <section class="panel reveal" style="margin-top:12px;padding:16px 20px">
+        <p class="eyebrow">Thread ({{ thread_emails|length }} messages)</p>
+        <ul class="thread-list">
+            {% for msg in thread_emails %}
+            <li class="{% if msg.email_id == email.email_id %}thread-list--current{% endif %}">
+                <a href="{{ url_for('main.email_detail', email_id=msg.email_id) }}">
+                    {{ msg.subject }} — {{ msg.sender or 'Unknown' }}
+                </a>
+            </li>
+            {% endfor %}
+        </ul>
+    </section>
+    {% endif %}
+
     <section class="detail-grid">
         <article class="panel reveal">
             <div class="section-heading">
@@ -46,52 +113,40 @@
                     <h2>Key points</h2>
                 </div>
                 <form action="{{ url_for('main.email_reanalyze', email_id=email.email_id) }}" method="post">
-                    <button type="submit" class="btn {% if groq_available %}btn-teal{% else %}btn-ghost{% endif %}"
-                            title="{% if groq_available %}Re-run AI analysis{% else %}Add a Groq key in Settings to enable AI analysis{% endif %}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn {% if groq_available %}btn-teal{% else %}btn-ghost{% endif %}">
                         &#10024; {% if groq_available %}Re-analyse{% else %}Add Groq key{% endif %}
                     </button>
                 </form>
             </div>
             {% if auto_analyzed %}
-            <div class="flash flash-success" style="margin-bottom:14px;font-size:.85rem">
+            <div class="flash flash-success" style="margin-bottom:14px;font-size:.85rem" role="status">
                 ✨ AI analysis ran automatically on first view.
-            </div>
-            {% endif %}
-            {% if not email.ai_analyzed and not groq_available %}
-            <div class="flash" style="margin-bottom:14px;font-size:.85rem">
-                This is a heuristic summary. <a href="{{ url_for('main.settings') }}">Add a Groq key</a> for AI analysis.
             </div>
             {% endif %}
             <ul class="bullet-list">
                 {% for bullet in email.bullet_summary %}
-                    <li>{{ bullet }}</li>
+                <li>{{ bullet }}</li>
                 {% endfor %}
             </ul>
-            {% if email.keywords %}
-            <div class="keyword-row" style="margin-top:1.2rem">
-                {% for kw in email.keywords %}<span>{{ kw }}</span>{% endfor %}
-            </div>
-            {% endif %}
         </article>
 
         <aside class="panel reveal">
             <div class="section-heading">
                 <div>
                     <p class="eyebrow">Metadata</p>
-                    <h2>Classification</h2>
+                    <h2>Details</h2>
                 </div>
             </div>
             <dl class="meta-grid">
-                <dt>Category</dt>
+                <dt>Category signal</dt>
                 <dd>{{ email.category }}</dd>
                 <dt>Priority</dt>
                 <dd>{{ email.priority_score }} / 100</dd>
                 <dt>AI analysed</dt>
-                <dd>{% if email.ai_analyzed %}Yes ✓{% else %}No{% endif %}</dd>
+                <dd>{% if email.ai_analyzed %}Yes{% else %}No{% endif %}</dd>
                 <dt>Source</dt>
                 <dd>{{ email.source_name }}</dd>
-                <dt>Message-ID</dt>
-                <dd style="word-break:break-all;font-size:.8rem">{{ email.message_id or '—' }}</dd>
             </dl>
         </aside>
     </section>

@@ -1,20 +1,81 @@
 {% extends "base.html" %}
 
-{% block title %}Dashboard | Email Intelligence Studio{% endblock %}
+{% block title %}Dashboard | Inbox Tools{% endblock %}
 
 {% block content %}
 <main class="dashboard">
-
-    <!-- ── Top row: recent-unread + hero side by side ──────────────── -->
     <div class="dashboard-top">
+        <section class="panel reveal dashboard-brief-panel">
+            <p class="eyebrow">Inbox brief</p>
+            <p class="panel-hint" style="margin-bottom:8px;font-size:.8rem">
+                {% if digest.ai_generated %}AI summary{% else %}Heuristic summary{% endif %}
+            </p>
+            <h1 style="font-size:1.5rem;margin-bottom:12px">{{ digest.headline }}</h1>
+            <ul class="bullet-list">
+                {% for bullet in digest.bullets %}
+                <li>{{ bullet|sanitize_bullet }}</li>
+                {% endfor %}
+            </ul>
+        </section>
+
+        <aside class="dashboard-sidebar">
+            <div class="upload-card panel">
+                {% if imap_accounts %}
+                    <p class="eyebrow" style="margin-bottom:.5rem">Connected accounts</p>
+                    {% for acct in imap_accounts %}
+                    <div style="margin-bottom:1rem;padding-bottom:.75rem;border-bottom:1px solid var(--line)">
+                        <div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin-bottom:.5rem">
+                            <span style="font-size:.88rem;font-weight:600">{{ acct.account_email }}</span>
+                        </div>
+                        <form action="{{ url_for('main.accounts_sync', account_id=acct.id) }}" method="post" class="sync-form-row">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <label>
+                                Since
+                                <input type="date" name="sync_since" value="{{ acct.sync_since_date or default_sync_since }}">
+                            </label>
+                            <label>
+                                Max
+                                <input type="number" name="sync_max" min="1" max="2000" value="{{ acct.sync_max_count or default_sync_max }}" style="width:72px">
+                            </label>
+                            <button type="submit" class="btn btn-teal" style="font-size:.8rem;padding:.35rem .75rem">Sync</button>
+                        </form>
+                        {% if acct.has_older_mail %}
+                        <form action="{{ url_for('main.accounts_load_older', account_id=acct.id) }}" method="post" class="sync-form-row" style="margin-top:6px">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="sync_since" value="{{ acct.sync_since_date or default_sync_since }}">
+                            <input type="hidden" name="sync_max" value="{{ acct.sync_max_count or default_sync_max }}">
+                            <button type="submit" class="btn btn-ghost" style="font-size:.78rem;padding:.3rem .6rem">Load older mail</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                    <div class="upload-card-actions">
+                        {% if imap_accounts|length > 1 %}
+                        <form action="{{ url_for('main.accounts_sync_all') }}" method="post">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-primary">Sync all accounts</button>
+                        </form>
+                        {% endif %}
+                        <a href="{{ url_for('main.inbox') }}" class="btn btn-primary">Open Inbox →</a>
+                        <a href="{{ url_for('main.accounts_add') }}" class="btn btn-ghost">+ Add account</a>
+                    </div>
+                {% else %}
+                    <p class="eyebrow" style="margin-bottom:.75rem">Get started</p>
+                    <p style="font-size:.9rem;margin-bottom:1rem;color:var(--muted)">Connect IMAP to fetch and summarize your mail.</p>
+                    <a href="{{ url_for('main.accounts_add') }}" class="btn btn-primary">Connect Your Inbox →</a>
+                {% endif %}
+            </div>
+        </aside>
+    </div>
+
     {% if recent_unread %}
-    <section class="panel reveal" style="padding:22px 28px;min-width:0">
+    <section class="panel reveal dashboard-panel">
         <div class="section-heading" style="margin-bottom:14px">
             <div>
                 <p class="eyebrow">Action needed</p>
-                <h2 style="font-size:1.35rem">Recent unread</h2>
+                <h2>Recent unread</h2>
             </div>
-            <a href="{{ url_for('main.inbox') }}?unread=1" class="btn btn-ghost" style="padding:5px 14px;font-size:.82rem;flex-shrink:0">View all →</a>
+            <a href="{{ url_for('main.inbox') }}?unread=1" class="btn btn-ghost" style="padding:5px 14px;font-size:.82rem">View all →</a>
         </div>
         <div class="unread-list">
             {% for email in recent_unread %}
@@ -28,152 +89,83 @@
     </section>
     {% endif %}
 
-    <!-- ── Hero + sync ────────────────────────────────────────────── -->
-    <section class="hero panel reveal">
-        <div>
-            <p class="eyebrow">Professional email triage</p>
-            <h1>Read the inbox through summaries instead of threads.</h1>
-            <p class="hero-copy">
-                Connect your inbox accounts, auto-sort emails into categories, cache bullet-point summaries
-                for every message, and search across full text plus the generated takeaways.
-            </p>
+    {% if important_emails %}
+    <section class="panel reveal dashboard-panel" style="margin-top:1.5rem">
+        <div class="section-heading">
+            <div>
+                <p class="eyebrow">Important</p>
+                <h2>High-priority mail</h2>
+            </div>
         </div>
-        <div class="upload-card">
-            {% if imap_accounts %}
-                <p class="eyebrow" style="margin-bottom:.75rem">Connected accounts</p>
-                {% for acct in imap_accounts %}
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;margin-bottom:.5rem">
-                    <span style="font-size:.9rem">{{ acct.account_email }}</span>
-                    <form action="{{ url_for('main.accounts_sync', account_id=acct.id) }}" method="post">
-                        <button type="submit" class="btn btn-teal" style="font-size:.8rem;padding:.3rem .8rem">Sync</button>
-                    </form>
-                </div>
-                {% endfor %}
-                {% if imap_accounts|length > 1 %}
-                <form action="{{ url_for('main.accounts_sync_all') }}" method="post" style="margin-top:.75rem">
-                    <button type="submit" class="btn btn-primary" style="width:100%">Sync All Accounts</button>
-                </form>
+        <div class="important-mail-list">
+            {% for item in important_emails %}
+            <div class="important-mail-item">
+                <a href="{{ url_for('main.email_detail', email_id=item.email_id) }}" style="font-weight:600">{{ item.subject }}</a>
+                <p style="font-size:.85rem;color:var(--muted);margin:4px 0">{{ item.summary|sanitize_bullet }}</p>
+                {% if item.links %}
+                <p style="font-size:.8rem;margin:0">
+                    {% for link in item.links %}
+                    <a href="{{ link.url }}" target="_blank" rel="noopener noreferrer">{{ link.label }}</a>{% if not loop.last %} · {% endif %}
+                    {% endfor %}
+                </p>
                 {% endif %}
-                <a href="{{ url_for('main.accounts_add') }}" class="btn btn-ghost" style="width:100%;margin-top:.5rem;text-align:center">+ Add Another Account</a>
-            {% else %}
-                <p class="eyebrow" style="margin-bottom:.75rem">Get started</p>
-                <p style="font-size:.9rem;margin-bottom:1rem">No inbox connected yet.</p>
-                <a href="{{ url_for('main.accounts_add') }}" class="btn btn-primary" style="width:100%;text-align:center">Connect Your Inbox →</a>
-            {% endif %}
+            </div>
+            {% endfor %}
         </div>
     </section>
-    </div><!-- /.dashboard-top -->
+    {% endif %}
 
-    <section class="stats-grid reveal">
+    {% if urgent_emails %}
+    <section class="panel reveal dashboard-panel" style="margin-top:1.5rem">
+        <div class="section-heading">
+            <div>
+                <p class="eyebrow">High priority</p>
+                <h2>Urgent queue</h2>
+            </div>
+            <a href="{{ url_for('main.inbox') }}?sort=priority" class="btn btn-ghost">All in Inbox →</a>
+        </div>
+        <div class="unread-list">
+            {% for email in urgent_emails %}
+            <a class="unread-row" href="{{ url_for('main.email_detail', email_id=email.email_id) }}">
+                <span class="unread-sender">{{ (email.sender or '?').split('<')[0].strip() }}</span>
+                <span class="unread-subject">{{ email.subject }}</span>
+                <span class="unread-date">P{{ email.priority_score }}</span>
+            </a>
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
+
+    <section class="stats-grid reveal" style="margin-top:1.5rem">
         <article class="stat-card panel">
             <span>Total Emails</span>
             <strong>{{ stats.total }}</strong>
-            <small>Indexed with cached summaries</small>
         </article>
         <article class="stat-card panel accent">
             <span>Urgent Signals</span>
             <strong>{{ stats.urgent }}</strong>
-            <small>Messages flagged with higher priority</small>
         </article>
         <article class="stat-card panel">
             <span>Categories</span>
             <strong>{{ stats.categories }}</strong>
-            <small>Auto-sorted inbox buckets</small>
         </article>
         <article class="stat-card panel">
             <span>Latest Import</span>
-            <strong>{{ stats.latest|default('No data yet') }}</strong>
-            <small>Most recent email timestamp</small>
+            <strong style="font-size:.95rem">{{ stats.latest|datetimeformat }}</strong>
         </article>
     </section>
 
-    <section class="content-grid">
-        <article class="panel digest reveal">
-            <div class="section-heading">
-                <div>
-                    <p class="eyebrow">Inbox brief</p>
-                    <h2>{{ digest.headline }}</h2>
-                </div>
-            </div>
-            <ul class="bullet-list">
-                {% for bullet in digest.bullets %}
-                    <li>{{ bullet }}</li>
-                {% endfor %}
-            </ul>
-        </article>
-
-        <aside class="panel filters reveal">
-            <div class="section-heading">
-                <div>
-                    <p class="eyebrow">Auto sorting</p>
-                    <h2>Categories</h2>
-                </div>
-            </div>
-            <div class="category-list">
-                <a class="category-pill {% if not selected_category %}active{% endif %}" href="{{ url_for('main.dashboard') }}">All mail</a>
-                {% for item in categories %}
-                    <a class="category-pill {% if selected_category == item.category %}active{% endif %}" href="{{ url_for('main.dashboard', category=item.category) }}">
-                        {{ item.category }}
-                        <span>{{ item.count }}</span>
-                    </a>
-                {% endfor %}
-            </div>
-        </aside>
-    </section>
-
-    <section class="panel reveal">
-        <div class="section-heading section-heading-spread">
-            <div>
-                <p class="eyebrow">Cached email summaries</p>
-                <h2>{% if query %}Search results for "{{ query }}"{% else %}Analyzed emails{% endif %}</h2>
-            </div>
-            <p class="section-meta">{{ emails|length }} emails shown</p>
-        </div>
-
-        {% if emails %}
-            <div class="email-list">
-                {% for email in emails %}
-                    <article class="email-card">
-                        <div class="email-card-top">
-                            <div>
-                                <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>
-                                <h3><a href="{{ url_for('main.email_detail', email_id=email.email_id) }}">{{ email.subject }}</a></h3>
-                            </div>
-                            <span class="priority-score">Priority {{ email.priority_score }}</span>
-                        </div>
-                        <p class="email-meta">From {{ email.sender or 'Unknown sender' }} · {{ email.received_at|datetimeformat }}</p>
-                        <p class="email-preview">{{ email.preview or 'No message body could be extracted.' }}</p>
-                        <ul class="bullet-list compact">
-                            {% for bullet in email.bullet_summary %}
-                                <li>{{ bullet }}</li>
-                            {% endfor %}
-                        </ul>
-                        <div class="keyword-row">
-                            {% for keyword in email.keywords %}
-                                <span>{{ keyword }}</span>
-                            {% endfor %}
-                        </div>
-                    </article>
-                {% endfor %}
-            </div>
-        {% else %}
-            <div class="empty-state">
-                <h3>No emails found</h3>
-                <p>Sync an inbox account above, or broaden your search terms.</p>
-            </div>
-        {% endif %}
-    </section>
-
-    <details class="panel reveal" style="margin-top:1.5rem">
+    <details class="panel reveal dashboard-panel" style="margin-top:1.5rem">
         <summary style="cursor:pointer;padding:.1rem 0;font-weight:600;font-size:.95rem">
             Import email files (.eml / .mbox)
         </summary>
         <form class="upload-card" action="{{ url_for('main.upload') }}" method="post"
-              enctype="multipart/form-data" style="border:none;padding:1rem 0 0">
+              enctype="multipart/form-data" style="border:none;padding:1rem 0 0;background:none">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <label for="email_files">Select files</label>
             <input id="email_files" name="email_files" type="file" accept=".eml,.mbox" multiple>
-            <p>Supports individual .eml files and mailbox exports in .mbox format.</p>
-            <button type="submit">Analyze Inbox Files</button>
+            <p style="font-size:.85rem;color:var(--muted)">Alternative to IMAP — individual .eml or mailbox .mbox exports.</p>
+            <button type="submit" class="btn btn-primary">Analyze Files</button>
         </form>
     </details>
 </main>

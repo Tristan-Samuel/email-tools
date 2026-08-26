@@ -1,8 +1,8 @@
 """
-Symmetric encryption for stored IMAP passwords.
+Symmetric encryption for stored IMAP passwords and Groq API keys.
 
-Uses Fernet (AES-128-CBC + HMAC-SHA256) with a key derived from the
-Flask SECRET_KEY via SHA-256 so no separate key management is needed.
+Uses Fernet with a key derived from CREDENTIAL_ENCRYPTION_KEY or
+SECRET_KEY plus a per-purpose salt so session and credential keys differ.
 """
 from __future__ import annotations
 
@@ -11,22 +11,31 @@ import hashlib
 
 from cryptography.fernet import Fernet
 
+_CREDENTIAL_SALT = "email-tools-credential-v1"
 
-def _make_fernet(secret_key: str) -> Fernet:
-    raw = hashlib.sha256(secret_key.encode()).digest()
+
+def _derive_material(secret_key: str, purpose: str = "") -> bytes:
+    material = f"{_CREDENTIAL_SALT}:{purpose}:{secret_key}"
+    return hashlib.sha256(material.encode()).digest()
+
+
+def _make_fernet(secret_key: str, purpose: str = "") -> Fernet:
+    raw = _derive_material(secret_key, purpose)
     key = base64.urlsafe_b64encode(raw)
     return Fernet(key)
 
 
-def encrypt(plaintext: str, secret_key: str) -> str:
+def encrypt(plaintext: str, secret_key: str, purpose: str = "imap") -> str:
     """Return URL-safe base64 ciphertext string."""
-    token = _make_fernet(secret_key).encrypt(plaintext.encode())
+    token = _make_fernet(secret_key, purpose).encrypt(plaintext.encode())
     return token.decode()
 
 
-def decrypt(ciphertext: str, secret_key: str) -> str:
+def decrypt(ciphertext: str, secret_key: str, purpose: str = "imap") -> str:
     """Return original plaintext, or empty string on failure."""
+    if not ciphertext:
+        return ""
     try:
-        return _make_fernet(secret_key).decrypt(ciphertext.encode()).decode()
+        return _make_fernet(secret_key, purpose).decrypt(ciphertext.encode()).decode()
     except Exception:
         return ""

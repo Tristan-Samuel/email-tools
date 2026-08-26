@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}Help — App Passwords | Inbox Tools{% endblock %}
+
+{% block content %}
+<main class="page-main help-page" id="main-content">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">Connecting your inbox</h1>
+            <p class="page-subtitle">How to get a mailbox App Password and connect IMAP.</p>
+        </div>
+        <div class="page-header-actions">
+            {% if current_user_email %}
+            <a href="{{ url_for('main.accounts_add') }}" class="btn btn-primary">Add Account</a>
+            <a href="{{ url_for('main.inbox') }}" class="btn btn-ghost">Inbox</a>
+            {% else %}
+            <a href="{{ url_for('main.signup') }}" class="btn btn-primary">Create account</a>
+            <a href="{{ url_for('main.login') }}" class="btn btn-ghost">Log in</a>
+            {% endif %}
+        </div>
+    </div>
+
+    <section class="panel help-panel">
+        {% include "_app_password_help.html" %}
+    </section>
+</main>
+{% endblock %}

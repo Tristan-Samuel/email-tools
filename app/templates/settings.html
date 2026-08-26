@@ -1,33 +1,43 @@
 {% extends "base.html" %}
 
-{% block title %}Settings — Email Intelligence Studio{% endblock %}
+{% block title %}Settings — Inbox Tools{% endblock %}
 
 {% block content %}
 <main class="page-main">
     <div class="page-header">
         <div>
             <h1 class="page-title">Settings</h1>
-            <p class="page-subtitle">Configure AI summarization and your preferences.</p>
+            <p class="page-subtitle">Appearance, account password, and Groq AI.</p>
         </div>
         <div class="page-header-actions">
             <a href="{{ url_for('main.accounts') }}" class="btn btn-ghost">Accounts</a>
-            <a href="{{ url_for('main.dashboard') }}" class="btn btn-ghost">Dashboard</a>
+            <a href="{{ url_for('main.inbox') }}" class="btn btn-ghost">Inbox</a>
         </div>
     </div>
 
-    <!-- Account password -->
+    <section class="panel settings-panel">
+        <h2 class="panel-title">Appearance</h2>
+        <p class="panel-hint">Theme is saved in your browser. Use the header menu for quick switching.</p>
+        <div class="theme-toggle-row" style="max-width:320px">
+            <button type="button" class="theme-toggle-btn" data-theme-pick="light">Light</button>
+            <button type="button" class="theme-toggle-btn" data-theme-pick="dark">Dark</button>
+            <button type="button" class="theme-toggle-btn" data-theme-pick="system">System</button>
+        </div>
+    </section>
+
     <section class="panel settings-panel">
         <h2 class="panel-title">Account Password</h2>
         <p class="panel-hint">
-            Set a password for your email-tools account so you can log back in securely with just
-            your email + this password — no Gmail App Password needed every time.
+            Protect your email-tools login. Without a password, the next sign-in requires
+            your mailbox App Password from a connected IMAP account.
             {% if has_app_password %}
-            <strong style="color:var(--teal)">✓ A password is currently set.</strong>
+            <strong class="text-ok">✓ A password is currently set.</strong>
             {% else %}
-            No password set — anyone who knows your email can log in on this server.
+            No password set — connect IMAP or set a password below.
             {% endif %}
         </p>
         <form action="{{ url_for('main.settings') }}" method="post" class="settings-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="action" value="set_app_password">
             <label class="form-label">
                 New account password
@@ -41,52 +51,62 @@
             </label>
             <div class="form-actions">
                 <button type="submit" class="btn btn-primary">{{ 'Change Password' if has_app_password else 'Set Password' }}</button>
-                {% if has_app_password %}
-                <form action="{{ url_for('main.settings') }}" method="post" style="display:inline">
-                    <input type="hidden" name="action" value="remove_app_password">
-                    <button type="submit" class="btn btn-ghost">Remove Password</button>
-                </form>
-                {% endif %}
             </div>
         </form>
+        {% if has_app_password %}
+        <form action="{{ url_for('main.settings') }}" method="post" class="settings-form" style="margin-top:12px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="remove_app_password">
+            <button type="submit" class="btn btn-ghost">Remove Password</button>
+        </form>
+        {% endif %}
     </section>
 
-    <!-- Groq API key -->
     <section class="panel settings-panel">
-        <h2 class="panel-title">Groq AI — API Key</h2>
+        <h2 class="panel-title">Groq AI</h2>
         <p class="panel-hint">
-            Your personal Groq key is used for AI-powered email summaries.
-            Get one free at <strong>console.groq.com</strong>.
-            If left empty the server-level key (if configured) is used.
-            The key is stored encrypted in your account.
+            Powers summaries, inbox brief, Needs Reply, and tag classification.
+            {% if has_groq_key %}
+            <strong class="text-ok">✓ Key saved (encrypted).</strong>
+            {% endif %}
         </p>
+        <p class="panel-hint">
+            <strong>{{ ai_analyzed }}</strong> emails analyzed with AI ·
+            <strong>{{ ai_pending }}</strong> still heuristic-only.
+        </p>
+        {% if groq_available and ai_pending > 0 %}
+        <form action="{{ url_for('main.settings') }}" method="post" style="margin-bottom:16px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="reanalyze_unanalyzed">
+            <button type="submit" class="btn btn-teal">Re-analyze unanalyzed ({{ ai_pending }})</button>
+        </form>
+        {% endif %}
         <form action="{{ url_for('main.settings') }}" method="post" class="settings-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="action" value="save_groq">
             <label class="form-label">
                 Groq API Key
-                <input
-                    type="password"
-                    name="groq_api_key"
-                    class="form-input"
-                    placeholder="gsk_…"
-                    autocomplete="off"
-                    value="{{ saved_key or '' }}"
-                >
+                <input type="password" name="groq_api_key" class="form-input"
+                       placeholder="gsk_… (leave blank to keep existing)" autocomplete="off">
             </label>
             {% if active_model %}
-            <p class="model-badge">Active model: <code>{{ active_model }}</code></p>
+            <p class="model-badge">Default model: <code>{{ active_model }}</code></p>
             {% endif %}
             <div class="form-actions">
-                <button type="submit" class="btn btn-primary">Save Settings</button>
-                {% if saved_key %}
-                <form action="{{ url_for('main.settings') }}" method="post" style="display:inline">
-                    <input type="hidden" name="action" value="save_groq">
-                    <input type="hidden" name="groq_api_key" value="">
-                    <button type="submit" class="btn btn-ghost">Clear Key</button>
-                </form>
-                {% endif %}
+                <button type="submit" class="btn btn-primary">Save Key</button>
             </div>
         </form>
+        {% if has_groq_key %}
+        <form action="{{ url_for('main.settings') }}" method="post" style="margin-top:12px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="clear_groq">
+            <button type="submit" class="btn btn-ghost">Clear Key</button>
+        </form>
+        {% endif %}
+        <p class="panel-hint" style="margin-top:1rem">
+            Mail sync date and message limits are configured per account on
+            <a href="{{ url_for('main.accounts') }}">Accounts</a> or the Dashboard sidebar.
+        </p>
     </section>
 </main>
 {% endblock %}

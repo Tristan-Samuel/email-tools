@@ -3,50 +3,75 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Email Intelligence Studio{% endblock %}</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap" rel="stylesheet">
+    <title>{% block title %}Inbox Tools{% endblock %}</title>
+    <script>
+    (function () {
+        var stored = localStorage.getItem("theme") || "system";
+        var dark = stored === "dark" ||
+            (stored === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+        document.documentElement.dataset.themeMode = stored;
+    })();
+    </script>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}?v={{ static_version }}">
 </head>
 <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
     <div class="page-shell">
         <header class="topbar">
-            <a href="{{ url_for('main.dashboard') }}" class="brand">
-                <span class="brand-mark">EI</span>
+            <a href="{{ url_for('main.inbox') }}" class="brand">
+                <span class="brand-mark">IT</span>
                 <span>
-                    <strong>Email Intelligence Studio</strong>
-                    <small>Summaries, sorting, and search for your inbox</small>
+                    <strong>Inbox Tools</strong>
+                    <small>Summary-first mail triage</small>
                 </span>
             </a>
             {% if current_user_email %}
-                <nav class="topbar-nav">
+                <nav class="topbar-nav" aria-label="Primary">
                     <a href="{{ url_for('main.inbox') }}" class="topbar-nav-link {% if request.endpoint == 'main.inbox' %}topbar-nav-link--active{% endif %}">Inbox</a>
                     <a href="{{ url_for('main.dashboard') }}" class="topbar-nav-link {% if request.endpoint == 'main.dashboard' %}topbar-nav-link--active{% endif %}">Dashboard</a>
                     <a href="{{ url_for('main.search_page') }}" class="topbar-nav-link {% if request.endpoint == 'main.search_page' %}topbar-nav-link--active{% endif %}">Search</a>
-                    <a href="{{ url_for('main.accounts') }}" class="topbar-nav-link {% if request.endpoint in ['main.accounts','main.accounts_add'] %}topbar-nav-link--active{% endif %}">Accounts</a>
-                    <a href="{{ url_for('main.tags') }}" class="topbar-nav-link {% if request.endpoint in ['main.tags','main.tags_edit'] %}topbar-nav-link--active{% endif %}">Tags</a>
-                    <a href="{{ url_for('main.respond_now') }}" class="topbar-nav-link {% if request.endpoint == 'main.respond_now' %}topbar-nav-link--active{% endif %}">Respond Now</a>
+                    <a href="{{ url_for('main.respond_now') }}" class="topbar-nav-link {% if request.endpoint == 'main.respond_now' %}topbar-nav-link--active{% endif %}">Needs Reply</a>
+                    <a href="{{ url_for('main.tags') }}" class="topbar-nav-link {% if request.endpoint in ('main.tags', 'main.tags_edit') %}topbar-nav-link--active{% endif %}">Tags</a>
                 </nav>
+                {% if active_accounts %}
+                <nav class="acct-pills" aria-label="Account filter">
+                    <a href="{{ url_for('main.inbox') }}" class="acct-pill {% if not source_account %}acct-pill--active{% endif %}">All</a>
+                    {% for acct in active_accounts %}
+                    <a href="{{ url_for('main.inbox', source_account=acct.account_email) }}"
+                       class="acct-pill {% if source_account == acct.account_email %}acct-pill--active{% endif %}">
+                        {{ acct.account_email.split('@')[0] }}
+                    </a>
+                    {% endfor %}
+                </nav>
+                {% endif %}
                 <form class="searchbar" action="{{ url_for('main.search_page') }}" method="get">
-                    <input type="search" name="query" value="{{ query|default('') }}" placeholder="Search emails…">
+                    <label class="visually-hidden" for="nav-search">Search emails</label>
+                    <input id="nav-search" type="search" name="query" value="{{ query|default('') }}" placeholder="Search…">
                     <button type="submit">Search</button>
                 </form>
                 <div class="topbar-user">
-                    <span class="topbar-email">{{ current_user_email }}</span>
-                    <form action="{{ url_for('main.accounts_sync_all') }}" method="post" title="Sync all accounts">
-                        <button type="submit" class="btn-refresh" title="Fetch new emails">
-                            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M13.5 8A5.5 5.5 0 1 1 8 2.5c1.8 0 3.4.87 4.4 2.2"/>
-                                <polyline points="10.5 1 13.5 4.7 10.5 4.7"/>
-                            </svg>
-                            Sync
-                        </button>
-                    </form>
-                    <a href="{{ url_for('main.settings') }}" class="btn-icon" title="Settings">⚙</a>
-                    <form action="{{ url_for('main.logout') }}" method="post">
-                        <button type="submit" class="btn-logout">Log Out</button>
-                    </form>
+                    <details class="account-menu">
+                        <summary class="topbar-email" aria-label="Account menu">{{ current_user_email }}</summary>
+                        <div class="account-menu-panel">
+                            <a href="{{ url_for('main.accounts') }}">Accounts</a>
+                            <a href="{{ url_for('main.settings') }}">Settings</a>
+                            <div class="theme-toggle-row" role="group" aria-label="Theme">
+                                <button type="button" class="theme-toggle-btn" data-theme-pick="light">Light</button>
+                                <button type="button" class="theme-toggle-btn" data-theme-pick="dark">Dark</button>
+                                <button type="button" class="theme-toggle-btn" data-theme-pick="system">System</button>
+                            </div>
+                            <form action="{{ url_for('main.accounts_sync_all') }}" method="post">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit">Sync all</button>
+                            </form>
+                            <div class="account-menu-divider"></div>
+                            <form action="{{ url_for('main.logout') }}" method="post">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit">Log out</button>
+                            </form>
+                        </div>
+                    </details>
                 </div>
             {% else %}
                 <a class="login-link" href="{{ url_for('main.login') }}">Log In</a>
@@ -55,16 +80,19 @@
 
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
-                <section class="flash-stack">
+                <section class="flash-stack" aria-live="polite">
                     {% for category, message in messages %}
-                        <div class="flash flash-{{ category }}">{{ message }}</div>
+                        <div class="flash flash-{{ category }}" role="alert">{{ message }}</div>
                     {% endfor %}
                 </section>
             {% endif %}
         {% endwith %}
 
-        {% block content %}{% endblock %}
+        <div id="main-content">
+            {% block content %}{% endblock %}
+        </div>
     </div>
     <script src="{{ url_for('static', filename='js/app.js') }}?v={{ static_version }}"></script>
+    {% block scripts %}{% endblock %}
 </body>
 </html>

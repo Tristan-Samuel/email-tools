@@ -1,58 +1,223 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
+import logging
+import os
+import secrets
+import uuid
 from pathlib import Path
+from urllib.parse import quote
 
-from flask import Blueprint, current_app, flash, g, jsonify, redirect, render_template, request, session, url_for
+from flask import Blueprint, current_app, flash, g, has_request_context, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.utils import secure_filename
 
-from .services import crypto, imap_service
+from .services import crypto, imap_service, mail
 from .services.email_parser import parse_email_upload
 from .services.groq_client import GroqClient
-from .services.summary import build_digest, build_email_record
+from .services.summary import build_digest, build_email_record, build_important_items
+from .services import sync_worker
+
+logger = logging.getLogger(__name__)
+
+_VERIFICATION_TTL = datetime.timedelta(minutes=10)
+_RESEND_COOLDOWN = datetime.timedelta(seconds=60)
+_MAX_VERIFICATION_ATTEMPTS = 5
 
 
 bp = Blueprint("main", __name__)
 
-_KNOWN_IMAP_HOSTS: dict[str, str] = {
-    "gmail.com": "imap.gmail.com",
-    "googlemail.com": "imap.gmail.com",
-    "yahoo.com": "imap.mail.yahoo.com",
-    "yahoo.co.uk": "imap.mail.yahoo.com",
-    "outlook.com": "outlook.office365.com",
-    "hotmail.com": "outlook.office365.com",
-    "live.com": "outlook.office365.com",
-    "icloud.com": "imap.mail.me.com",
-    "me.com": "imap.mail.me.com",
-    "mac.com": "imap.mail.me.com",
-    "protonmail.com": "127.0.0.1",
-    "proton.me": "127.0.0.1",
-}
-
-
 def _guess_imap_host(email: str) -> str:
-    domain = email.split("@")[-1].lower() if "@" in email else ""
-    return _KNOWN_IMAP_HOSTS.get(domain, f"imap.{domain}" if domain else "")
+    return imap_service.guess_imap_host(email)
+
+
+def _guess_imap_port(email: str, host: str) -> int:
+    return imap_service.guess_imap_port(email, host)
+
+
+def _parse_imap_form() -> tuple[dict | None, str]:
+    """Validate add-account form fields. Return (payload, error_message)."""
+    account_email = (request.form.get("account_email") or "").strip().lower()
+    password = request.form.get("password") or ""
+    provided_host = (request.form.get("imap_host") or "").strip()
+    imap_host = imap_service.resolve_imap_host(account_email, provided_host)
+    try:
+        imap_port = int(request.form.get("imap_port") or _guess_imap_port(account_email, imap_host))
+    except ValueError:
+        imap_port = _guess_imap_port(account_email, imap_host)
+    if imap_port < 1 or imap_port > 65535:
+        imap_port = _guess_imap_port(account_email, imap_host)
+    if "@" not in account_email or not password:
+        return None, "Email address and App Password are required."
+    if not imap_host:
+        return None, "IMAP host is required."
+    return {
+        "account_email": account_email,
+        "password": password,
+        "imap_host": imap_host,
+        "imap_port": imap_port,
+    }, ""
+
+
+def _verify_imap_login(store, user_email: str, imap_password: str) -> tuple[bool, str]:
+    """Return (ok, error_message) after testing the password against connected accounts."""
+    accounts = store.list_imap_accounts(user_email)
+    if not accounts:
+        return False, "No connected inbox accounts for this email."
+    last_err = ""
+    for account in accounts:
+        ok, err = imap_service.test_connection(
+            account["imap_host"],
+            account["imap_port"],
+            account["account_email"],
+            imap_password,
+        )
+        if ok:
+            return True, ""
+        last_err = err
+    return False, last_err or "IMAP verification failed."
+
+
+def _is_production_app() -> bool:
+    return os.environ.get("FLASK_ENV") == "production" or os.environ.get("ENV") == "production"
+
+
+def _valid_email(email: str) -> bool:
+    return "@" in email and "." in email.split("@")[-1]
+
+
+def _generate_verification_code() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _utcnow() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _parse_iso(ts: str) -> datetime.datetime:
+    return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
+def _send_signup_code(user_email: str, code: str) -> tuple[bool, str, bool]:
+    """Return (sent_ok, error_message, dev_code_shown)."""
+    subject = "Your Inbox Tools verification code"
+    body = (
+        f"Your verification code is: {code}\n\n"
+        "Enter this code on the signup page to finish creating your account. "
+        "The code expires in 10 minutes.\n\n"
+        "If you did not request this, you can ignore this email."
+    )
+    if mail.smtp_configured():
+        ok, err = mail.send_email(user_email, subject, body)
+        return ok, err, False
+
+    if _is_production_app():
+        return False, "Email verification is not configured. Contact the site administrator.", False
+
+    # ponytail: dev-only — show code on screen when SMTP is unset so localhost signup still works.
+    logger.info("Signup verification code for %s: %s (SMTP not configured)", user_email, code)
+    return True, "", True
+
+
+def _issue_verification_code(store, user_email: str) -> tuple[str | None, str, bool]:
+    """Create a new code, persist it, and send. Return (code_or_none, error, dev_code_shown)."""
+    existing = store.get_verification(user_email)
+    now = _utcnow()
+    if existing:
+        last_sent = _parse_iso(existing["last_sent_at"])
+        if now - last_sent < _RESEND_COOLDOWN:
+            wait = int((_RESEND_COOLDOWN - (now - last_sent)).total_seconds())
+            return None, f"Wait {max(wait, 1)} seconds before requesting another code.", False
+
+    code = _generate_verification_code()
+    code_hash = generate_password_hash(code, method="pbkdf2:sha256")
+    expires_at = (now + _VERIFICATION_TTL).isoformat()
+    store.create_verification(user_email, code_hash, expires_at, now.isoformat())
+
+    sent_ok, err, dev_shown = _send_signup_code(user_email, code)
+    if not sent_ok:
+        store.delete_verification(user_email)
+        return None, err, False
+    return code if dev_shown else None, "", dev_shown
+
+
+def _verify_signup_code(store, user_email: str, code: str) -> tuple[bool, str]:
+    """Return (ok, error_message)."""
+    row = store.get_verification(user_email)
+    if row is None:
+        return False, "No verification code on file. Request a new code."
+
+    if row["attempt_count"] >= _MAX_VERIFICATION_ATTEMPTS:
+        store.delete_verification(user_email)
+        return False, "Too many incorrect attempts. Request a new code."
+
+    expires = _parse_iso(row["expires_at"])
+    if _utcnow() > expires:
+        store.delete_verification(user_email)
+        return False, "Verification code expired. Request a new code."
+
+    if not check_password_hash(row["code_hash"], code.strip()):
+        attempts = store.bump_verification_attempts(user_email)
+        remaining = _MAX_VERIFICATION_ATTEMPTS - attempts
+        if remaining <= 0:
+            store.delete_verification(user_email)
+            return False, "Too many incorrect attempts. Request a new code."
+        return False, f"Incorrect code. {remaining} attempt(s) remaining."
+
+    return True, ""
+
+
+def _mailto_draft(email: dict, draft: str) -> str:
+    sender = email.get("sender") or ""
+    subject = email.get("subject") or ""
+    return f"mailto:{quote(sender)}?subject={quote('Re: ' + subject)}&body={quote(draft)}"
+
+
+def _invalidate_needs_reply_cache() -> None:
+    if has_request_context():
+        session.pop("needs_reply_cache", None)
+
+
+def _groq_model_cache_key(api_key: str) -> str:
+    fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
+    return f"groq_model_{fingerprint}"
 
 
 def get_store():
     return current_app.extensions["email_store"]
 
 
+def get_credential_key() -> str:
+    return current_app.config["CREDENTIAL_ENCRYPTION_KEY"]
+
+
 def get_groq_client(user_email: str = "") -> GroqClient:
-    # Allow a per-user Groq key stored in DB to override the env/config key.
     email = user_email or getattr(g, "current_user_email", "")
     user_api_key = ""
     if email:
         try:
-            user_api_key = get_store().get_setting(email, "groq_api_key")
+            stored = get_store().get_setting(email, "groq_api_key")
+            if stored:
+                user_api_key = crypto.decrypt(stored, get_credential_key(), purpose="groq")
         except Exception:
             pass
     api_key = user_api_key or current_app.config.get("GROQ_API_KEY", "")
-    return GroqClient(
+    client = GroqClient(
         api_key=api_key,
         default_model=current_app.config.get("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile"),
     )
+    if api_key:
+        cache_key = _groq_model_cache_key(api_key)
+        cached = current_app.extensions.get(cache_key)
+        if cached:
+            client._cached_best_model = cached
+    return client
+
+
+def _cache_groq_model(client: GroqClient) -> None:
+    if client.enabled and client._cached_best_model:
+        current_app.extensions[_groq_model_cache_key(client.api_key)] = client._cached_best_model
 
 
 def require_login():
@@ -62,19 +227,129 @@ def require_login():
     return None
 
 
+def require_login_api():
+    if not getattr(g, "current_user_email", ""):
+        return jsonify({"error": "authentication required"}), 401
+    return None
+
+
+def _parse_sync_max(raw: str | int | None, default: int = 200) -> int:
+    try:
+        return max(1, min(int(raw or default), 2000))
+    except (TypeError, ValueError):
+        return default
+
+
+def _default_sync_since() -> str:
+    return (_utcnow() - datetime.timedelta(days=90)).date().isoformat()
+
+
+def _parse_since_date(since_str: str | None) -> datetime.date | None:
+    if not since_str:
+        return None
+    try:
+        return datetime.date.fromisoformat(since_str.strip())
+    except ValueError:
+        return None
+
+
+def _enrich_imap_accounts(store, accounts: list[dict]) -> list[dict]:
+    enriched: list[dict] = []
+    for acct in accounts:
+        row = dict(acct)
+        row["has_older_mail"] = store.account_has_older_mail(acct["id"])
+        enriched.append(row)
+    return enriched
+
+
+def sync_one_account(
+    store,
+    account: dict,
+    user_email: str,
+    groq_client: GroqClient,
+    limit: int | None = None,
+    since_date: datetime.date | None = None,
+    backfill_only: bool = False,
+) -> tuple[int, str | None]:
+    """Fetch, build records, upsert, and update IMAP checkpoints for one account."""
+    password = crypto.decrypt(account["encrypted_password"], get_credential_key(), purpose="imap")
+    if not password:
+        return 0, f"{account['account_email']}: could not decrypt credentials — re-add this account"
+
+    sync_max = _parse_sync_max(limit or account.get("sync_max_count"))
+    since_str = account.get("sync_since_date")
+    if since_date is None:
+        since_date = _parse_since_date(since_str)
+    if since_date is None and not backfill_only:
+        since_date = _parse_since_date(_default_sync_since())
+
+    folders = store.get_enabled_folders(account["id"])
+    total_imported = 0
+    inbox_last_uid = account.get("last_uid") or 0
+    inbox_backfill = account.get("backfill_uid") or 0
+    inbox_uidvalidity = account.get("uidvalidity") or 0
+
+    for folder in folders:
+        folder_state = store.get_folder_sync(account["id"], folder)
+        since_uid = (folder_state or {}).get("last_uid", account.get("last_uid") or 0)
+        backfill_uid = (folder_state or {}).get("backfill_uid", account.get("backfill_uid") or 0)
+        stored_uidvalidity = (folder_state or {}).get("uidvalidity", account.get("uidvalidity") or 0)
+
+        emails_raw, last_uid, new_backfill, uidvalidity = imap_service.fetch_emails(
+            host=account["imap_host"],
+            port=account["imap_port"],
+            username=account["account_email"],
+            password=password,
+            folder=folder,
+            since_uid=since_uid,
+            backfill_uid=backfill_uid,
+            stored_uidvalidity=stored_uidvalidity,
+            limit=sync_max,
+            since_date=since_date,
+            backfill_only=backfill_only,
+        )
+        records = [
+            build_email_record(
+                msg,
+                source_name=account["account_email"],
+                user_email=user_email,
+                source_account=account["account_email"],
+                groq_client=groq_client,
+            )
+            for msg in emails_raw
+        ]
+        total_imported += store.bulk_upsert(records)
+        store.update_folder_sync(account["id"], folder, last_uid, new_backfill, uidvalidity)
+        if folder.upper() == "INBOX":
+            inbox_last_uid = last_uid
+            inbox_backfill = new_backfill
+            inbox_uidvalidity = uidvalidity
+
+    store.update_imap_last_sync(
+        account["id"],
+        inbox_last_uid,
+        backfill_uid=inbox_backfill,
+        uidvalidity=inbox_uidvalidity,
+    )
+    _invalidate_needs_reply_cache()
+    _cache_groq_model(groq_client)
+    return total_imported, None
+
+
 @bp.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
         user_email = (request.form.get("email") or "").strip().lower()
-        if "@" not in user_email or "." not in user_email.split("@")[-1]:
+        if not _valid_email(user_email):
             flash("Enter a valid email address.", "error")
             return render_template("login.html")
 
         store = get_store()
-
-        # --- Check app-level account password if one has been set ---
         stored_hash = store.get_app_password_hash(user_email)
         app_pw = (request.form.get("app_password") or "").strip()
+        new_pw = (request.form.get("new_app_password") or "").strip()
+        confirm_pw = (request.form.get("confirm_app_password") or "").strip()
+
         if stored_hash:
             if not app_pw:
                 flash("This account has a password set. Enter it to log in.", "error")
@@ -82,111 +357,228 @@ def login():
             if not check_password_hash(stored_hash, app_pw):
                 flash("Incorrect account password.", "error")
                 return render_template("login.html", needs_app_password=True, prefill_email=user_email)
+            session["user_email"] = user_email
+            flash("Logged in successfully.", "success")
+            return redirect(url_for("main.inbox"))
 
-        session["user_email"] = user_email
+        imap_accounts = store.list_imap_accounts(user_email)
+        imap_pw = (request.form.get("imap_password") or "").strip()
 
-        password = (request.form.get("password") or "").strip()
-        if password:
-            imap_host = (request.form.get("imap_host") or _guess_imap_host(user_email)).strip()
-            try:
-                imap_port = int(request.form.get("imap_port") or 993)
-            except ValueError:
-                imap_port = 993
-
-            ok, err = imap_service.test_connection(imap_host, imap_port, user_email, password)
-            if ok:
-                encrypted = crypto.encrypt(password, current_app.config["SECRET_KEY"])
-                account_id = store.save_imap_account(
-                    user_email=user_email,
-                    account_email=user_email,
-                    imap_host=imap_host,
-                    imap_port=imap_port,
-                    encrypted_password=encrypted,
+        if imap_accounts:
+            if not imap_pw:
+                flash("This account uses IMAP sign-in. Enter your mailbox App Password.", "error")
+                return render_template(
+                    "login.html",
+                    needs_imap_login=True,
+                    prefill_email=user_email,
                 )
-                # Fetch the 50 most recent emails immediately so the dashboard isn't empty.
-                try:
-                    emails_raw, max_uid = imap_service.fetch_emails(
-                        host=imap_host,
-                        port=imap_port,
-                        username=user_email,
-                        password=password,
-                        limit=50,
+            ok, err = _verify_imap_login(store, user_email, imap_pw)
+            if not ok:
+                flash(f"IMAP verification failed: {err}", "error")
+                return render_template(
+                    "login.html",
+                    needs_imap_login=True,
+                    prefill_email=user_email,
+                )
+            if new_pw:
+                if len(new_pw) < 6:
+                    flash("Password must be at least 6 characters.", "error")
+                    return render_template(
+                        "login.html",
+                        needs_imap_login=True,
+                        prefill_email=user_email,
+                        show_set_password=True,
                     )
-                    groq_client = get_groq_client(user_email)
-                    records = [
-                        build_email_record(
-                            msg,
-                            source_name=user_email,
-                            user_email=user_email,
-                            source_account=user_email,
-                            groq_client=groq_client,
-                        )
-                        for msg in emails_raw
-                    ]
-                    imported = store.bulk_upsert(records)
-                    store.update_imap_last_sync(account_id, max_uid)
-                    flash(f"Inbox connected — {imported} recent email(s) loaded.", "success")
-                except Exception as exc:
-                    flash(f"Inbox connected. Initial sync failed: {exc}", "error")
-            else:
-                flash(f"Logged in, but inbox connection failed: {err}", "error")
-        else:
-            existing = store.list_imap_accounts(user_email)
-            if not existing:
-                flash("Logged in. Add an App Password to connect your inbox automatically.", "success")
-            else:
-                flash("Logged in successfully.", "success")
+                if new_pw != confirm_pw:
+                    flash("Passwords do not match.", "error")
+                    return render_template(
+                        "login.html",
+                        needs_imap_login=True,
+                        prefill_email=user_email,
+                        show_set_password=True,
+                    )
+                store.set_app_password(user_email, generate_password_hash(new_pw, method="pbkdf2:sha256"))
+            session["user_email"] = user_email
+            flash("Logged in with IMAP verification.", "success")
+            return redirect(url_for("main.inbox"))
 
-        return redirect(url_for("main.dashboard"))
+        flash("No account found for this email. Create one first.", "error")
+        return render_template("login.html", prefill_email=user_email)
 
     if getattr(g, "current_user_email", ""):
-        return redirect(url_for("main.dashboard"))
+        return redirect(url_for("main.inbox"))
 
     return render_template("login.html")
+
+
+@bp.route("/signup", methods=["GET", "POST"])
+def signup():
+    if getattr(g, "current_user_email", ""):
+        return redirect(url_for("main.inbox"))
+
+    store = get_store()
+    step = "email"
+    prefill_email = (session.get("pending_signup_email") or "").strip().lower()
+    dev_code: str | None = None
+
+    if request.method == "POST":
+        action = (request.form.get("action") or "send_code").strip()
+        user_email = (request.form.get("email") or prefill_email or "").strip().lower()
+
+        if action == "resend_code":
+            if not _valid_email(user_email):
+                flash("Enter a valid email address.", "error")
+                return render_template("signup.html", step="email")
+            if store.get_app_password_hash(user_email):
+                flash("An account already exists for this email. Log in instead.", "error")
+                return redirect(url_for("main.login"))
+            dev_code, err, dev_shown = _issue_verification_code(store, user_email)
+            if err:
+                flash(err, "error")
+            else:
+                session["pending_signup_email"] = user_email
+                flash("A new verification code was sent.", "success")
+                if dev_shown and dev_code:
+                    flash(f"Development mode — your code is {dev_code}", "success")
+            return render_template(
+                "signup.html",
+                step="verify",
+                prefill_email=user_email,
+                dev_code=dev_code if dev_shown else None,
+            )
+
+        if action == "send_code":
+            if not _valid_email(user_email):
+                flash("Enter a valid email address.", "error")
+                return render_template("signup.html", step="email")
+            if store.get_app_password_hash(user_email):
+                flash("An account already exists for this email. Log in instead.", "error")
+                return redirect(url_for("main.login"))
+            dev_code, err, dev_shown = _issue_verification_code(store, user_email)
+            if err:
+                flash(err, "error")
+                return render_template("signup.html", step="email", prefill_email=user_email)
+            session["pending_signup_email"] = user_email
+            flash("Check your email for a 6-digit verification code.", "success")
+            if dev_shown and dev_code:
+                flash(f"Development mode — your code is {dev_code}", "success")
+            return render_template(
+                "signup.html",
+                step="verify",
+                prefill_email=user_email,
+                dev_code=dev_code if dev_shown else None,
+            )
+
+        if action == "confirm":
+            user_email = (user_email or session.get("pending_signup_email") or "").strip().lower()
+            code = (request.form.get("verification_code") or "").strip()
+            new_pw = (request.form.get("new_app_password") or "").strip()
+            confirm_pw = (request.form.get("confirm_app_password") or "").strip()
+
+            if not _valid_email(user_email):
+                flash("Enter a valid email address.", "error")
+                return render_template("signup.html", step="email")
+            if store.get_app_password_hash(user_email):
+                flash("An account already exists for this email. Log in instead.", "error")
+                return redirect(url_for("main.login"))
+            if not code:
+                flash("Enter the 6-digit verification code from your email.", "error")
+                return render_template("signup.html", step="verify", prefill_email=user_email)
+            if len(new_pw) < 6:
+                flash("Password must be at least 6 characters.", "error")
+                return render_template("signup.html", step="verify", prefill_email=user_email)
+            if new_pw != confirm_pw:
+                flash("Passwords do not match.", "error")
+                return render_template("signup.html", step="verify", prefill_email=user_email)
+
+            ok, err = _verify_signup_code(store, user_email, code)
+            if not ok:
+                flash(err, "error")
+                return render_template("signup.html", step="verify", prefill_email=user_email)
+
+            store.set_app_password(user_email, generate_password_hash(new_pw, method="pbkdf2:sha256"))
+            store.delete_verification(user_email)
+            session.pop("pending_signup_email", None)
+            session["user_email"] = user_email
+            flash("Account created. Connect your inbox next.", "success")
+            return redirect(url_for("main.accounts_add"))
+
+    if prefill_email and store.get_verification(prefill_email):
+        step = "verify"
+
+    return render_template("signup.html", step=step, prefill_email=prefill_email, dev_code=dev_code)
+
+
+@bp.get("/help")
+def help_page():
+    return render_template("help.html")
 
 
 @bp.post("/logout")
 def logout():
     session.pop("user_email", None)
+    session.pop("needs_reply_cache", None)
     flash("You have been logged out.", "success")
     return redirect(url_for("main.login"))
 
 
 @bp.get("/")
+def index():
+    if getattr(g, "current_user_email", ""):
+        return redirect(url_for("main.inbox"))
+    return redirect(url_for("main.login"))
+
+
+@bp.get("/dashboard")
 def dashboard():
     login_redirect = require_login()
     if login_redirect is not None:
         return login_redirect
 
     store = get_store()
-    category = request.args.get("category") or None
-    query = request.args.get("query", "").strip()
-    source_account = request.args.get("source_account") or None
     user_email = g.current_user_email
-
-    if query:
-        emails = store.search(query, user_email=user_email, source_account=source_account)
-    else:
-        emails = store.list_emails(category=category, user_email=user_email, source_account=source_account)
+    source_account = request.args.get("source_account") or None
 
     stats = store.get_stats(user_email=user_email, source_account=source_account)
     categories = store.get_categories(user_email=user_email, source_account=source_account)
-    digest = build_digest(store.list_emails(limit=50, user_email=user_email, source_account=source_account))
     imap_accounts = store.list_imap_accounts(user_email)
-    recent_unread = store.list_emails(limit=20, user_email=user_email, only_unread=True,
-                                      source_account=source_account, sort="date_desc")
+    recent_unread = store.list_emails(
+        limit=20,
+        user_email=user_email,
+        only_unread=True,
+        source_account=source_account,
+        sort="date_desc",
+    )
+    urgent_emails = store.list_emails(
+        limit=15,
+        user_email=user_email,
+        source_account=source_account,
+        sort="priority",
+    )
+    urgent_emails = [e for e in urgent_emails if e["priority_score"] >= 75]
+    cached_emails = store.list_emails(limit=50, user_email=user_email, source_account=source_account)
+    groq = get_groq_client(user_email)
+    digest = build_digest(
+        cached_emails,
+        has_imap_accounts=bool(imap_accounts),
+        groq_client=groq,
+    )
+    if groq.enabled:
+        _cache_groq_model(groq)
+    important_emails = build_important_items(cached_emails)
 
     return render_template(
         "dashboard.html",
-        emails=emails,
         stats=stats,
         categories=categories,
         digest=digest,
-        selected_category=category,
-        query=query,
-        imap_accounts=imap_accounts,
+        imap_accounts=_enrich_imap_accounts(store, imap_accounts),
         source_account=source_account,
         recent_unread=recent_unread,
+        urgent_emails=urgent_emails,
+        important_emails=important_emails,
+        default_sync_since=_default_sync_since(),
+        default_sync_max=200,
     )
 
 
@@ -205,26 +597,32 @@ def upload():
     groq_client = get_groq_client()
     user_email = g.current_user_email
     imported_count = 0
+    upload_folder = Path(current_app.config["UPLOAD_FOLDER"])
 
     for file in files:
-        upload_path = Path(current_app.config["UPLOAD_FOLDER"]) / file.filename
+        safe_name = secure_filename(file.filename or "")
+        if not safe_name or safe_name in (".", "..") or "/" in safe_name or "\\" in safe_name:
+            flash(f"Skipped invalid filename: {file.filename}", "error")
+            continue
+
+        upload_path = upload_folder / f"{uuid.uuid4().hex}_{safe_name}"
         file.save(upload_path)
         try:
             parsed_messages = parse_email_upload(upload_path)
+            records = [
+                build_email_record(
+                    message,
+                    safe_name,
+                    user_email=user_email,
+                    groq_client=groq_client,
+                )
+                for message in parsed_messages
+            ]
+            imported_count += store.bulk_upsert(records)
         except ValueError as exc:
             flash(str(exc), "error")
-            continue
-
-        records = [
-            build_email_record(
-                message,
-                file.filename,
-                user_email=user_email,
-                groq_client=groq_client,
-            )
-            for message in parsed_messages
-        ]
-        imported_count += store.bulk_upsert(records)
+        finally:
+            upload_path.unlink(missing_ok=True)
 
     if groq_client.enabled:
         flash(f"Analyzed {imported_count} emails with Groq-powered summaries.", "success")
@@ -240,13 +638,13 @@ def email_detail(email_id: str):
         return login_redirect
 
     store = get_store()
-    email = store.get_email(email_id, user_email=g.current_user_email)
+    user_email = g.current_user_email
+    email = store.get_email(email_id, user_email=user_email)
     if email is None:
         flash("That email could not be found.", "error")
-        return redirect(url_for("main.dashboard"))
+        return redirect(url_for("main.inbox"))
 
     groq = get_groq_client()
-    # Auto-analyze on first view if not yet AI-analyzed
     auto_analyzed = False
     if groq.enabled and not email.get("ai_analyzed"):
         bullets = groq.summarize_email(
@@ -255,17 +653,64 @@ def email_detail(email_id: str):
             body=email["body"],
         )
         if bullets:
-            store.update_email_summary(email_id, g.current_user_email, bullets)
+            store.update_email_summary(email_id, user_email, bullets)
             email["bullet_summary"] = bullets
             email["ai_analyzed"] = 1
             auto_analyzed = True
 
     tags = store.get_email_tags(email_id)
-    # Mark as read on first open
+    all_tags = store.list_tags(user_email)
+    assigned_tag_ids = {t["id"] for t in tags}
+    thread_emails = store.list_thread_emails(email.get("thread_id", ""), user_email)
+    draft_reply = None
+    if groq.enabled and request.args.get("draft") == "1":
+        draft_reply = groq.draft_reply(
+            sender=email["sender"],
+            subject=email["subject"],
+            body=email["body"],
+        )
+        _cache_groq_model(groq)
     if not email.get("is_read"):
-        store.set_email_read(email_id, g.current_user_email, True)
-    return render_template("email_detail.html", email=email, groq_available=groq.enabled,
-                           auto_analyzed=auto_analyzed, tags=tags)
+        store.set_email_read(email_id, user_email, True)
+    return render_template(
+        "email_detail.html",
+        email=email,
+        groq_available=groq.enabled,
+        auto_analyzed=auto_analyzed,
+        tags=tags,
+        all_tags=all_tags,
+        assigned_tag_ids=assigned_tag_ids,
+        thread_emails=thread_emails,
+        draft_reply=draft_reply,
+        mailto_link=_mailto_draft(email, draft_reply) if draft_reply else "",
+    )
+
+
+@bp.post("/email/<email_id>/tags")
+def email_set_tags(email_id: str):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    if store.get_email(email_id, user_email=g.current_user_email) is None:
+        flash("Email not found.", "error")
+        return redirect(url_for("main.inbox"))
+
+    tag_ids = [int(tid) for tid in request.form.getlist("tag_ids") if tid.isdigit()]
+    store.set_email_tags(email_id, tag_ids)
+    flash("Tags updated.", "success")
+    return redirect(request.referrer or url_for("main.email_detail", email_id=email_id))
+
+
+@bp.post("/email/<email_id>/read")
+def email_mark_read(email_id: str):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    read = request.form.get("read", "1") == "1"
+    get_store().set_email_read(email_id, g.current_user_email, read)
+    return redirect(request.referrer or url_for("main.inbox"))
 
 
 @bp.post("/email/<email_id>/reanalyze")
@@ -318,9 +763,93 @@ def email_unhide(email_id: str):
     return redirect(request.referrer or url_for("main.hidden"))
 
 
-# ---------------------------------------------------------------------------
-# Account management
-# ---------------------------------------------------------------------------
+@bp.post("/inbox/bulk-hide")
+def inbox_bulk_hide():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    store = get_store()
+    user_email = g.current_user_email
+    hidden_ids = []
+    for email_id in request.form.getlist("email_ids"):
+        store.set_email_hidden(email_id, user_email, True)
+        hidden_ids.append(email_id)
+    if hidden_ids:
+        session["bulk_undo_ids"] = hidden_ids
+    flash("Selected emails hidden.", "success")
+    return redirect(request.referrer or url_for("main.inbox"))
+
+
+@bp.post("/inbox/bulk-unhide")
+def inbox_bulk_unhide():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    store = get_store()
+    user_email = g.current_user_email
+    for email_id in request.form.getlist("email_ids"):
+        store.set_email_hidden(email_id, user_email, False)
+    flash("Selected emails restored.", "success")
+    return redirect(request.referrer or url_for("main.inbox"))
+
+
+@bp.post("/inbox/bulk-read")
+def inbox_bulk_read():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    store = get_store()
+    user_email = g.current_user_email
+    read = request.form.get("read", "1") == "1"
+    for email_id in request.form.getlist("email_ids"):
+        store.set_email_read(email_id, user_email, read)
+    flash("Selected emails marked " + ("read." if read else "unread."), "success")
+    return redirect(request.referrer or url_for("main.inbox"))
+
+
+@bp.post("/email/<email_id>/draft-reply")
+def email_draft_reply(email_id: str):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    user_email = g.current_user_email
+    email = store.get_email(email_id, user_email=user_email)
+    if email is None:
+        flash("Email not found.", "error")
+        return redirect(url_for("main.inbox"))
+
+    groq = get_groq_client()
+    if not groq.enabled:
+        flash("Add a Groq API key in Settings to draft replies.", "error")
+        return redirect(url_for("main.email_detail", email_id=email_id))
+
+    reason = (request.form.get("reason") or "").strip()
+    draft = groq.draft_reply(
+        sender=email["sender"],
+        subject=email["subject"],
+        body=email["body"],
+        reason=reason,
+    )
+    _cache_groq_model(groq)
+    if not draft:
+        flash("Could not generate a draft reply.", "error")
+        return redirect(url_for("main.email_detail", email_id=email_id))
+
+    return render_template(
+        "email_detail.html",
+        email=email,
+        groq_available=True,
+        auto_analyzed=False,
+        tags=store.get_email_tags(email_id),
+        all_tags=store.list_tags(user_email),
+        assigned_tag_ids={t["id"] for t in store.get_email_tags(email_id)},
+        thread_emails=store.list_thread_emails(email.get("thread_id", ""), user_email),
+        draft_reply=draft,
+        mailto_link=_mailto_draft(email, draft),
+    )
+
 
 @bp.route("/accounts", methods=["GET"])
 def accounts():
@@ -328,8 +857,20 @@ def accounts():
     if login_redirect is not None:
         return login_redirect
 
-    imap_accounts = get_store().list_imap_accounts(g.current_user_email)
-    return render_template("accounts.html", imap_accounts=imap_accounts)
+    store = get_store()
+    imap_accounts = store.list_imap_accounts(g.current_user_email)
+    enriched = []
+    for acct in imap_accounts:
+        row = dict(acct)
+        row["folder_sync"] = store.list_folder_sync(acct["id"])
+        row["has_older_mail"] = store.account_has_older_mail(acct["id"])
+        enriched.append(row)
+    return render_template(
+        "accounts.html",
+        imap_accounts=enriched,
+        default_sync_since=_default_sync_since(),
+        default_sync_max=200,
+    )
 
 
 @bp.route("/accounts/add", methods=["GET", "POST"])
@@ -338,34 +879,66 @@ def accounts_add():
     if login_redirect is not None:
         return login_redirect
 
+    store = get_store()
+    user_email = g.current_user_email
+
     if request.method == "POST":
-        account_email = (request.form.get("account_email") or "").strip().lower()
-        password = request.form.get("password") or ""
-        imap_host = (request.form.get("imap_host") or "imap.gmail.com").strip()
-        imap_port = int(request.form.get("imap_port") or 993)
+        parsed, form_err = _parse_imap_form()
+        if parsed is None:
+            flash(form_err, "error")
+            return render_template(
+                "accounts.html",
+                imap_accounts=store.list_imap_accounts(user_email),
+                show_add_form=True,
+            )
+        account_email = parsed["account_email"]
+        password = parsed["password"]
+        imap_host = parsed["imap_host"]
+        imap_port = parsed["imap_port"]
 
-        if "@" not in account_email or not password:
-            flash("Email address and password are required.", "error")
-            return render_template("accounts.html", imap_accounts=get_store().list_imap_accounts(g.current_user_email), show_add_form=True)
-
-        # Test credentials before saving
         ok, err = imap_service.test_connection(imap_host, imap_port, account_email, password)
         if not ok:
             flash(f"Could not connect to {imap_host}: {err}", "error")
-            return render_template("accounts.html", imap_accounts=get_store().list_imap_accounts(g.current_user_email), show_add_form=True)
+            return render_template(
+                "accounts.html",
+                imap_accounts=store.list_imap_accounts(user_email),
+                show_add_form=True,
+            )
 
-        encrypted = crypto.encrypt(password, current_app.config["SECRET_KEY"])
-        get_store().save_imap_account(
-            user_email=g.current_user_email,
+        encrypted = crypto.encrypt(password, get_credential_key(), purpose="imap")
+        account_id = store.save_imap_account(
+            user_email=user_email,
             account_email=account_email,
             imap_host=imap_host,
             imap_port=imap_port,
             encrypted_password=encrypted,
         )
-        flash(f"Account {account_email} connected successfully.", "success")
+        store.update_imap_sync_prefs(account_id, _default_sync_since(), 200)
+        try:
+            remote_folders = imap_service.list_folders(imap_host, imap_port, account_email, password)
+            store.ensure_folder_sync_rows(account_id, remote_folders)
+        except Exception:
+            store.ensure_folder_sync_rows(account_id, ["INBOX"])
+
+        try:
+            groq_client = get_groq_client(user_email)
+            account = store.get_imap_account(account_id, user_email)
+            if account:
+                imported, sync_err = sync_one_account(store, account, user_email, groq_client, limit=200)
+                if sync_err:
+                    flash(f"Account connected. Initial sync issue: {sync_err}", "error")
+                else:
+                    flash(f"Account {account_email} connected — {imported} recent email(s) loaded.", "success")
+        except Exception as exc:
+            flash(f"Account connected. Initial sync failed: {exc}", "error")
+
         return redirect(url_for("main.accounts"))
 
-    return render_template("accounts.html", imap_accounts=get_store().list_imap_accounts(g.current_user_email), show_add_form=True)
+    return render_template(
+        "accounts.html",
+        imap_accounts=store.list_imap_accounts(user_email),
+        show_add_form=True,
+    )
 
 
 @bp.post("/accounts/delete/<int:account_id>")
@@ -391,42 +964,8 @@ def accounts_sync_all():
         flash("No accounts to sync.", "error")
         return redirect(url_for("main.accounts"))
 
-    groq_client = get_groq_client()
-    total_imported = 0
-    sync_errors: list[str] = []
-
-    for account in accounts:
-        password = crypto.decrypt(account["encrypted_password"], current_app.config["SECRET_KEY"])
-        if not password:
-            sync_errors.append(f"{account['account_email']}: could not decrypt credentials")
-            continue
-        try:
-            emails_raw, max_uid = imap_service.fetch_emails(
-                host=account["imap_host"],
-                port=account["imap_port"],
-                username=account["account_email"],
-                password=password,
-                since_uid=account["last_uid"] or 0,
-            )
-            records = [
-                build_email_record(
-                    msg,
-                    source_name=account["account_email"],
-                    user_email=g.current_user_email,
-                    source_account=account["account_email"],
-                    groq_client=groq_client,
-                )
-                for msg in emails_raw
-            ]
-            imported = store.bulk_upsert(records)
-            store.update_imap_last_sync(account["id"], max_uid)
-            total_imported += imported
-        except Exception as exc:
-            sync_errors.append(f"{account['account_email']}: {exc}")
-
-    for err in sync_errors:
-        flash(f"Sync error — {err}", "error")
-    flash(f"Synced {total_imported} new email(s) across {len(accounts)} account(s).", "success")
+    sync_worker.enqueue_sync(g.current_user_email)
+    flash(f"Sync queued for {len(accounts)} account(s). Refresh Inbox in a moment.", "success")
     return redirect(url_for("main.accounts"))
 
 
@@ -437,49 +976,92 @@ def accounts_sync(account_id: int):
         return login_redirect
 
     store = get_store()
+    user_email = g.current_user_email
+    account = store.get_imap_account(account_id, user_email)
+    if account is None:
+        flash("Account not found.", "error")
+        return redirect(url_for("main.accounts"))
+
+    since = (request.form.get("sync_since") or "").strip() or _default_sync_since()
+    sync_max = _parse_sync_max(request.form.get("sync_max") or account.get("sync_max_count"))
+    store.update_imap_sync_prefs(account_id, since, sync_max)
+    account = store.get_imap_account(account_id, user_email)
+    if account is None:
+        return redirect(url_for("main.accounts"))
+
+    folder_names = request.form.getlist("folders")
+    if folder_names:
+        for row in store.list_folder_sync(account_id):
+            store.set_folder_enabled(account_id, row["folder"], row["folder"] in folder_names)
+
+    sync_worker.enqueue_sync(user_email, account_ids=[account_id])
+    flash(f"Sync queued for {account['account_email']} (since {since}, max {sync_max}).", "success")
+    return redirect(request.referrer or url_for("main.accounts"))
+
+
+@bp.post("/accounts/load-older/<int:account_id>")
+def accounts_load_older(account_id: int):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    user_email = g.current_user_email
+    account = store.get_imap_account(account_id, user_email)
+    if account is None:
+        flash("Account not found.", "error")
+        return redirect(url_for("main.accounts"))
+
+    since = (request.form.get("sync_since") or account.get("sync_since_date") or _default_sync_since()).strip()
+    sync_max = _parse_sync_max(request.form.get("sync_max") or account.get("sync_max_count"))
+    store.update_imap_sync_prefs(account_id, since, sync_max)
+    account = store.get_imap_account(account_id, user_email)
+    if account is None:
+        return redirect(url_for("main.accounts"))
+
+    if not store.account_has_older_mail(account_id):
+        flash("No older mail pending for this account.", "error")
+        return redirect(request.referrer or url_for("main.accounts"))
+
+    groq_client = get_groq_client(user_email)
+    imported, sync_err = sync_one_account(
+        store,
+        account,
+        user_email,
+        groq_client,
+        limit=sync_max,
+        since_date=_parse_since_date(since),
+        backfill_only=True,
+    )
+    if sync_err:
+        flash(sync_err, "error")
+    else:
+        still_more = store.account_has_older_mail(account_id)
+        msg = f"Loaded {imported} older message(s)."
+        if still_more:
+            msg += " More older mail remains — click Load older again."
+        flash(msg, "success")
+    return redirect(request.referrer or url_for("main.dashboard"))
+
+
+@bp.post("/accounts/<int:account_id>/folders")
+def accounts_update_folders(account_id: int):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
     account = store.get_imap_account(account_id, g.current_user_email)
     if account is None:
         flash("Account not found.", "error")
         return redirect(url_for("main.accounts"))
 
-    password = crypto.decrypt(account["encrypted_password"], current_app.config["SECRET_KEY"])
-    if not password:
-        flash("Could not decrypt stored credentials. Please re-add this account.", "error")
-        return redirect(url_for("main.accounts"))
-
-    try:
-        emails_raw, max_uid = imap_service.fetch_emails(
-            host=account["imap_host"],
-            port=account["imap_port"],
-            username=account["account_email"],
-            password=password,
-            since_uid=account["last_uid"] or 0,
-        )
-    except Exception as exc:
-        flash(f"IMAP sync failed: {exc}", "error")
-        return redirect(url_for("main.accounts"))
-
-    groq_client = get_groq_client()
-    records = [
-        build_email_record(
-            msg,
-            source_name=account["account_email"],
-            user_email=g.current_user_email,
-            source_account=account["account_email"],
-            groq_client=groq_client,
-        )
-        for msg in emails_raw
-    ]
-    imported = store.bulk_upsert(records)
-    store.update_imap_last_sync(account_id, max_uid)
-
-    flash(f"Synced {imported} new email(s) from {account['account_email']}.", "success")
+    enabled = set(request.form.getlist("folders"))
+    for row in store.list_folder_sync(account_id):
+        store.set_folder_enabled(account_id, row["folder"], row["folder"] in enabled)
+    flash("Folder selection updated.", "success")
     return redirect(url_for("main.accounts"))
 
-
-# ---------------------------------------------------------------------------
-# Settings (Groq API key)
-# ---------------------------------------------------------------------------
 
 @bp.get("/search")
 def search_page():
@@ -503,31 +1085,41 @@ def search_page():
 
     emails: list = []
     ai_answer: str | None = None
-    searched = bool(query or sender_filter or recipient_filter or subject_filter or category or date_from or date_to or tag_filter)
+    ai_no_candidates = False
+    searched = bool(
+        query or sender_filter or recipient_filter or subject_filter
+        or category or date_from or date_to or tag_filter
+    )
+
+    common_kwargs = dict(
+        user_email=user_email,
+        source_account=source_account,
+        sender_filter=sender_filter or None,
+        recipient_filter=recipient_filter or None,
+        subject_filter=subject_filter or None,
+        category=category,
+        date_from=date_from,
+        date_to=date_to,
+        tag_filter=tag_filter,
+    )
 
     if searched:
-        common_kwargs = dict(
-            user_email=user_email,
-            source_account=source_account,
-            sender_filter=sender_filter or None,
-            recipient_filter=recipient_filter or None,
-            subject_filter=subject_filter or None,
-            category=category,
-            date_from=date_from,
-            date_to=date_to,
-            tag_filter=tag_filter,
-        )
         if query:
             emails = store.search(query, **common_kwargs)
         else:
             emails = store.list_emails(**common_kwargs)
 
         if ai_mode and query:
-            groq = get_groq_client()
-            if groq.enabled:
-                ai_answer = groq.answer_about_emails(query, emails)
+            if not emails:
+                ai_no_candidates = True
             else:
-                flash("Add a Groq API key in Settings to use AI search.", "error")
+                groq = get_groq_client()
+                if groq.enabled:
+                    ai_answer = groq.answer_about_emails(query, emails)
+                    if ai_answer is None:
+                        flash("AI search failed — check your Groq key.", "error")
+                else:
+                    flash("Add a Groq API key in Settings to use AI search.", "error")
 
     categories = store.get_categories(user_email=user_email)
     tags = store.list_tags(user_email)
@@ -544,13 +1136,42 @@ def search_page():
         source_account=source_account,
         ai_mode=ai_mode,
         ai_answer=ai_answer,
+        ai_no_candidates=ai_no_candidates,
         searched=searched,
         groq_available=groq_available,
         date_from=date_from or "",
         date_to=date_to or "",
         tags=tags,
         selected_tag=tag_filter,
+        selected_tag_ids=[],
     )
+
+
+@bp.post("/search/save-tag")
+def search_save_tag():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    user_email = g.current_user_email
+    name = (request.form.get("tag_name") or "").strip()
+    if not name:
+        flash("Tag name is required.", "error")
+        return redirect(url_for("main.search_page"))
+
+    tag_id = store.save_tag(user_email, name, "#2d8f85", False, "", False)
+    query = (request.form.get("query") or "").strip()
+    sender = (request.form.get("from_") or "").strip()
+    subject = (request.form.get("subject_") or "").strip()
+    if query:
+        store.save_tag_rule(tag_id, "body", "contains", query)
+    if sender:
+        store.save_tag_rule(tag_id, "sender", "contains", sender)
+    if subject:
+        store.save_tag_rule(tag_id, "subject", "contains", subject)
+    flash(f"Tag '{name}' created with filter rules from your search.", "success")
+    return redirect(url_for("main.search_page", tag_id=tag_id))
 
 
 @bp.get("/inbox")
@@ -572,8 +1193,11 @@ def inbox():
         sort = "date_desc"
     only_unread = request.args.get("unread") == "1"
     exclude_mailing_list = request.args.get("no_lists") == "1"
-    limit_raw = request.args.get("limit", "200")
-    limit = int(limit_raw) if limit_raw.isdigit() and 1 <= int(limit_raw) <= 5000 else 200
+    limit_raw = request.args.get("limit", "100")
+    limit = int(limit_raw) if limit_raw.isdigit() and 1 <= int(limit_raw) <= 500 else 100
+    offset_raw = request.args.get("offset", "0")
+    offset = int(offset_raw) if offset_raw.isdigit() and int(offset_raw) >= 0 else 0
+    selected_email_id = request.args.get("email_id") or None
     user_email = g.current_user_email
 
     common_kwargs = dict(
@@ -589,15 +1213,33 @@ def inbox():
     )
 
     if query:
-        emails = store.search(query, limit=limit, **common_kwargs)
+        emails = store.search(query, limit=limit, offset=offset, **common_kwargs)
+        total_count = store.count_emails(search_term=query, **{k: v for k, v in common_kwargs.items() if k != "sort"})
     else:
-        emails = store.list_emails(limit=limit, **common_kwargs)
+        emails = store.list_emails(limit=limit, offset=offset, **common_kwargs)
+        total_count = store.count_emails(**{k: v for k, v in common_kwargs.items() if k != "sort"})
+
+    thread_counts: dict[str, int] = {}
+    for email in emails:
+        tid = email.get("thread_id") or ""
+        if tid:
+            thread_counts[tid] = thread_counts.get(tid, 0) + 1
+
+    selected_email = None
+    if selected_email_id:
+        selected_email = store.get_email(selected_email_id, user_email=user_email)
+    elif emails and request.args.get("pane") == "1":
+        selected_email = emails[0]
+
+    prev_offset = max(0, offset - limit)
+    next_offset = offset + limit if offset + limit < total_count else None
 
     imap_accounts = store.list_imap_accounts(user_email)
     categories = store.get_categories(user_email=user_email, source_account=source_account)
     tags = store.list_tags(user_email)
     hidden_count = len(store.list_emails(user_email=user_email, only_hidden=True, exclude_hidden=False, limit=1000))
-    unread_count = len(store.list_emails(user_email=user_email, only_unread=True, limit=5000))
+    unread_count = len(store.list_emails(user_email=user_email, only_unread=True, limit=500))
+    email_tags_map = store.get_email_tags_batch([e["email_id"] for e in emails])
 
     return render_template(
         "inbox.html",
@@ -609,6 +1251,7 @@ def inbox():
         query=query,
         tags=tags,
         selected_tag=tag_filter,
+        selected_tag_ids=tag_ids_raw,
         date_from=date_from or "",
         date_to=date_to or "",
         hidden_count=hidden_count,
@@ -617,6 +1260,17 @@ def inbox():
         only_unread=only_unread,
         exclude_mailing_list=exclude_mailing_list,
         limit=limit,
+        offset=offset,
+        total_count=total_count,
+        prev_offset=prev_offset,
+        next_offset=next_offset,
+        selected_email=selected_email,
+        selected_email_id=selected_email_id,
+        thread_counts=thread_counts,
+        split_pane=request.args.get("pane") == "1",
+        bulk_undo_ids=session.pop("bulk_undo_ids", None),
+        email_tags_map=email_tags_map,
+        all_tags=tags,
     )
 
 
@@ -627,6 +1281,8 @@ def settings():
         return login_redirect
 
     store = get_store()
+    user_email = g.current_user_email
+
     if request.method == "POST":
         action = request.form.get("action", "save_groq")
 
@@ -640,52 +1296,74 @@ def settings():
             elif len(new_pw) < 6:
                 flash("Password must be at least 6 characters.", "error")
             else:
-                store.set_app_password(g.current_user_email, generate_password_hash(new_pw, method="pbkdf2:sha256"))
+                store.set_app_password(user_email, generate_password_hash(new_pw, method="pbkdf2:sha256"))
                 flash("Account password set. You'll need it the next time you log in.", "success")
             return redirect(url_for("main.settings"))
 
         if action == "remove_app_password":
-            store.set_app_password(g.current_user_email, "")
-            flash("Account password removed. Log in with email only.", "success")
+            accounts = store.list_imap_accounts(user_email)
+            if not accounts:
+                flash("Connect an inbox account before removing your account password.", "error")
+            else:
+                store.set_app_password(user_email, "")
+                flash("Account password removed. Next login requires your connected IMAP account.", "success")
+            return redirect(url_for("main.settings"))
+
+        if action == "clear_groq":
+            store.save_setting(user_email, "groq_api_key", "")
+            flash("Groq API key cleared.", "success")
+            return redirect(url_for("main.settings"))
+
+        if action == "reanalyze_unanalyzed":
+            groq = get_groq_client(user_email)
+            if not groq.enabled:
+                flash("Add a Groq API key to re-analyze emails.", "error")
+            else:
+                sync_worker.enqueue_sync(user_email, job_type="reanalyze")
+                flash("Re-analysis queued for unanalyzed emails.", "success")
             return redirect(url_for("main.settings"))
 
         groq_key = (request.form.get("groq_api_key") or "").strip()
-        store.save_setting(g.current_user_email, "groq_api_key", groq_key)
-        flash("Settings saved.", "success")
+        if groq_key:
+            encrypted = crypto.encrypt(groq_key, get_credential_key(), purpose="groq")
+            store.save_setting(user_email, "groq_api_key", encrypted)
+            flash("Groq API key saved.", "success")
+        else:
+            flash("Settings saved (Groq key unchanged).", "success")
         return redirect(url_for("main.settings"))
 
-    saved_key = store.get_setting(g.current_user_email, "groq_api_key")
+    has_groq_key = bool(store.get_setting(user_email, "groq_api_key"))
     active_model = current_app.config.get("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile")
-    has_app_password = bool(store.get_app_password_hash(g.current_user_email))
-    return render_template("settings.html", saved_key=saved_key, active_model=active_model,
-                           has_app_password=has_app_password)
+    has_app_password = bool(store.get_app_password_hash(user_email))
+    ai_analyzed, ai_pending = store.count_ai_stats(user_email)
+    return render_template(
+        "settings.html",
+        has_groq_key=has_groq_key,
+        active_model=active_model,
+        has_app_password=has_app_password,
+        ai_analyzed=ai_analyzed,
+        ai_pending=ai_pending,
+        groq_available=get_groq_client(user_email).enabled,
+    )
 
-
-# ---------------------------------------------------------------------------
-# Senders / recipients API (for autofill datalists)
-# ---------------------------------------------------------------------------
 
 @bp.get("/api/senders")
 def api_senders():
-    login_redirect = require_login()
-    if login_redirect is not None:
-        return jsonify([])
+    auth = require_login_api()
+    if auth is not None:
+        return auth
     senders = get_store().get_senders(g.current_user_email)
     return jsonify(senders)
 
 
 @bp.get("/api/recipients")
 def api_recipients():
-    login_redirect = require_login()
-    if login_redirect is not None:
-        return jsonify([])
+    auth = require_login_api()
+    if auth is not None:
+        return auth
     recipients = get_store().get_recipients(g.current_user_email)
     return jsonify(recipients)
 
-
-# ---------------------------------------------------------------------------
-# Hidden / filtered emails
-# ---------------------------------------------------------------------------
 
 @bp.get("/hidden")
 def hidden():
@@ -699,11 +1377,7 @@ def hidden():
     return render_template("hidden.html", emails=emails)
 
 
-# ---------------------------------------------------------------------------
-# Respond-now AI digest
-# ---------------------------------------------------------------------------
-
-@bp.get("/respond-now")
+@bp.get("/needs-reply")
 def respond_now():
     login_redirect = require_login()
     if login_redirect is not None:
@@ -711,30 +1385,119 @@ def respond_now():
 
     groq = get_groq_client()
     if not groq.enabled:
-        flash("Add a Groq API key in Settings to use AI triage.", "error")
+        flash("Add a Groq API key in Settings to use Needs Reply.", "error")
         return redirect(url_for("main.inbox"))
 
     store = get_store()
     user_email = g.current_user_email
-    # Use recent emails for triage
-    recent = store.list_emails(user_email=user_email, limit=50)
     today = datetime.date.today().isoformat()
-    action_items = groq.identify_action_items(recent, today=today)
+    cache = session.get("needs_reply_cache")
+    groq_error = False
+    recent = store.list_emails(user_email=user_email, limit=50)
+    recent_count = len(recent)
+    dismissed = set(session.get("needs_reply_dismissed", []))
+    snoozed = session.get("needs_reply_snoozed", {})
 
-    # Build a map for quick lookup
+    if cache and cache.get("date") == today and cache.get("user") == user_email:
+        action_items = cache.get("items", [])
+        recent_count = cache.get("total", recent_count)
+    else:
+        action_items, err = groq.identify_action_items(recent, today=today)
+        if err:
+            action_items = []
+            groq_error = True
+        else:
+            _cache_groq_model(groq)
+            session["needs_reply_cache"] = {
+                "date": today,
+                "user": user_email,
+                "items": action_items,
+                "total": recent_count,
+            }
+
     email_map = {e["email_id"]: e for e in recent}
     results = []
     for item in action_items:
         eid = item.get("email_id", "")
+        if eid in dismissed:
+            continue
+        snooze_until = snoozed.get(eid)
+        if snooze_until and snooze_until > today:
+            continue
         if eid in email_map:
             results.append({"email": email_map[eid], "reason": item.get("reason", "")})
 
-    return render_template("respond_now.html", results=results, total=len(recent))
+    return render_template(
+        "respond_now.html",
+        results=results,
+        total=recent_count,
+        groq_error=groq_error,
+    )
 
 
-# ---------------------------------------------------------------------------
-# Custom tags management
-# ---------------------------------------------------------------------------
+@bp.post("/needs-reply/dismiss/<email_id>")
+def needs_reply_dismiss(email_id: str):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    dismissed = set(session.get("needs_reply_dismissed", []))
+    dismissed.add(email_id)
+    session["needs_reply_dismissed"] = list(dismissed)
+    flash("Removed from Needs Reply.", "success")
+    return redirect(url_for("main.respond_now"))
+
+
+@bp.post("/needs-reply/snooze/<email_id>")
+def needs_reply_snooze(email_id: str):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    days_raw = request.form.get("days", "3")
+    days = int(days_raw) if days_raw.isdigit() and 1 <= int(days_raw) <= 30 else 3
+    until = (datetime.date.today() + datetime.timedelta(days=days)).isoformat()
+    snoozed = dict(session.get("needs_reply_snoozed", {}))
+    snoozed[email_id] = until
+    session["needs_reply_snoozed"] = snoozed
+    flash(f"Snoozed for {days} day(s).", "success")
+    return redirect(url_for("main.respond_now"))
+
+
+@bp.post("/needs-reply/draft/<email_id>")
+def needs_reply_draft(email_id: str):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    email = store.get_email(email_id, user_email=g.current_user_email)
+    if email is None:
+        flash("Email not found.", "error")
+        return redirect(url_for("main.respond_now"))
+
+    groq = get_groq_client()
+    reason = (request.form.get("reason") or "").strip()
+    draft = groq.draft_reply(
+        sender=email["sender"],
+        subject=email["subject"],
+        body=email["body"],
+        reason=reason,
+    )
+    _cache_groq_model(groq)
+    if not draft:
+        flash("Could not generate a draft reply.", "error")
+        return redirect(url_for("main.respond_now"))
+
+    mailto = f"mailto:{quote(email.get('sender') or '')}?subject={quote('Re: ' + (email.get('subject') or ''))}&body={quote(draft)}"
+    return render_template(
+        "respond_now.html",
+        results=[],
+        total=0,
+        groq_error=False,
+        draft_reply=draft,
+        draft_email=email,
+        mailto_link=mailto,
+    )
+
 
 @bp.route("/tags", methods=["GET", "POST"])
 def tags():
@@ -756,8 +1519,6 @@ def tags():
             flash("Tag name is required.", "error")
         else:
             tag_id = store.save_tag(user_email, name, color, use_ai, ai_instruction, hide_matching)
-
-            # Process rules
             fields = request.form.getlist("rule_field")
             operators = request.form.getlist("rule_operator")
             values = request.form.getlist("rule_value")
@@ -765,7 +1526,6 @@ def tags():
             for field, operator, value in zip(fields, operators, values):
                 if field and operator and value.strip():
                     store.save_tag_rule(tag_id, field, operator, value.strip())
-
             flash(f"Tag '{name}' saved.", "success")
         return redirect(url_for("main.tags"))
 
@@ -788,6 +1548,44 @@ def tags_edit(tag_id: int):
         return redirect(url_for("main.tags"))
 
     if request.method == "POST":
+        action = request.form.get("action", "save")
+
+        if action == "apply_ai":
+            groq = get_groq_client()
+            if not groq.enabled:
+                flash("Add a Groq API key in Settings to use AI tagging.", "error")
+            elif not tag["use_ai"]:
+                flash("Enable AI for this tag before applying.", "error")
+            else:
+                emails = store.list_emails(user_email=user_email, limit=200, exclude_hidden=False)
+                tagged = 0
+                for email in emails:
+                    existing_ids = {t["id"] for t in store.get_email_tags(email["email_id"])}
+                    if tag_id in existing_ids:
+                        continue
+                    match = groq.classify_email_for_tag(
+                        tag_name=tag["name"],
+                        ai_instruction=tag["ai_instruction"],
+                        sender=email.get("sender", ""),
+                        subject=email.get("subject", ""),
+                        body=email.get("body", ""),
+                    )
+                    if match:
+                        store.set_email_tags(
+                            email["email_id"],
+                            list(existing_ids | {tag_id}),
+                        )
+                        tagged += 1
+                        if tag["hide_matching"]:
+                            store.set_email_hidden(email["email_id"], user_email, True, by_tag=True)
+                flash(f"AI tagging complete — {tagged} email(s) tagged as '{tag['name']}'.", "success")
+            return redirect(url_for("main.tags_edit", tag_id=tag_id))
+
+        if action == "apply_manual":
+            updated = store.apply_all_manual_tags(user_email)
+            flash(f"Manual tag rules applied — {updated} tag change(s).", "success")
+            return redirect(url_for("main.tags_edit", tag_id=tag_id))
+
         name = (request.form.get("name") or "").strip()
         color = (request.form.get("color") or "#888888").strip()
         use_ai = bool(request.form.get("use_ai"))
@@ -828,7 +1626,7 @@ def tags_apply():
     if login_redirect is not None:
         return login_redirect
     updated = get_store().apply_all_manual_tags(g.current_user_email)
-    flash(f"Manual tag rules applied — {updated} new tag assignment(s).", "success")
+    flash(f"Manual tag rules applied — {updated} tag change(s).", "success")
     return redirect(url_for("main.tags"))
 
 
@@ -845,29 +1643,62 @@ def tags_apply_ai(tag_id: int):
         flash("Tag not found.", "error")
         return redirect(url_for("main.tags"))
 
+    if not tag["use_ai"]:
+        flash("This tag does not use AI classification.", "error")
+        return redirect(url_for("main.tags"))
+
     groq = get_groq_client()
     if not groq.enabled:
         flash("Add a Groq API key in Settings to use AI tagging.", "error")
         return redirect(url_for("main.tags"))
 
-    emails = store.list_emails(user_email=user_email, limit=200, exclude_hidden=False)
-    tagged = 0
-    for email in emails:
-        match = groq.classify_email_for_tag(
-            tag_name=tag["name"],
-            ai_instruction=tag["ai_instruction"],
-            sender=email.get("sender", ""),
-            subject=email.get("subject", ""),
-            body=email.get("body", ""),
-        )
-        if match:
-            store.set_email_tags(email["email_id"], list({t["id"] for t in store.get_email_tags(email["email_id"])} | {tag_id}))
-            tagged += 1
-            if tag["hide_matching"]:
-                store.set_email_hidden(email["email_id"], user_email, True)
-
-    flash(f"AI tagging complete — {tagged} email(s) tagged as '{tag['name']}'.", "success")
+    sync_worker.enqueue_sync(user_email, job_type="tags")
+    flash(f"AI tagging queued for '{tag['name']}'. Check back in a moment.", "success")
     return redirect(url_for("main.tags"))
+
+
+@bp.post("/tags/apply-ai-background")
+def tags_apply_ai_background():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    sync_worker.enqueue_sync(g.current_user_email, job_type="tags")
+    flash("AI tag apply queued. Check back in a moment.", "success")
+    return redirect(url_for("main.tags"))
+
 
 def register_routes(app):
     app.register_blueprint(bp)
+    from .services.sync_worker import start_sync_worker
+
+    start_sync_worker(app, sync_one_account, get_groq_client, tag_apply_fn=_apply_all_ai_tags)
+
+
+def _apply_all_ai_tags(store, user_email: str) -> int:
+    groq = get_groq_client(user_email)
+    if not groq.enabled:
+        return 0
+    tags = [t for t in store.list_tags(user_email) if t["use_ai"]]
+    if not tags:
+        return 0
+    emails = store.list_emails(user_email=user_email, limit=200, exclude_hidden=False)
+    tagged = 0
+    for email in emails:
+        existing_ids = {t["id"] for t in store.get_email_tags(email["email_id"])}
+        for tag in tags:
+            if tag["id"] in existing_ids:
+                continue
+            if groq.classify_email_for_tag(
+                tag_name=tag["name"],
+                ai_instruction=tag["ai_instruction"],
+                sender=email.get("sender", ""),
+                subject=email.get("subject", ""),
+                body=email.get("body", ""),
+            ):
+                store.set_email_tags(email["email_id"], list(existing_ids | {tag["id"]}))
+                existing_ids.add(tag["id"])
+                tagged += 1
+                if tag["hide_matching"]:
+                    store.set_email_hidden(email["email_id"], user_email, True, by_tag=True)
+    _cache_groq_model(groq)
+    return tagged

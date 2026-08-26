@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block title %}Create Account | Inbox Tools{% endblock %}
+
+{% block content %}
+<main class="login-layout" id="main-content">
+    <section class="panel login-panel reveal is-visible">
+        <p class="eyebrow">Get started</p>
+        <h1>Create account</h1>
+        {% if step == 'verify' %}
+        <p class="hero-copy">
+            We sent a 6-digit code to <strong>{{ prefill_email }}</strong>. Enter it below with your
+            new Inbox Tools password.
+        </p>
+        {% if dev_code %}
+        <p class="panel-hint dev-code-hint">
+            Development mode — your code is <strong class="verification-code-display">{{ dev_code }}</strong>
+        </p>
+        {% endif %}
+        <form action="{{ url_for('main.signup') }}" method="post" class="login-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="confirm">
+            <input type="hidden" name="email" value="{{ prefill_email }}">
+
+            <label for="verification-code">Verification code</label>
+            <input id="verification-code" name="verification_code" type="text" inputmode="numeric"
+                   pattern="[0-9]{6}" maxlength="6" minlength="6" required
+                   class="verification-code-input" placeholder="000000"
+                   autocomplete="one-time-code" autofocus>
+
+            <label for="new-app-password" style="margin-top:1.2rem">Account password</label>
+            <input id="new-app-password" name="new_app_password" type="password"
+                   placeholder="At least 6 characters" autocomplete="new-password" minlength="6" required>
+
+            <label for="confirm-app-password">Confirm password</label>
+            <input id="confirm-app-password" name="confirm_app_password" type="password"
+                   placeholder="Repeat password" autocomplete="new-password" minlength="6" required>
+
+            <button type="submit" style="margin-top:1.5rem">Create account →</button>
+        </form>
+        <form action="{{ url_for('main.signup') }}" method="post" class="resend-code-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="resend_code">
+            <input type="hidden" name="email" value="{{ prefill_email }}">
+            <button type="submit" class="btn btn-ghost btn-sm">Resend code</button>
+        </form>
+        {% else %}
+        <p class="hero-copy">
+            Enter your email and we will send a verification code so only you can create an account
+            for that address.
+        </p>
+        <form action="{{ url_for('main.signup') }}" method="post" class="login-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="send_code">
+            <label for="signup-email">Email address</label>
+            <input id="signup-email" name="email" type="email" required placeholder="you@gmail.com"
+                   value="{{ prefill_email or '' }}" autocomplete="email" autofocus>
+
+            <button type="submit" style="margin-top:1.5rem">Send verification code →</button>
+        </form>
+        {% endif %}
+        <p class="panel-hint auth-footer-hint">
+            Already have an account? <a href="{{ url_for('main.login') }}">Log in</a>
+            · <a href="{{ url_for('main.help_page') }}">App Password help</a>
+        </p>
+    </section>
+</main>
+{% endblock %}

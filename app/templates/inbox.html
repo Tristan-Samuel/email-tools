@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Inbox | Email Intelligence Studio{% endblock %}
+{% block title %}Inbox | Inbox Tools{% endblock %}
 
 {% block content %}
 <main class="page-main">
@@ -77,13 +77,14 @@
                 </a>
                 <select class="sort-select" onchange="location.href=this.value">
                     <option value="{{ url_for('main.inbox') }}?limit=50{% if source_account %}&source_account={{ source_account }}{% endif %}{% if sort != 'date_desc' %}&sort={{ sort }}{% endif %}{% if only_unread %}&unread=1{% endif %}{% if exclude_mailing_list %}&no_lists=1{% endif %}" {% if limit == 50 %}selected{% endif %}>Show 50</option>
-                    <option value="{{ url_for('main.inbox') }}?limit=200{% if source_account %}&source_account={{ source_account }}{% endif %}{% if sort != 'date_desc' %}&sort={{ sort }}{% endif %}{% if only_unread %}&unread=1{% endif %}{% if exclude_mailing_list %}&no_lists=1{% endif %}" {% if limit == 200 %}selected{% endif %}>Show 200</option>
-                    <option value="{{ url_for('main.inbox') }}?limit=500{% if source_account %}&source_account={{ source_account }}{% endif %}{% if sort != 'date_desc' %}&sort={{ sort }}{% endif %}{% if only_unread %}&unread=1{% endif %}{% if exclude_mailing_list %}&no_lists=1{% endif %}" {% if limit == 500 %}selected{% endif %}>Show 500</option>
-                    <option value="{{ url_for('main.inbox') }}?limit=5000{% if source_account %}&source_account={{ source_account }}{% endif %}{% if sort != 'date_desc' %}&sort={{ sort }}{% endif %}{% if only_unread %}&unread=1{% endif %}{% if exclude_mailing_list %}&no_lists=1{% endif %}" {% if limit == 5000 %}selected{% endif %}>Show all</option>
+                    <option value="{{ url_for('main.inbox') }}?limit=100{% if source_account %}&source_account={{ source_account }}{% endif %}{% if sort != 'date_desc' %}&sort={{ sort }}{% endif %}{% if only_unread %}&unread=1{% endif %}{% if exclude_mailing_list %}&no_lists=1{% endif %}" {% if limit == 100 %}selected{% endif %}>Show 100</option>
                 </select>
+                <a href="{{ url_for('main.inbox', pane='1') }}{% if source_account %}?source_account={{ source_account | urlencode }}&pane=1{% else %}?pane=1{% endif %}"
+                   class="btn btn-ghost {% if split_pane %}btn-ghost--active{% endif %}" style="padding:5px 12px;font-size:.82rem">
+                    Split view
+                </a>
             </div>
 
-            <!-- View toggle -->
             <div class="view-toggle">
                 <button class="view-toggle-btn active" data-view="normal" title="Normal view">≡</button>
                 <button class="view-toggle-btn" data-view="compact" title="Compact view">☰</button>
@@ -107,18 +108,11 @@
         </div>
     </div>
 
-    <!-- Category pills -->
-    {% if categories %}
+    <!-- Tag filter pills (categories shown as row chips only) -->
+    {% if tags %}
     <div class="inbox-categories">
         <a href="{{ url_for('main.inbox') }}{% if source_account %}?source_account={{ source_account | urlencode }}{% endif %}"
-           class="category-pill {% if not selected_category and not selected_tag %}active{% endif %}">All</a>
-        {% for item in categories %}
-        <a href="{{ url_for('main.inbox') }}?category={{ item.category | urlencode }}{% if source_account %}&source_account={{ source_account | urlencode }}{% endif %}"
-           class="category-pill {% if selected_category == item.category %}active{% endif %}">
-            {{ item.category }} <span>{{ item.count }}</span>
-        </a>
-        {% endfor %}
-        <!-- Custom tag pills -->
+           class="category-pill {% if not selected_tag %}active{% endif %}">All tags</a>
         {% for tag in tags %}
         <a href="{{ url_for('main.inbox') }}?tag_id={{ tag.id }}{% if source_account %}&source_account={{ source_account | urlencode }}{% endif %}"
            class="category-pill {% if selected_tag == tag.id %}active{% endif %}"
@@ -130,33 +124,76 @@
     </div>
     {% endif %}
 
+    <div class="inbox-split {% if split_pane %}inbox-split--open{% endif %}">
+    <div class="inbox-split-list">
     {% if emails %}
-    <div class="inbox-list panel">
+    <form id="bulk-hide-form" action="{{ url_for('main.inbox_bulk_hide') }}" method="post" class="inbox-bulk-bar panel" style="padding:10px 16px">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-ghost" style="font-size:.82rem">Hide selected</button>
+        <button type="submit" formaction="{{ url_for('main.inbox_bulk_unhide') }}" class="btn btn-ghost" style="font-size:.82rem">Unhide selected</button>
+        <button type="submit" formaction="{{ url_for('main.inbox_bulk_read') }}" name="read" value="1" class="btn btn-ghost" style="font-size:.82rem">Mark read</button>
+        <button type="submit" formaction="{{ url_for('main.inbox_bulk_read') }}" name="read" value="0" class="btn btn-ghost" style="font-size:.82rem">Mark unread</button>
+    </form>
+    <div class="inbox-list panel" id="inbox-list">
         {% for email in emails %}
-        <div style="position:relative;display:flex;align-items:stretch">
-            <a class="inbox-row {% if email.priority_score >= 80 %}inbox-row--urgent{% endif %}"
-               href="{{ url_for('main.email_detail', email_id=email.email_id) }}" style="flex:1">
+        <div class="inbox-row-wrap" data-email-id="{{ email.email_id }}" style="position:relative;display:flex;align-items:stretch">
+            <label class="inbox-bulk-check" style="padding:12px 8px;display:flex;align-items:center">
+                <input type="checkbox" name="email_ids" value="{{ email.email_id }}" form="bulk-hide-form" aria-label="Select {{ email.subject }}">
+            </label>
+            <a class="inbox-row {% if not email.is_read %}inbox-row--unread{% endif %} {% if email.priority_score >= 80 %}inbox-row--urgent{% endif %} {% if selected_email and selected_email.email_id == email.email_id %}inbox-row--selected{% endif %}"
+               href="{% if split_pane %}{{ url_for('main.inbox', email_id=email.email_id, pane='1', offset=offset, limit=limit, source_account=source_account, tag_id=selected_tag, unread=1 if only_unread else None, no_lists=1 if exclude_mailing_list else None, sort=sort if sort != 'date_desc' else None, query=query or None) }}{% else %}{{ url_for('main.email_detail', email_id=email.email_id) }}{% endif %}"
+               style="flex:1">
                 <div class="inbox-row-avatar">{{ (email.sender or '?')[0].upper() }}</div>
                 <div class="inbox-row-body">
                     <div class="inbox-row-top">
                         <span class="inbox-row-sender">{{ email.sender or 'Unknown sender' }}</span>
                         <span class="inbox-row-date">{{ email.received_at|datetimeformat }}</span>
                     </div>
-                    <div class="inbox-row-subject">{{ email.subject }}</div>
+                    <div class="inbox-row-subject">
+                        {% if not email.is_read %}<span class="inbox-unread-dot" aria-hidden="true">● </span>{% endif %}
+                        {{ email.subject }}
+                        {% set tc = thread_counts.get(email.thread_id, 0) %}
+                        {% if tc > 1 %}<span class="thread-badge" title="{{ tc }} in thread">{{ tc }}</span>{% endif %}
+                    </div>
                     <div class="inbox-row-preview">{{ email.preview or 'No preview available.' }}</div>
+                    {% set row_tags = email_tags_map.get(email.email_id, []) %}
+                    {% if row_tags %}
+                    <div class="inbox-row-tags">
+                        {% for t in row_tags %}
+                        <span class="inbox-tag-chip" style="background:{{ t.color }}">{{ t.name }}</span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
                 </div>
                 <div class="inbox-row-meta">
                     <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>
                     {% if email.priority_score >= 80 %}
-                    <span class="inbox-urgent-dot" title="Urgent">●</span>
+                    <span class="inbox-urgent-dot" title="Urgent">P{{ email.priority_score }}</span>
                     {% endif %}
                     {% if not email.ai_analyzed %}
                     <span title="Not yet AI-analyzed" style="font-size:.65rem;color:var(--muted)">◌ AI</span>
                     {% endif %}
                 </div>
             </a>
+            {% if all_tags %}
+            <details class="inbox-quick-tag" style="padding:8px;border-left:1px solid var(--line)">
+                <summary class="btn btn-ghost" style="padding:4px 8px;font-size:.72rem;list-style:none">Tag</summary>
+                <form action="{{ url_for('main.email_set_tags', email_id=email.email_id) }}" method="post" style="padding:8px;min-width:160px">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    {% for tag in all_tags %}
+                    <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;margin-bottom:4px">
+                        <input type="checkbox" name="tag_ids" value="{{ tag.id }}"
+                            {% for t in email_tags_map.get(email.email_id, []) %}{% if t.id == tag.id %}checked{% endif %}{% endfor %}>
+                        <span class="tag-chip" style="background:{{ tag.color }}">{{ tag.name }}</span>
+                    </label>
+                    {% endfor %}
+                    <button type="submit" class="btn btn-ghost" style="font-size:.72rem;margin-top:6px">Save</button>
+                </form>
+            </details>
+            {% endif %}
             <form action="{{ url_for('main.email_hide', email_id=email.email_id) }}" method="post"
                   style="display:flex;align-items:center;padding:0 12px;border-left:1px solid var(--line)">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-ghost" style="padding:4px 10px;font-size:.72rem;box-shadow:none"
                         title="Hide email">⊗</button>
             </form>
@@ -164,16 +201,29 @@
         {% endfor %}
     </div>
 
+    {% if total_count > limit %}
+    <nav class="inbox-pagination" aria-label="Inbox pagination">
+        {% if offset > 0 %}
+        <a class="btn btn-ghost" href="{{ url_for('main.inbox', offset=prev_offset, limit=limit, source_account=source_account, tag_id=selected_tag, unread=1 if only_unread else None, no_lists=1 if exclude_mailing_list else None, sort=sort if sort != 'date_desc' else None, query=query or None, pane='1' if split_pane else None) }}">← Previous</a>
+        {% endif %}
+        <span class="inbox-count">{{ offset + 1 }}–{{ [offset + emails|length, total_count]|min }} of {{ total_count }}</span>
+        {% if next_offset is not none %}
+        <a class="btn btn-ghost" href="{{ url_for('main.inbox', offset=next_offset, limit=limit, source_account=source_account, tag_id=selected_tag, unread=1 if only_unread else None, no_lists=1 if exclude_mailing_list else None, sort=sort if sort != 'date_desc' else None, query=query or None, pane='1' if split_pane else None) }}">Next →</a>
+        {% endif %}
+    </nav>
+    {% endif %}
+
     {% else %}
     <div class="empty-state" style="margin-top:1.5rem">
         <h3>No emails here</h3>
         {% if not imap_accounts %}
-        <p>Connect an inbox account to start seeing your emails. <a href="{{ url_for('main.accounts_add') }}">Add an account →</a></p>
+        <p>Connect an inbox account to start seeing your emails. <a href="{{ url_for('main.accounts_add') }}">+ Add account →</a></p>
         {% else %}
         <p>
             {% if query %}No results for "{{ query }}".{% else %}Sync your inbox to load emails.{% endif %}
             {% for acct in imap_accounts %}
             <form action="{{ url_for('main.accounts_sync', account_id=acct.id) }}" method="post" style="display:inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-teal" style="margin:.25rem">Sync {{ acct.account_email }}</button>
             </form>
             {% endfor %}
@@ -181,9 +231,47 @@
         {% endif %}
     </div>
     {% endif %}
+    </div>
+
+    {% if split_pane %}
+    <aside class="inbox-split-pane panel" id="inbox-preview-pane">
+        {% if selected_email %}
+        <div class="inbox-preview">
+            <h2 class="detail-subject" style="font-size:1.1rem">{{ selected_email.subject }}</h2>
+            <p class="email-meta"><strong>From</strong> {{ selected_email.sender or 'Unknown' }}</p>
+            <ul class="bullet-list">
+                {% for bullet in selected_email.bullet_summary %}
+                <li>{{ bullet }}</li>
+                {% endfor %}
+            </ul>
+            <p class="inbox-row-preview">{{ selected_email.preview }}</p>
+            <a href="{{ url_for('main.email_detail', email_id=selected_email.email_id) }}" class="btn btn-primary">Open full message →</a>
+        </div>
+        {% else %}
+        <p class="panel-hint">Select a message. Shortcuts: <kbd>j</kbd>/<kbd>k</kbd> move, <kbd>e</kbd> hide, <kbd>u</kbd> unread.</p>
+        {% endif %}
+    </aside>
+    {% endif %}
+    </div>
+
 </main>
 
 <datalist id="senders-datalist"></datalist>
+{% if bulk_undo_ids %}
+<div id="undo-toast" class="undo-toast" role="status">
+    <span>{{ bulk_undo_ids|length }} hidden.</span>
+    <form action="{{ url_for('main.inbox_bulk_unhide') }}" method="post" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% for eid in bulk_undo_ids %}
+        <input type="hidden" name="email_ids" value="{{ eid }}">
+        {% endfor %}
+        <button type="submit" class="btn btn-ghost">Undo</button>
+    </form>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
 <script>
 fetch('/api/senders').then(r=>r.json()).then(senders=>{
     const dl = document.getElementById('senders-datalist');
@@ -204,5 +292,45 @@ const setView = v => {
 };
 setView(saved);
 btns.forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
+
+// Keyboard triage (j/k move, e hide, u unread)
+(function() {
+    const rows = Array.from(document.querySelectorAll('.inbox-row-wrap'));
+    let idx = rows.findIndex(r => r.querySelector('.inbox-row--selected'));
+    if (idx < 0) idx = 0;
+    const csrf = document.querySelector('input[name="csrf_token"]')?.value;
+    document.addEventListener('keydown', (e) => {
+        if (e.target.matches('input, textarea, select')) return;
+        const row = rows[idx];
+        if (!row) return;
+        const emailId = row.dataset.emailId;
+        if (e.key === 'j') {
+            idx = Math.min(rows.length - 1, idx + 1);
+            rows[idx]?.querySelector('.inbox-row')?.focus();
+            rows[idx]?.scrollIntoView({ block: 'nearest' });
+        }
+        if (e.key === 'k') {
+            idx = Math.max(0, idx - 1);
+            rows[idx]?.querySelector('.inbox-row')?.focus();
+            rows[idx]?.scrollIntoView({ block: 'nearest' });
+        }
+        if (e.key === 'e' && csrf) {
+            const f = document.createElement('form');
+            f.method = 'POST';
+            f.action = `/email/${emailId}/hide`;
+            f.innerHTML = `<input type="hidden" name="csrf_token" value="${csrf}">`;
+            document.body.appendChild(f);
+            f.submit();
+        }
+        if (e.key === 'u' && csrf) {
+            const f = document.createElement('form');
+            f.method = 'POST';
+            f.action = `/email/${emailId}/read`;
+            f.innerHTML = `<input type="hidden" name="csrf_token" value="${csrf}"><input type="hidden" name="read" value="0">`;
+            document.body.appendChild(f);
+            f.submit();
+        }
+    });
+})();
 </script>
 {% endblock %}

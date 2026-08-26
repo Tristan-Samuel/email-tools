@@ -96,6 +96,16 @@ def build_message_id(message, body: str) -> str:
     return hashlib.sha1(source.encode("utf-8", errors="ignore")).hexdigest()
 
 
+def message_email_id(message, body: str, fallback: str = "") -> str:
+    """Stable id from Message-ID when present, else fallback or header hash."""
+    mid = (message.get("message-id") or "").strip()
+    if mid:
+        return hashlib.sha1(mid.encode("utf-8", errors="replace")).hexdigest()
+    if fallback:
+        return hashlib.sha1(fallback.encode("utf-8", errors="replace")).hexdigest()
+    return build_message_id(message, body)
+
+
 MAILING_LIST_HEADERS = frozenset([
     "list-id", "list-unsubscribe", "list-post", "list-archive",
     "list-help", "x-mailchimp-id", "x-campaign", "x-mailer",
@@ -119,8 +129,10 @@ def is_mailing_list_message(message) -> bool:
 def parse_message(message) -> dict:
     body = extract_body(message)
     return {
-        "email_id": build_message_id(message, body),
-        "message_id": message.get("message-id", "").strip(),
+        "email_id": message_email_id(message, body),
+        "message_id": (message.get("message-id") or "").strip(),
+        "in_reply_to": (message.get("in-reply-to") or "").strip(),
+        "references": (message.get("references") or "").strip(),
         "subject": normalize_text(message.get("subject", "(No subject)")) or "(No subject)",
         "sender": parse_address_header(message.get("from")),
         "recipient": parse_address_header(message.get("to")),

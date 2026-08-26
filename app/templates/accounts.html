@@ -1,18 +1,19 @@
 {% extends "base.html" %}
 
-{% block title %}Connected Accounts — Email Intelligence Studio{% endblock %}
+{% block title %}Connected Accounts — Inbox Tools{% endblock %}
 
 {% block content %}
 <main class="page-main">
     <div class="page-header">
         <div>
             <h1 class="page-title">Connected Accounts</h1>
-            <p class="page-subtitle">Manage Gmail / IMAP accounts and sync your inbox.</p>
+            <p class="page-subtitle">Sync mail with date range, caps, and folder selection.</p>
         </div>
         <div class="page-header-actions">
             <a href="{{ url_for('main.settings') }}" class="btn btn-ghost">Settings</a>
             {% if imap_accounts|length > 1 %}
             <form action="{{ url_for('main.accounts_sync_all') }}" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-teal">Sync All</button>
             </form>
             {% endif %}
@@ -23,29 +24,64 @@
     {% if imap_accounts %}
     <section class="accounts-list">
         {% for acct in imap_accounts %}
-        <div class="account-card">
-            <div class="account-card-info">
-                <div class="account-avatar">{{ acct.account_email[0].upper() }}</div>
-                <div>
-                    <strong class="account-email">{{ acct.account_email }}</strong>
-                    <span class="account-host">{{ acct.imap_host }}:{{ acct.imap_port }}</span>
-                    {% if acct.last_synced %}
-                        <span class="account-synced">Last synced: {{ acct.last_synced }}</span>
-                    {% else %}
+        <div class="account-card panel" style="flex-direction:column;align-items:stretch;gap:16px;padding:20px">
+            <div style="display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap">
+                <div class="account-card-info">
+                    <div class="account-avatar">{{ acct.account_email[0].upper() }}</div>
+                    <div>
+                        <strong class="account-email">{{ acct.account_email }}</strong>
+                        <span class="account-host">{{ acct.imap_host }}:{{ acct.imap_port }}</span>
+                        {% if acct.last_synced %}
+                        <span class="account-synced">Last synced: {{ acct.last_synced|datetimeformat }}</span>
+                        {% else %}
                         <span class="account-synced muted">Never synced</span>
-                    {% endif %}
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="account-card-actions">
+                    <a href="{{ url_for('main.inbox') }}?source_account={{ acct.account_email | urlencode }}" class="btn btn-ghost">View Inbox</a>
+                    <form action="{{ url_for('main.accounts_delete', account_id=acct.id) }}" method="post"
+                          onsubmit="return confirm('Remove {{ acct.account_email }}? Your imported emails are kept.');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-danger">Remove</button>
+                    </form>
                 </div>
             </div>
-            <div class="account-card-actions">
-                <form action="{{ url_for('main.accounts_sync', account_id=acct.id) }}" method="post">
-                    <button type="submit" class="btn btn-teal">Sync Now</button>
-                </form>
-                <a href="{{ url_for('main.dashboard') }}?source_account={{ acct.account_email | urlencode }}" class="btn btn-ghost">View Emails</a>
-                <form action="{{ url_for('main.accounts_delete', account_id=acct.id) }}" method="post"
-                      onsubmit="return confirm('Remove {{ acct.account_email }}? Your imported emails are kept.');">
-                    <button type="submit" class="btn btn-danger">Remove</button>
-                </form>
-            </div>
+
+            <form action="{{ url_for('main.accounts_sync', account_id=acct.id) }}" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="sync-form-row">
+                    <label>
+                        Mail since
+                        <input type="date" name="sync_since" value="{{ acct.sync_since_date or default_sync_since }}">
+                    </label>
+                    <label>
+                        Max messages
+                        <input type="number" name="sync_max" min="1" max="2000" value="{{ acct.sync_max_count or default_sync_max }}" style="width:88px">
+                    </label>
+                    <button type="submit" class="btn btn-teal">Sync now</button>
+                </div>
+                {% if acct.folder_sync %}
+                <p style="font-size:.8rem;color:var(--muted);margin:10px 0 6px">Folders to sync</p>
+                <div class="folder-checklist">
+                    {% for fs in acct.folder_sync %}
+                    <label>
+                        <input type="checkbox" name="folders" value="{{ fs.folder }}" {% if fs.enabled %}checked{% endif %}>
+                        {{ fs.folder }}
+                    </label>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </form>
+
+            {% if acct.has_older_mail %}
+            <form action="{{ url_for('main.accounts_load_older', account_id=acct.id) }}" method="post" class="sync-form-row">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="sync_since" value="{{ acct.sync_since_date or default_sync_since }}">
+                <input type="hidden" name="sync_max" value="{{ acct.sync_max_count or default_sync_max }}">
+                <button type="submit" class="btn btn-ghost">Load older mail</button>
+            </form>
+            {% endif %}
         </div>
         {% endfor %}
     </section>
@@ -55,14 +91,16 @@
     <section class="panel add-account-panel">
         <h2 class="panel-title">Add an IMAP Account</h2>
         <p class="panel-hint">
-            For Gmail, use an <strong>App Password</strong>
-            (Google Account → Security → 2-Step Verification → App passwords).
-            Your credentials are encrypted before storage.
+            Paste your mailbox <strong>App Password</strong> below — not your Inbox Tools login password.
+            <a href="{{ url_for('main.help_page') }}#app-passwords">Step-by-step help</a>
         </p>
+        {% include "_app_password_help.html" %}
         <form action="{{ url_for('main.accounts_add') }}" method="post" class="add-account-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <label class="form-label">
                 Email Address
-                <input type="email" name="account_email" required placeholder="you@gmail.com" class="form-input">
+                <input type="email" name="account_email" required placeholder="you@gmail.com" class="form-input"
+                       value="{{ prefill_account_email or current_user_email or '' }}">
             </label>
             <label class="form-label">
                 App Password
@@ -71,11 +109,11 @@
             <div class="form-row">
                 <label class="form-label" style="flex:1">
                     IMAP Host
-                    <input type="text" name="imap_host" value="imap.gmail.com" required class="form-input">
+                    <input type="text" name="imap_host" id="imap-host" placeholder="Auto-detected from email" class="form-input">
                 </label>
                 <label class="form-label" style="width:110px">
                     Port
-                    <input type="number" name="imap_port" value="993" required min="1" max="65535" class="form-input">
+                    <input type="number" name="imap_port" id="imap-port" placeholder="993" min="1" max="65535" class="form-input">
                 </label>
             </div>
             <div class="form-actions">
@@ -86,12 +124,43 @@
             </div>
         </form>
     </section>
-
-    {% elif not imap_accounts %}
-    <div class="empty-state">
-        <p>No accounts connected yet. Add one above to start syncing your inbox.</p>
-    </div>
     {% endif %}
 
 </main>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const IMAP_HOSTS = {
+    "gmail.com": "imap.gmail.com",
+    "googlemail.com": "imap.gmail.com",
+    "yahoo.com": "imap.mail.yahoo.com",
+    "yahoo.co.uk": "imap.mail.yahoo.com",
+    "outlook.com": "outlook.office365.com",
+    "hotmail.com": "outlook.office365.com",
+    "live.com": "outlook.office365.com",
+    "icloud.com": "imap.mail.me.com",
+    "me.com": "imap.mail.me.com",
+    "mac.com": "imap.mail.me.com",
+    "protonmail.com": "127.0.0.1",
+    "proton.me": "127.0.0.1"
+};
+const IMAP_PORTS = { "127.0.0.1": 1143 };
+
+function guessImap(email) {
+    const domain = (email.split("@")[1] || "").toLowerCase();
+    const host = IMAP_HOSTS[domain] || "";
+    const hostInput = document.getElementById("imap-host");
+    const portInput = document.getElementById("imap-port");
+    if (!hostInput) return;
+    if (host) {
+        hostInput.value = host;
+        if (portInput) portInput.value = IMAP_PORTS[host] || 993;
+    }
+}
+
+document.querySelector('input[name="account_email"]')?.addEventListener("blur", function() {
+    if (this.value.includes("@")) guessImap(this.value.trim().toLowerCase());
+});
+</script>
 {% endblock %}

@@ -1,30 +1,72 @@
 from __future__ import annotations
 
+import datetime as _dt
 import html as _html
 import os
+import secrets
 from pathlib import Path
 
 from flask import Flask, g, request, session
+from flask_wtf.csrf import CSRFProtect
 from markupsafe import Markup
 
 from .routes import register_routes
 from .services.store import EmailStore
 
+csrf = CSRFProtect()
+
+
+def _load_secret_key(instance_path: Path) -> str:
+    env_key = os.environ.get("FLASK_SECRET_KEY", "").strip()
+    if env_key:
+        return env_key
+
+    is_production = os.environ.get("FLASK_ENV") == "production" or os.environ.get("ENV") == "production"
+    if is_production:
+        raise RuntimeError(
+            "FLASK_SECRET_KEY must be set in production. "
+            "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
+
+    key_file = instance_path / "secret_key"
+    if key_file.is_file():
+        return key_file.read_text(encoding="utf-8").strip()
+
+    generated = secrets.token_hex(32)
+    key_file.write_text(generated, encoding="utf-8")
+    return generated
+
+
+def _credential_encryption_key(secret_key: str) -> str:
+    dedicated = os.environ.get("CREDENTIAL_ENCRYPTION_KEY", "").strip()
+    return dedicated or secret_key
+
 
 def create_app() -> Flask:
     app = Flask(__name__, instance_relative_config=True)
+    Path(app.instance_path).mkdir(parents=True, exist_ok=True)
+
+    secret_key = _load_secret_key(Path(app.instance_path))
     app.config.from_mapping(
-        SECRET_KEY=os.environ.get("FLASK_SECRET_KEY", "dev"),
+        SECRET_KEY=secret_key,
+        CREDENTIAL_ENCRYPTION_KEY=_credential_encryption_key(secret_key),
         DATABASE=Path(app.instance_path) / "email_tools.db",
         UPLOAD_FOLDER=Path(app.instance_path) / "uploads",
         MAX_CONTENT_LENGTH=50 * 1024 * 1024,
         GROQ_API_KEY=os.environ.get("GROQ_API_KEY", ""),
         GROQ_DEFAULT_MODEL=os.environ.get("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile"),
-        STATIC_VERSION="15",
+        SMTP_HOST=os.environ.get("SMTP_HOST", "").strip(),
+        SMTP_PORT=int(os.environ.get("SMTP_PORT", "587")),
+        SMTP_USERNAME=os.environ.get("SMTP_USERNAME", "").strip(),
+        SMTP_PASSWORD=os.environ.get("SMTP_PASSWORD", ""),
+        SMTP_FROM=os.environ.get("SMTP_FROM", "").strip(),
+        SMTP_USE_TLS=os.environ.get("SMTP_USE_TLS", "true").lower() in ("1", "true", "yes"),
+        STATIC_VERSION="20",
     )
 
-    Path(app.instance_path).mkdir(parents=True, exist_ok=True)
     app.config["UPLOAD_FOLDER"].mkdir(parents=True, exist_ok=True)
+
+    csrf.init_app(app)
 
     store = EmailStore(app.config["DATABASE"])
     store.initialize()
@@ -57,7 +99,31 @@ def create_app() -> Flask:
     def datetimeformat(value: str | None) -> str:
         if not value:
             return "Unknown time"
-        return value.replace("T", " ").replace("+00:00", " UTC")
+        try:
+            dt = _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=_dt.timezone.utc)
+            now = _dt.datetime.now(_dt.timezone.utc)
+            diff = now - dt
+            if diff.days == 0 and diff.total_seconds() < 86400:
+                hours = int(diff.total_seconds() // 3600)
+                if hours < 1:
+                    mins = max(1, int(diff.total_seconds() // 60))
+                    return f"{mins}m ago"
+                return f"{hours}h ago"
+            if diff.days < 7:
+                return f"{diff.days}d ago"
+            local = dt.astimezone()
+            hour = local.strftime("%I").lstrip("0") or "12"
+            return f"{local.strftime('%b')} {local.day}, {hour}:{local.strftime('%M %p')}"
+        except ValueError:
+            return value.replace("T", " ").replace("+00:00", " UTC")
+
+    @app.template_filter("sanitize_bullet")
+    def sanitize_bullet_filter(value: str | None) -> Markup:
+        from .services.summary import sanitize_bullet_text
+
+        return Markup(sanitize_bullet_text(value or ""))
 
     @app.template_filter("format_email_body")
     def format_email_body(body: str | None) -> Markup:
@@ -69,9 +135,9 @@ def create_app() -> Flask:
             if not para.strip():
                 continue
             lines = para.split("\n")
-            non_empty = [l for l in lines if l.strip()]
-            if non_empty and all(l.lstrip().startswith(">") for l in non_empty):
-                inner = _html.escape("\n".join(l.lstrip("> ") for l in lines))
+            non_empty = [line for line in lines if line.strip()]
+            if non_empty and all(line.lstrip().startswith(">") for line in lines):
+                inner = _html.escape("\n".join(line.lstrip("> ") for line in lines))
                 result.append(f'<blockquote class="email-quote">{inner}</blockquote>')
             else:
                 content = _html.escape(para).replace("\n", "<br>")

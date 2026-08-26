@@ -1,15 +1,23 @@
 {% extends "base.html" %}
 
-{% block title %}Respond Now — Email Intelligence Studio{% endblock %}
+{% block title %}Needs Reply — Inbox Tools{% endblock %}
 
 {% block content %}
 <main class="page-main">
     <div class="page-header">
         <div>
-            <h1 class="page-title">Respond Now</h1>
+            <h1 class="page-title">Needs Reply</h1>
             <p class="page-subtitle">
-                AI identified {{ results|length }} email{{ 's' if results|length != 1 else '' }} that need your attention,
-                from {{ total }} most recent messages.
+                {% if groq_error %}
+                Could not run AI triage — check your Groq key in Settings.
+                {% elif draft_reply %}
+                Draft reply ready to copy or send.
+                {% elif results %}
+                {{ results|length }} email{{ 's' if results|length != 1 else '' }} may need your attention
+                (from {{ total }} recent messages).
+                {% else %}
+                Scanned {{ total }} recent messages.
+                {% endif %}
             </p>
         </div>
         <div class="page-header-actions">
@@ -17,7 +25,24 @@
         </div>
     </div>
 
-    {% if results %}
+    {% if draft_reply and draft_email %}
+    <section class="panel" style="padding:20px">
+        <h2 class="panel-title">Draft reply — {{ draft_email.subject }}</h2>
+        <pre class="draft-reply-text">{{ draft_reply }}</pre>
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+            <button type="button" class="btn btn-primary" onclick="navigator.clipboard.writeText(document.querySelector('.draft-reply-text').textContent)">Copy draft</button>
+            {% if mailto_link %}
+            <a href="{{ mailto_link }}" class="btn btn-teal">Open in mail app</a>
+            {% endif %}
+            <a href="{{ url_for('main.respond_now') }}" class="btn btn-ghost">← Back to list</a>
+        </div>
+    </section>
+    {% elif groq_error %}
+    <div class="empty-state" role="alert">
+        <h3>AI triage failed</h3>
+        <p>Verify your Groq API key in <a href="{{ url_for('main.settings') }}">Settings</a> and try again later.</p>
+    </div>
+    {% elif results %}
     <div class="respond-list">
         {% for item in results %}
         <div class="respond-card">
@@ -32,19 +57,24 @@
                 <p class="email-meta" style="margin:4px 0">
                     <strong>From</strong> {{ item.email.sender or 'Unknown sender' }} &nbsp;&middot;&nbsp;
                     {{ item.email.received_at|datetimeformat }}
-                    &nbsp;&middot;&nbsp;
-                    <span class="category-tag category-{{ item.email.category|lower|replace(' ','-') }}">{{ item.email.category }}</span>
                 </p>
                 <p class="respond-reason">💬 {{ item.reason }}</p>
             </div>
             <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end;flex-shrink:0">
-                <a href="{{ url_for('main.email_detail', email_id=item.email.email_id) }}" class="btn btn-primary">
-                    View →
-                </a>
-                <form action="{{ url_for('main.email_hide', email_id=item.email.email_id) }}" method="post">
-                    <button type="submit" class="btn btn-ghost" style="padding:5px 12px;font-size:.78rem">
-                        ⊗ Hide
-                    </button>
+                <a href="{{ url_for('main.email_detail', email_id=item.email.email_id) }}" class="btn btn-primary">View →</a>
+                <form action="{{ url_for('main.needs_reply_draft', email_id=item.email.email_id) }}" method="post">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="reason" value="{{ item.reason }}">
+                    <button type="submit" class="btn btn-teal" style="font-size:.78rem">✨ Draft reply</button>
+                </form>
+                <form action="{{ url_for('main.needs_reply_snooze', email_id=item.email.email_id) }}" method="post" style="display:flex;gap:4px">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="days" value="3">
+                    <button type="submit" class="btn btn-ghost" style="padding:5px 12px;font-size:.78rem">Snooze 3d</button>
+                </form>
+                <form action="{{ url_for('main.needs_reply_dismiss', email_id=item.email.email_id) }}" method="post">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-ghost" style="padding:5px 12px;font-size:.78rem">Dismiss</button>
                 </form>
             </div>
         </div>
@@ -53,7 +83,7 @@
     {% else %}
     <div class="empty-state">
         <h3>You're all caught up</h3>
-        <p>AI found no emails that urgently need a response from your {{ total }} most recent messages.</p>
+        <p>No emails in the recent batch look like they need a reply right now.</p>
     </div>
     {% endif %}
 </main>

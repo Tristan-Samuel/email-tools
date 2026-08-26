@@ -2,35 +2,201 @@
 IMAP email fetching service.
 
 Works with any IMAP-over-SSL server — Gmail, Outlook, Yahoo, etc.
-For Gmail use host=imap.gmail.com, port=993 and an App Password
-(My Account → Security → 2-Step Verification → App passwords).
+For Gmail use host=imap.gmail.com, port=993 and an App Password.
+Google Workspace / Microsoft 365 custom domains are detected from MX records.
 
 Returns email dicts in the same format as email_parser.py so they
 can be passed directly to summary.build_email_record().
 """
 from __future__ import annotations
 
-import email as email_lib
 import imaplib
+import logging
+import re
+import socket
 import ssl
-from email import policy
-from email.headerregistry import Address
+import struct
+from datetime import date
 from email.parser import BytesParser
+from email import policy
+
+from .email_parser import message_email_id, parse_message
 
 
 GMAIL_HOST = "imap.gmail.com"
 GMAIL_PORT = 993
 
+KNOWN_IMAP_HOSTS: dict[str, str] = {
+    "gmail.com": "imap.gmail.com",
+    "googlemail.com": "imap.gmail.com",
+    "yahoo.com": "imap.mail.yahoo.com",
+    "yahoo.co.uk": "imap.mail.yahoo.com",
+    "outlook.com": "outlook.office365.com",
+    "hotmail.com": "outlook.office365.com",
+    "live.com": "outlook.office365.com",
+    "icloud.com": "imap.mail.me.com",
+    "me.com": "imap.mail.me.com",
+    "mac.com": "imap.mail.me.com",
+    "protonmail.com": "127.0.0.1",
+    "proton.me": "127.0.0.1",
+}
+
+# ponytail: suffix match on MX exchange, not full autodiscover/SRV.
+_MX_IMAP_SUFFIXES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("google.com", "googlemail.com", "gmail.com"), "imap.gmail.com"),
+    (("outlook.com", "protection.outlook.com", "microsoft.com"), "outlook.office365.com"),
+    (("yahoodns.net", "yahoo.com"), "imap.mail.yahoo.com"),
+)
+
+_DNS_SERVERS = ("8.8.8.8", "1.1.1.1")
 _PARSER = BytesParser(policy=policy.default)
+_FOLDER_LINE_RE = re.compile(r'"([^"]+)"\s*$')
+logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Connection helpers
-# ---------------------------------------------------------------------------
+def host_resolves(host: str) -> bool:
+    """Return True if *host* has a DNS A/AAAA record."""
+    if not host:
+        return False
+    try:
+        socket.getaddrinfo(host, None)
+        return True
+    except OSError:
+        return False
+
+
+def imap_host_from_mx(exchanges: list[str]) -> str:
+    """Map MX exchange hostnames to a known IMAP server, or empty string."""
+    for exchange in exchanges:
+        name = exchange.rstrip(".").lower()
+        for suffixes, imap_host in _MX_IMAP_SUFFIXES:
+            if any(name == suffix or name.endswith("." + suffix) for suffix in suffixes):
+                return imap_host
+    return ""
+
+
+def _dns_name_at(packet: bytes, offset: int) -> tuple[str, int]:
+    labels: list[str] = []
+    jumped = False
+    end = offset
+    for _ in range(20):
+        if offset >= len(packet):
+            break
+        length = packet[offset]
+        if length == 0:
+            if not jumped:
+                end = offset + 1
+            break
+        if length & 0xC0 == 0xC0:
+            if offset + 1 >= len(packet):
+                break
+            ptr = ((length & 0x3F) << 8) | packet[offset + 1]
+            if not jumped:
+                end = offset + 2
+                jumped = True
+            offset = ptr
+            continue
+        offset += 1
+        if offset + length > len(packet):
+            break
+        labels.append(packet[offset:offset + length].decode("ascii", "ignore"))
+        offset += length
+        if not jumped:
+            end = offset
+    return ".".join(labels).rstrip(".").lower(), end
+
+
+def _parse_mx_answers(packet: bytes) -> list[str]:
+    if len(packet) < 12:
+        return []
+    ancount = struct.unpack("!H", packet[6:8])[0]
+    offset = 12
+    _, offset = _dns_name_at(packet, offset)
+    offset += 4
+    exchanges: list[str] = []
+    for _ in range(ancount):
+        if offset + 10 > len(packet):
+            break
+        _, offset = _dns_name_at(packet, offset)
+        rtype, _rclass, _ttl, rdlength = struct.unpack("!HHIH", packet[offset:offset + 10])
+        offset += 10
+        if rtype == 15 and rdlength >= 3 and offset + rdlength <= len(packet):
+            exch, _ = _dns_name_at(packet, offset + 2)
+            if exch:
+                exchanges.append(exch)
+        offset += rdlength
+    return exchanges
+
+
+def lookup_mx(domain: str, timeout: float = 1.5) -> list[str]:
+    """Return MX exchange hostnames for *domain*. Empty on timeout or parse failure."""
+    labels = domain.strip(".").lower().split(".")
+    if not domain or any(not label or len(label) > 63 for label in labels):
+        return []
+    try:
+        qname = b"".join(bytes([len(p)]) + p.encode("ascii") for p in labels) + b"\x00"
+    except UnicodeEncodeError:
+        return []
+    query = struct.pack("!HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0) + qname + struct.pack("!HH", 15, 1)
+    for server in _DNS_SERVERS:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.settimeout(timeout)
+            sock.sendto(query, (server, 53))
+            packet, _ = sock.recvfrom(4096)
+        except OSError:
+            continue
+        finally:
+            sock.close()
+        answers = _parse_mx_answers(packet)
+        if answers:
+            return answers
+    return []
+
+
+def guess_imap_host(email: str) -> str:
+    """Return the IMAP hostname for an address (known domain, MX provider, or imap.{domain})."""
+    domain = email.split("@")[-1].lower() if "@" in email else ""
+    if not domain:
+        return ""
+    if domain in KNOWN_IMAP_HOSTS:
+        return KNOWN_IMAP_HOSTS[domain]
+    mx_host = imap_host_from_mx(lookup_mx(domain))
+    if mx_host:
+        return mx_host
+    return f"imap.{domain}"
+
+
+def guess_imap_port(email: str, host: str) -> int:
+    domain = email.split("@")[-1].lower() if "@" in email else ""
+    if host == "127.0.0.1" or domain in ("protonmail.com", "proton.me"):
+        return 1143
+    return 993
+
+
+def resolve_imap_host(email: str, provided_host: str) -> str:
+    """Prefer a resolvable user-supplied host; otherwise the MX/domain guess."""
+    provided = provided_host.strip()
+    guessed = guess_imap_host(email)
+    if not provided:
+        return guessed
+    if host_resolves(provided):
+        return provided
+    if guessed and guessed != provided and host_resolves(guessed):
+        return guessed
+    return provided
+
 
 def _connect(host: str, port: int, username: str, password: str) -> imaplib.IMAP4_SSL:
     ctx = ssl.create_default_context()
-    conn = imaplib.IMAP4_SSL(host, port, ssl_context=ctx)
+    try:
+        conn = imaplib.IMAP4_SSL(host, port, ssl_context=ctx)
+    except socket.gaierror:
+        fallback = guess_imap_host(username)
+        if not fallback or fallback == host:
+            raise
+        logger.info("IMAP host %s did not resolve; trying %s", host, fallback)
+        conn = imaplib.IMAP4_SSL(fallback, port, ssl_context=ctx)
     conn.login(username, password)
     return conn
 
@@ -43,68 +209,34 @@ def test_connection(host: str, port: int, username: str, password: str) -> tuple
         return True, ""
     except imaplib.IMAP4.error as exc:
         return False, str(exc)
+    except socket.gaierror as exc:
+        return False, (
+            f"{exc}. School and work Google accounts usually use imap.gmail.com; "
+            "Microsoft 365 uses outlook.office365.com."
+        )
     except OSError as exc:
         return False, str(exc)
 
 
-# ---------------------------------------------------------------------------
-# Parsing helpers
-# ---------------------------------------------------------------------------
-
-def _header_str(msg, name: str) -> str:
-    raw = msg.get(name, "")
+def _uidvalidity(conn: imaplib.IMAP4_SSL) -> int:
+    responses = getattr(conn, "untagged_responses", {})
+    raw = responses.get("UIDVALIDITY", [None])[0]
     try:
-        return str(raw)
-    except Exception:
-        return raw or ""
+        return int(raw) if raw is not None else 0
+    except (TypeError, ValueError):
+        return 0
 
 
-def _address_str(msg, name: str) -> str:
-    raw = msg.get(name)
-    if raw is None:
-        return ""
-    try:
-        addrs = msg[name].addresses  # type: ignore[attr-defined]
-        return ", ".join(
-            str(a.addr_spec) if isinstance(a, Address) else str(a)
-            for a in addrs
-        )
-    except Exception:
-        return str(raw)
-
-
-def _body_text(msg) -> str:
-    """Extract plain-text body from a parsed message."""
-    if msg.is_multipart():
-        plain_parts: list[str] = []
-        for part in msg.walk():
-            ct = part.get_content_type()
-            disp = str(part.get("Content-Disposition") or "")
-            if ct == "text/plain" and "attachment" not in disp:
-                try:
-                    plain_parts.append(part.get_content())
-                except Exception:
-                    pass
-        if plain_parts:
-            return "\n".join(plain_parts)
-        # Fall back to HTML → plain strip
-        for part in msg.walk():
-            ct = part.get_content_type()
-            if ct == "text/html":
-                try:
-                    import html
-                    import re
-                    raw_html = part.get_content()
-                    stripped = re.sub(r"<[^>]+>", " ", raw_html)
-                    return html.unescape(stripped)
-                except Exception:
-                    pass
-        return ""
-    else:
+def _parse_uid_list(uids_data: list[bytes] | None) -> list[int]:
+    if not uids_data or not uids_data[0]:
+        return []
+    result: list[int] = []
+    for uid_bytes in uids_data[0].split():
         try:
-            return msg.get_content()
-        except Exception:
-            return ""
+            result.append(int(uid_bytes))
+        except ValueError:
+            continue
+    return result
 
 
 def _parse_raw_bytes(uid_bytes: bytes, raw_bytes: bytes) -> dict | None:
@@ -114,50 +246,67 @@ def _parse_raw_bytes(uid_bytes: bytes, raw_bytes: bytes) -> dict | None:
     except Exception:
         return None
 
-    import hashlib as _hashlib
+    parsed = parse_message(msg)
     uid_hex = uid_bytes.decode() if isinstance(uid_bytes, bytes) else str(uid_bytes)
-    message_id = _header_str(msg, "Message-ID").strip() or uid_hex
-    email_id = _hashlib.sha1(message_id.encode("utf-8", errors="replace")).hexdigest()
+    if not parsed.get("message_id"):
+        parsed["message_id"] = uid_hex
+    parsed["email_id"] = message_email_id(msg, parsed["body"], fallback=uid_hex)
+    return parsed
 
-    subject = _header_str(msg, "Subject") or "(no subject)"
-    sender = _address_str(msg, "From") or _header_str(msg, "From")
-    recipient = _address_str(msg, "To") or _header_str(msg, "To") or ""
-    cc = _address_str(msg, "Cc") or _header_str(msg, "Cc") or ""
 
-    raw_date = _header_str(msg, "Date")
-    received_at: str | None = None
-    if raw_date:
+def _fetch_uid_batch(
+    conn: imaplib.IMAP4_SSL,
+    uid_ints: list[int],
+    last_uid: int,
+) -> tuple[list[dict], int, list[int]]:
+    """Fetch and parse a list of UIDs; bump last_uid only on successful parses."""
+    emails: list[dict] = []
+    parsed_uids: list[int] = []
+    for uid_int in uid_ints:
+        uid_bytes = str(uid_int).encode()
+        typ2, msg_data = conn.uid("fetch", uid_bytes, "(RFC822)")
+        if typ2 != "OK" or not msg_data:
+            continue
+        for item in msg_data:
+            if isinstance(item, tuple) and len(item) == 2:
+                parsed = _parse_raw_bytes(uid_bytes, item[1])
+                if parsed:
+                    emails.append(parsed)
+                    parsed_uids.append(uid_int)
+                    last_uid = max(last_uid, uid_int)
+                break
+    return emails, last_uid, parsed_uids
+
+
+def list_folders(host: str, port: int, username: str, password: str) -> list[str]:
+    """Return selectable IMAP folder names (skips \\Noselect)."""
+    conn = _connect(host, port, username, password)
+    folders: list[str] = []
+    try:
+        typ, data = conn.list()
+        if typ != "OK" or not data:
+            return ["INBOX"]
+        for item in data:
+            if not isinstance(item, bytes):
+                continue
+            line = item.decode(errors="replace")
+            if "Noselect" in line or "NoSelect" in line:
+                continue
+            match = _FOLDER_LINE_RE.search(line)
+            if match:
+                folders.append(match.group(1))
+        return folders if folders else ["INBOX"]
+    finally:
         try:
-            from email.utils import parsedate_to_datetime
-            received_at = parsedate_to_datetime(raw_date).isoformat()
+            conn.logout()
         except Exception:
-            received_at = None
-
-    body = _body_text(msg).strip()
-
-    _mailing_list_headers = ("List-ID", "List-Unsubscribe", "List-Post", "List-Archive", "List-Help",
-                              "X-Mailchimp-ID", "X-Campaign")
-    is_mailing_list = any(msg.get(h) for h in _mailing_list_headers)
-    if not is_mailing_list:
-        prec = (_header_str(msg, "Precedence") or "").strip().lower()
-        is_mailing_list = prec in ("bulk", "list", "junk")
-
-    return {
-        "email_id": email_id,
-        "message_id": message_id,
-        "subject": subject,
-        "sender": sender,
-        "recipient": recipient,
-        "cc": cc,
-        "received_at": received_at,
-        "body": body or "(no body)",
-        "is_mailing_list": 1 if is_mailing_list else 0,
-    }
+            pass
 
 
-# ---------------------------------------------------------------------------
-# Email fetching
-# ---------------------------------------------------------------------------
+def _uids_for_search(conn: imaplib.IMAP4_SSL, criteria: str) -> list[int]:
+    typ, uids_data = conn.uid("search", None, criteria)
+    return _parse_uid_list(uids_data)
+
 
 def fetch_emails(
     host: str,
@@ -167,51 +316,75 @@ def fetch_emails(
     folder: str = "INBOX",
     limit: int = 500,
     since_uid: int = 0,
-) -> tuple[list[dict], int]:
+    backfill_uid: int = 0,
+    stored_uidvalidity: int = 0,
+    since_date: date | None = None,
+    backfill_only: bool = False,
+) -> tuple[list[dict], int, int, int]:
     """
     Fetch emails from IMAP server.
 
-    Returns (email_dicts, max_uid) where max_uid is the highest UID seen
-    so it can be stored and used as since_uid on the next call.
+    Returns (email_dicts, last_uid, backfill_uid, uidvalidity).
+    last_uid advances only for successfully parsed messages.
     """
     conn = _connect(host, port, username, password)
     try:
         conn.select(folder, readonly=True)
+        uidvalidity = _uidvalidity(conn)
 
-        if since_uid > 0:
-            search_criterion = f"UID {since_uid + 1}:*"
-            typ, uids_data = conn.uid("search", None, search_criterion)
-        else:
-            typ, uids_data = conn.uid("search", None, "ALL")
+        if stored_uidvalidity and stored_uidvalidity != uidvalidity:
+            since_uid = 0
+            backfill_uid = 0
 
-        if typ != "OK" or not uids_data or not uids_data[0]:
-            return [], since_uid
-
-        uid_list = uids_data[0].split()
-        # Limit to most-recent N
-        uid_list = uid_list[-limit:]
-
+        last_uid = since_uid
         emails: list[dict] = []
-        max_uid = since_uid
+        date_uids: set[int] | None = None
+        if since_date is not None:
+            since_str = since_date.strftime("%d-%b-%Y")
+            date_uids = set(_uids_for_search(conn, f"SINCE {since_str}"))
 
-        for uid_bytes in uid_list:
-            try:
-                uid_int = int(uid_bytes)
-            except ValueError:
-                continue
-            max_uid = max(max_uid, uid_int)
+        def _filter_uids(uid_list: list[int]) -> list[int]:
+            if date_uids is None:
+                return uid_list
+            return [u for u in uid_list if u in date_uids]
 
-            typ2, msg_data = conn.uid("fetch", uid_bytes, "(RFC822)")
-            if typ2 != "OK" or not msg_data:
-                continue
-            for item in msg_data:
-                if isinstance(item, tuple) and len(item) == 2:
-                    parsed = _parse_raw_bytes(uid_bytes, item[1])
-                    if parsed:
-                        emails.append(parsed)
-                    break
+        if not backfill_only and since_uid > 0:
+            new_uids = _filter_uids(_uids_for_search(conn, f"UID {since_uid + 1}:*"))
+            batch, last_uid, parsed = _fetch_uid_batch(conn, new_uids, last_uid)
+            emails.extend(batch)
 
-        return emails, max_uid
+        if backfill_uid > 0:
+            old_uids = _filter_uids(_uids_for_search(conn, f"UID 1:{backfill_uid}"))
+            if old_uids:
+                chunk = old_uids[-limit:]
+                batch, last_uid, parsed = _fetch_uid_batch(conn, chunk, last_uid)
+                emails.extend(batch)
+                if parsed:
+                    backfill_uid = min(parsed) - 1
+                else:
+                    backfill_uid = max(0, min(chunk) - 1)
+
+        if not backfill_only and since_uid == 0 and backfill_uid == 0 and not emails:
+            if date_uids is not None:
+                all_uids = sorted(date_uids)
+            else:
+                all_uids = _uids_for_search(conn, "ALL")
+            if not all_uids:
+                return [], since_uid, 0, uidvalidity
+
+            initial_uids = all_uids[-limit:]
+            batch, last_uid, parsed = _fetch_uid_batch(conn, initial_uids, last_uid)
+            emails.extend(batch)
+            if parsed:
+                min_parsed = min(parsed)
+                if min_parsed > 1:
+                    backfill_uid = min_parsed - 1
+                else:
+                    backfill_uid = 0
+            elif initial_uids:
+                backfill_uid = max(0, min(initial_uids) - 1)
+
+        return emails, last_uid, backfill_uid, uidvalidity
     finally:
         try:
             conn.logout()
