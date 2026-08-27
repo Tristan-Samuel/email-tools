@@ -61,6 +61,9 @@
                        style="font-size:1rem;font-weight:700;color:var(--text)">
                         {{ row.subject }}
                     </a>
+                    {% if row.on_todo %}
+                    <span class="tag-chip" style="background:#2d8f85;font-size:.72rem;margin-left:4px">You added</span>
+                    {% endif %}
                     <p class="email-meta" style="margin:4px 0">
                         <strong>From</strong> {{ row.sender or 'Unknown sender' }}
                         {% if row.days_waiting and row.days_waiting > 0 %}
@@ -84,6 +87,13 @@
                         {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
                         <input type="hidden" name="reason" value="{{ row.intent_reason or '' }}">
                         <button type="submit" class="btn btn-teal" style="font-size:.78rem">Draft reply</button>
+                    </form>
+                    {% endif %}
+                    {% if row.on_todo %}
+                    <form action="{{ url_for('main.today_remove_todo', thread_id=row.thread_id) }}" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
+                        <button type="submit" class="btn btn-ghost" style="padding:5px 12px;font-size:.78rem">Remove from to-do</button>
                     </form>
                     {% endif %}
                     <form action="{{ url_for('main.today_snooze', thread_id=row.thread_id) }}" method="post">
@@ -114,30 +124,115 @@
             <div>
                 <p class="eyebrow">FYI digest</p>
                 <h2 style="font-size:1.25rem;margin:8px 0">{{ fyi_digest.headline }}</h2>
+                {% if fyi_digest.more_count > 0 %}
+                <p class="panel-hint" style="margin:0">{{ fyi_digest.more_count }} more in the list below.</p>
+                {% endif %}
             </div>
             {% if fyi_digest.thread_ids %}
             <form action="{{ url_for('main.today_clear_fyi') }}" method="post">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
                 <input type="hidden" name="thread_ids" value="{{ fyi_digest.thread_ids|join(',') }}">
-                <button type="submit" class="btn btn-primary">Clear FYI</button>
+                <button type="submit" class="btn btn-primary">Clear shown FYI</button>
             </form>
             {% endif %}
         </div>
-        <ul class="bullet-list" style="margin-top:12px">
+        <ul class="fyi-digest-list" style="margin-top:12px">
             {% for bullet in fyi_digest.bullets %}
             {% set bullet_text = bullet.text if bullet is mapping else bullet %}
             {% set bullet_id = bullet.email_id if bullet is mapping else '' %}
-            <li>
-                {% if bullet_id %}
-                <a href="{{ url_for('main.email_detail', email_id=bullet_id) }}">{{ bullet_text|sanitize_bullet }}</a>
-                {% else %}
-                {{ bullet_text|sanitize_bullet }}
+            {% set bullet_tid = bullet.thread_id if bullet is mapping else '' %}
+            <li class="fyi-digest-item">
+                <div class="fyi-digest-text">
+                    {% if bullet_id %}
+                    <a href="{{ url_for('main.email_detail', email_id=bullet_id) }}">{{ bullet_text|sanitize_bullet }}</a>
+                    {% else %}
+                    {{ bullet_text|sanitize_bullet }}
+                    {% endif %}
+                </div>
+                {% if bullet_tid %}
+                <div class="fyi-digest-actions">
+                    <form action="{{ url_for('main.today_add_todo', thread_id=bullet_tid) }}" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
+                        <button type="submit" class="btn btn-ghost" style="padding:4px 10px;font-size:.72rem">Add to Do now</button>
+                    </form>
+                    <form action="{{ url_for('main.today_dismiss_fyi', thread_id=bullet_tid) }}" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
+                        <button type="submit" class="btn btn-ghost" style="padding:4px 10px;font-size:.72rem">Dismiss</button>
+                    </form>
+                </div>
                 {% endif %}
             </li>
             {% endfor %}
         </ul>
     </section>
+
+    {% if fyi_ranked or fyi_ranked_more %}
+    <section class="panel reveal" style="padding:20px;margin-bottom:16px">
+        <p class="eyebrow">FYI by urgency</p>
+        <h2 style="font-size:1.1rem;margin:8px 0">All summaries ranked by urgency</h2>
+        <div class="respond-list" style="margin-top:12px">
+            {% for row in fyi_ranked %}
+            <div class="respond-card" style="padding:12px 0;border-bottom:1px solid var(--line)">
+                <div class="respond-card-body" style="min-width:0">
+                    <a href="{{ url_for('main.email_detail', email_id=row.latest_email_id) }}" class="inbox-row-subject">
+                        {{ row.subject }}
+                    </a>
+                    <p class="email-meta" style="margin:4px 0">
+                        Urgency {{ row.urgency or 0 }}
+                        {% if not row.is_read %}&nbsp;&middot;&nbsp; unread{% endif %}
+                    </p>
+                    <p class="respond-reason">{{ row.summary or row.intent_reason }}</p>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;flex-shrink:0">
+                    <form action="{{ url_for('main.today_add_todo', thread_id=row.thread_id) }}" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
+                        <button type="submit" class="btn btn-teal" style="padding:4px 10px;font-size:.72rem">Add to Do now</button>
+                    </form>
+                    <form action="{{ url_for('main.today_dismiss_fyi', thread_id=row.thread_id) }}" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
+                        <button type="submit" class="btn btn-ghost" style="padding:4px 10px;font-size:.72rem">Dismiss</button>
+                    </form>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% if fyi_ranked_more %}
+        <details style="margin-top:12px">
+            <summary style="cursor:pointer;font-weight:600">{{ fyi_ranked_more|length }} more FYI thread{{ 's' if fyi_ranked_more|length != 1 else '' }}</summary>
+            <div class="respond-list" style="margin-top:12px">
+                {% for row in fyi_ranked_more %}
+                <div class="respond-card" style="padding:12px 0;border-bottom:1px solid var(--line)">
+                    <div class="respond-card-body" style="min-width:0">
+                        <a href="{{ url_for('main.email_detail', email_id=row.latest_email_id) }}" class="inbox-row-subject">
+                            {{ row.subject }}
+                        </a>
+                        <p class="email-meta" style="margin:4px 0">Urgency {{ row.urgency or 0 }}</p>
+                        <p class="respond-reason">{{ row.summary or row.intent_reason }}</p>
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;flex-shrink:0">
+                        <form action="{{ url_for('main.today_add_todo', thread_id=row.thread_id) }}" method="post">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
+                            <button type="submit" class="btn btn-teal" style="padding:4px 10px;font-size:.72rem">Add to Do now</button>
+                        </form>
+                        <form action="{{ url_for('main.today_dismiss_fyi', thread_id=row.thread_id) }}" method="post">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
+                            <button type="submit" class="btn btn-ghost" style="padding:4px 10px;font-size:.72rem">Dismiss</button>
+                        </form>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </details>
+        {% endif %}
+    </section>
+    {% endif %}
 
     {% if waiting %}
     <details class="panel" style="padding:16px 20px;margin-bottom:16px">

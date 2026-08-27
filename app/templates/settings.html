@@ -54,6 +54,27 @@
     </section>
 
     <section class="panel settings-panel">
+        <h2 class="panel-title">Search results</h2>
+        <p class="panel-hint">Default sort when you search without picking a sort in the results header.</p>
+        <form action="{{ url_for('main.settings') }}" method="post" class="settings-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="save_search_sort">
+            <label class="form-label">
+                Default sort
+                <select name="search_sort" class="form-input">
+                    <option value="urgency" {% if search_sort == 'urgency' %}selected{% endif %}>Urgency</option>
+                    <option value="date_desc" {% if search_sort == 'date_desc' %}selected{% endif %}>Date — newest first</option>
+                    <option value="date_asc" {% if search_sort == 'date_asc' %}selected{% endif %}>Date — oldest first</option>
+                    <option value="priority" {% if search_sort == 'priority' %}selected{% endif %}>Priority score</option>
+                </select>
+            </label>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Save search sort</button>
+            </div>
+        </form>
+    </section>
+
+    <section class="panel settings-panel">
         <h2 class="panel-title">Sender rules</h2>
         <p class="panel-hint">VIP senders always surface on Today. Always-hide senders are filtered as noise.</p>
         <form action="{{ url_for('main.settings') }}" method="post" class="settings-form">

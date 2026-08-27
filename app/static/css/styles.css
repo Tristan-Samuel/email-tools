@@ -1584,6 +1584,83 @@ h2 {
     padding-bottom: 2px;
 }
 
+.search-results-panel {
+    padding: 0;
+    overflow: hidden;
+}
+
+.search-results-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.search-sort-form {
+    display: flex;
+    align-items: center;
+}
+
+.search-results-list {
+    padding: 0;
+}
+
+.search-result-row {
+    display: flex;
+    align-items: stretch;
+    min-width: 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.search-result-row:last-child {
+    border-bottom: none;
+}
+
+.search-result-row .inbox-row {
+    flex: 1;
+    min-width: 0;
+    border-bottom: none;
+}
+
+.search-result-hide {
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    border-left: 1px solid var(--line);
+    flex-shrink: 0;
+}
+
+.fyi-digest-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.fyi-digest-item {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.fyi-digest-item:last-child {
+    border-bottom: none;
+}
+
+.fyi-digest-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.fyi-digest-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
 /* Toggle switch */
 .toggle-switch {
     position: relative;

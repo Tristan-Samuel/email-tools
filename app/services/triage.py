@@ -13,6 +13,9 @@ if TYPE_CHECKING:
 VALID_INTENTS = frozenset({"i_owe", "waiting_on_them", "deadline", "fyi", "noise"})
 DO_NOW_CAP = 8
 FYI_BULLET_CAP = 6
+FYI_RANKED_CAP = 15
+FYI_RECENT_DAYS = 14
+
 
 _EMAIL_IN_SENDER_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
 
@@ -172,10 +175,18 @@ def is_do_now_intent(intent: str, triage_status: str, snooze_until: str | None, 
     return intent in ("i_owe", "deadline")
 
 
+def _fyi_digest_score(row: dict) -> int:
+    score = int(row.get("urgency") or 0) * 10
+    if not row.get("is_read"):
+        score += 1000
+    age = days_waiting(row.get("last_inbound_at") or row.get("received_at"))
+    if age <= FYI_RECENT_DAYS:
+        score += (FYI_RECENT_DAYS - age) * 5
+    return score
+
+
 def rebuild_thread_states(store: EmailStore, user_email: str) -> int:
     """Roll up per-thread intent from cached messages. Return threads updated."""
-    accounts = store.list_imap_accounts(user_email)
-    account_emails = {a["account_email"].lower() for a in accounts}
     vip_patterns = store.list_sender_rules(user_email, "vip")
     hide_patterns = store.list_sender_rules(user_email, "always_hide")
     today = datetime.date.today()
@@ -196,13 +207,33 @@ def rebuild_thread_states(store: EmailStore, user_email: str) -> int:
         vip = any(sender_matches_pattern(sender, p) for p in vip_patterns)
         always_hide = any(sender_matches_pattern(sender, p) for p in hide_patterns)
 
-        # Prefer strongest stored intent on any open message in thread.
+        existing = store.get_thread_state(user_email, thread_id)
+        lock_active = store.thread_user_lock_active(
+            existing,
+            last_inbound_at=last_inbound_at,
+            last_from_me_at=last_from_me_at,
+            today=today,
+        )
+
+        if existing and existing.get("user_moved") and not lock_active:
+            sent_last = (
+                last_from_me_at
+                and last_inbound_at
+                and last_from_me_at >= last_inbound_at
+            )
+            store.clear_thread_user_lock(
+                user_email,
+                thread_id,
+                clear_on_todo=sent_last,
+            )
+            existing = store.get_thread_state(user_email, thread_id)
+            lock_active = False
+
         intent = "fyi"
         reason = ""
         due_at = None
         triage_status = "open"
         snooze_until = None
-        urgency = 0
 
         open_emails = [
             e
@@ -211,36 +242,45 @@ def rebuild_thread_states(store: EmailStore, user_email: str) -> int:
         ]
         source_email = open_emails[-1] if open_emails else latest
 
-        stored_intent = (source_email.get("intent") or "").strip()
-        if stored_intent in VALID_INTENTS:
-            intent = stored_intent
-            reason = source_email.get("intent_reason") or ""
-            due_at = source_email.get("due_at") or None
+        if lock_active and existing:
+            intent = existing.get("intent") or "fyi"
+            reason = existing.get("intent_reason") or ""
+            due_at = existing.get("due_at")
+            triage_status = existing.get("triage_status") or "open"
+            snooze_until = existing.get("snooze_until")
         else:
-            intent, reason, due_at = infer_intent_heuristic(
-                source_email,
-                from_me=bool(source_email.get("from_me")),
-                last_from_me_at=last_from_me_at,
-                last_inbound_at=last_inbound_at,
-                vip=vip,
-                always_hide=always_hide,
-            )
+            stored_intent = (source_email.get("intent") or "").strip()
+            if stored_intent in VALID_INTENTS:
+                intent = stored_intent
+                reason = source_email.get("intent_reason") or ""
+                due_at = source_email.get("due_at") or None
+            else:
+                intent, reason, due_at = infer_intent_heuristic(
+                    source_email,
+                    from_me=bool(source_email.get("from_me")),
+                    last_from_me_at=last_from_me_at,
+                    last_inbound_at=last_inbound_at,
+                    vip=vip,
+                    always_hide=always_hide,
+                )
 
-        if vip and intent == "fyi":
-            intent, reason, _ = "i_owe", "VIP sender — reply expected", due_at
+            if vip and intent == "fyi" and not (
+                existing and existing.get("user_action") == "remove_todo"
+            ):
+                intent, reason, _ = "i_owe", "VIP sender — reply expected", due_at
+
+            triage_status = source_email.get("triage_status") or "open"
+            snooze_until = source_email.get("snooze_until")
+
+            if last_from_me_at and last_inbound_at and last_from_me_at >= last_inbound_at:
+                if intent == "i_owe" and not vip:
+                    intent, reason = "waiting_on_them", "You already replied — waiting on them"
 
         if always_hide:
             intent, reason = "noise", "Sender rule: always hide"
             for e in emails_sorted:
                 if not e.get("is_hidden"):
                     store.set_email_hidden(e["email_id"], user_email, True)
-
-        triage_status = source_email.get("triage_status") or "open"
-        snooze_until = source_email.get("snooze_until")
-
-        if last_from_me_at and last_inbound_at and last_from_me_at >= last_inbound_at:
-            if intent == "i_owe" and not vip:
-                intent, reason = "waiting_on_them", "You already replied — waiting on them"
 
         urgency = compute_urgency(
             intent=intent,
@@ -281,23 +321,45 @@ def rebuild_thread_states(store: EmailStore, user_email: str) -> int:
 
 
 def build_fyi_digest(threads: list[dict], cap: int = FYI_BULLET_CAP) -> dict:
-    """Local FYI rollup from thread rows (no Groq)."""
-    fyi = [t for t in threads if t.get("intent") in ("fyi", "noise") and t.get("triage_status") == "open"]
-    fyi.sort(key=lambda t: t.get("received_at") or "", reverse=True)
+    """Curated FYI skim — unread, recent, higher urgency (no Groq)."""
+    candidates = [
+        t
+        for t in threads
+        if (t.get("intent") or "") == "fyi"
+        and (t.get("triage_status") or "open") == "open"
+        and not t.get("on_todo")
+    ]
+    candidates.sort(key=_fyi_digest_score, reverse=True)
+    shown = candidates[:cap]
     bullets: list[dict[str, str]] = []
-    for row in fyi[:cap]:
+    for row in shown:
         text = row.get("summary") or row.get("subject") or "Update"
-        bullets.append({"text": text, "email_id": row.get("latest_email_id") or ""})
+        bullets.append(
+            {
+                "text": text,
+                "email_id": row.get("latest_email_id") or "",
+                "thread_id": row.get("thread_id") or "",
+            }
+        )
     if not bullets:
         return {
             "headline": "Nothing new to skim.",
-            "bullets": [{"text": "FYI mail is caught up.", "email_id": ""}],
+            "bullets": [{"text": "FYI mail is caught up.", "email_id": "", "thread_id": ""}],
             "thread_ids": [],
+            "total_pool": 0,
+            "more_count": 0,
         }
+    more_count = max(0, len(candidates) - len(shown))
+    count = len(shown)
+    headline = f"{count} recent FYI — skim or clear"
+    if count != 1:
+        headline += "s"
     return {
-        "headline": f"{len(fyi)} FYI thread{'s' if len(fyi) != 1 else ''} — skim or clear in one click",
+        "headline": headline,
         "bullets": bullets,
-        "thread_ids": [t["thread_id"] for t in fyi],
+        "thread_ids": [t["thread_id"] for t in shown],
+        "total_pool": len(candidates),
+        "more_count": more_count,
     }
 
 
@@ -307,43 +369,68 @@ def build_today_view(
     *,
     source_account: str | None = None,
 ) -> dict:
-    """Assemble Do now, FYI digest, and Waiting sections for Today."""
+    """Assemble Do now, FYI digest, FYI ranked list, and Waiting sections for Today."""
     today = datetime.date.today()
     thread_rows = store.list_thread_states(user_email, source_account=source_account)
     open_rows = [r for r in thread_rows if (r.get("triage_status") or "open") == "open" and not r.get("is_hidden")]
 
-    do_now_candidates = [
+    todo_pinned = [r for r in open_rows if r.get("on_todo")]
+    todo_pinned.sort(key=lambda r: (-int(r.get("urgency") or 0), r.get("last_inbound_at") or ""))
+
+    do_now_ai = [
         r
         for r in open_rows
-        if is_do_now_intent(
+        if not r.get("on_todo")
+        and is_do_now_intent(
             r.get("intent") or "fyi",
             r.get("triage_status") or "open",
             r.get("snooze_until"),
             today,
         )
     ]
-    do_now_candidates.sort(key=lambda r: (-int(r.get("urgency") or 0), r.get("last_inbound_at") or ""))
-    do_now = do_now_candidates[:DO_NOW_CAP]
-    do_now_hidden_count = max(0, len(do_now_candidates) - DO_NOW_CAP)
+    do_now_ai.sort(key=lambda r: (-int(r.get("urgency") or 0), r.get("last_inbound_at") or ""))
+    do_now = todo_pinned + do_now_ai[:DO_NOW_CAP]
+    do_now_hidden_count = max(0, len(do_now_ai) - DO_NOW_CAP)
+
+    do_now_ids = {d["thread_id"] for d in do_now}
 
     waiting = [
         r
         for r in open_rows
         if (r.get("intent") or "") == "waiting_on_them"
-        and not is_do_now_intent(r.get("intent") or "", r.get("triage_status") or "open", r.get("snooze_until"), today)
+        and r["thread_id"] not in do_now_ids
+        and not is_do_now_intent(
+            r.get("intent") or "",
+            r.get("triage_status") or "open",
+            r.get("snooze_until"),
+            today,
+        )
     ]
     waiting.sort(key=lambda r: r.get("last_from_me_at") or "", reverse=True)
     waiting = waiting[:12]
 
-    fyi_threads = [
+    fyi_pool = [
         r
         for r in open_rows
-        if (r.get("intent") or "") in ("fyi", "noise")
-        and r["thread_id"] not in {d["thread_id"] for d in do_now}
+        if (r.get("intent") or "") == "fyi"
+        and r["thread_id"] not in do_now_ids
+        and not r.get("on_todo")
     ]
-    fyi_digest = build_fyi_digest(fyi_threads)
+    fyi_digest = build_fyi_digest(fyi_pool)
+    digest_ids = set(fyi_digest.get("thread_ids") or [])
 
-    for row in do_now + waiting:
+    fyi_ranked = [
+        r
+        for r in fyi_pool
+        if r["thread_id"] not in digest_ids
+    ]
+    fyi_ranked.sort(
+        key=lambda r: (-int(r.get("urgency") or 0), r.get("last_inbound_at") or ""),
+    )
+    fyi_ranked_visible = fyi_ranked[:FYI_RANKED_CAP]
+    fyi_ranked_more = fyi_ranked[FYI_RANKED_CAP:]
+
+    for row in do_now + waiting + fyi_ranked_visible:
         row["days_waiting"] = days_waiting(row.get("last_inbound_at") or row.get("received_at"))
 
     return {
@@ -351,7 +438,9 @@ def build_today_view(
         "do_now_hidden_count": do_now_hidden_count,
         "waiting": waiting,
         "fyi_digest": fyi_digest,
-        "open_action_count": len(do_now_candidates),
+        "fyi_ranked": fyi_ranked_visible,
+        "fyi_ranked_more": fyi_ranked_more,
+        "open_action_count": len(todo_pinned) + len(do_now_ai),
     }
 
 
@@ -364,6 +453,16 @@ def analyze_heuristic_batch(store: EmailStore, user_email: str, limit: int = 400
     hide_patterns = store.list_sender_rules(user_email, "always_hide")
     count = 0
     for email in emails:
+        thread_id = email.get("thread_id") or email["email_id"]
+        existing = store.get_thread_state(user_email, thread_id)
+        today = datetime.date.today()
+        if existing and store.thread_user_lock_active(
+            existing,
+            last_inbound_at=email.get("received_at"),
+            last_from_me_at=None,
+            today=today,
+        ):
+            continue
         sender = email.get("sender") or ""
         vip = any(sender_matches_pattern(sender, p) for p in vip_patterns)
         always_hide = any(sender_matches_pattern(sender, p) for p in hide_patterns)
@@ -380,7 +479,7 @@ def analyze_heuristic_batch(store: EmailStore, user_email: str, limit: int = 400
             due_at=due_at,
             received_at=email.get("received_at"),
             vip=vip,
-            today=datetime.date.today(),
+            today=today,
         )
         store.update_email_analysis(
             email["email_id"],

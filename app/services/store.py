@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 import sqlite3
 import uuid
@@ -417,6 +418,20 @@ class EmailStore:
             """
         )
 
+    def _migrate_v11(self, connection: sqlite3.Connection) -> None:
+        """User placement locks on thread_state so AI rebuild cannot undo triage actions."""
+        thread_cols = self._table_columns(connection, "thread_state")
+        if not thread_cols:
+            return
+        for col, ddl in (
+            ("on_todo", "ALTER TABLE thread_state ADD COLUMN on_todo INTEGER NOT NULL DEFAULT 0"),
+            ("user_moved", "ALTER TABLE thread_state ADD COLUMN user_moved INTEGER NOT NULL DEFAULT 0"),
+            ("user_action", "ALTER TABLE thread_state ADD COLUMN user_action TEXT NOT NULL DEFAULT ''"),
+            ("user_action_at", "ALTER TABLE thread_state ADD COLUMN user_action_at TEXT"),
+        ):
+            if col not in thread_cols:
+                connection.execute(ddl)
+
     def initialize(self) -> None:
         with self._connect() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -460,6 +475,10 @@ class EmailStore:
                 self._migrate_v10(connection)
                 connection.execute("PRAGMA user_version = 10")
                 version = 10
+            if version < 11:
+                self._migrate_v11(connection)
+                connection.execute("PRAGMA user_version = 11")
+                version = 11
             try:
                 connection.execute("SELECT email_id FROM email_search LIMIT 0")
                 self.fts_enabled = True
@@ -893,6 +912,7 @@ class EmailStore:
         _order = {
             "date_asc":  "COALESCE(received_at, created_at) ASC",
             "priority":  "priority_score DESC, COALESCE(received_at, created_at) DESC",
+            "urgency":   "urgency DESC, COALESCE(received_at, created_at) DESC",
         }.get(sort, "COALESCE(received_at, created_at) DESC")
         _fts_order = _order.replace("received_at", "emails.received_at").replace("created_at", "emails.created_at")
 
@@ -2204,11 +2224,11 @@ class EmailStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(user_email, thread_id) DO UPDATE SET
                     summary=excluded.summary,
-                    intent=excluded.intent,
-                    intent_reason=excluded.intent_reason,
-                    due_at=excluded.due_at,
-                    triage_status=excluded.triage_status,
-                    snooze_until=excluded.snooze_until,
+                    intent=CASE WHEN thread_state.user_moved = 1 THEN thread_state.intent ELSE excluded.intent END,
+                    intent_reason=CASE WHEN thread_state.user_moved = 1 THEN thread_state.intent_reason ELSE excluded.intent_reason END,
+                    due_at=CASE WHEN thread_state.user_moved = 1 THEN thread_state.due_at ELSE excluded.due_at END,
+                    triage_status=CASE WHEN thread_state.user_moved = 1 THEN thread_state.triage_status ELSE excluded.triage_status END,
+                    snooze_until=CASE WHEN thread_state.user_moved = 1 THEN thread_state.snooze_until ELSE excluded.snooze_until END,
                     urgency=excluded.urgency,
                     latest_email_id=excluded.latest_email_id,
                     last_inbound_at=excluded.last_inbound_at,
@@ -2239,7 +2259,7 @@ class EmailStore:
     ) -> list[dict]:
         query = """
             SELECT thread_state.*, emails.subject, emails.sender, emails.received_at,
-                   emails.is_hidden, emails.source_account
+                   emails.is_hidden, emails.is_read, emails.source_account
             FROM thread_state
             JOIN emails ON emails.email_id = thread_state.latest_email_id
             WHERE thread_state.user_email = ?
@@ -2286,6 +2306,179 @@ class EmailStore:
                 """,
                 (triage_status, snooze_until, user_email, thread_id),
             )
+
+    VALID_USER_ACTIONS = frozenset({
+        "add_todo",
+        "remove_todo",
+        "dismiss_fyi",
+        "clear_fyi",
+        "done",
+        "snooze",
+        "hide",
+    })
+
+    def record_thread_user_action(
+        self,
+        user_email: str,
+        thread_id: str,
+        action: str,
+        *,
+        on_todo: bool | None = None,
+        triage_status: str | None = None,
+        snooze_until: str | None = None,
+        intent: str | None = None,
+        intent_reason: str | None = None,
+        due_at: str | None = None,
+        clear_user_moved: bool = False,
+    ) -> None:
+        """Stamp a user triage action so rebuild/Groq cannot undo it."""
+        if action not in self.VALID_USER_ACTIONS:
+            return
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        existing = self.get_thread_state(user_email, thread_id) or {}
+
+        new_on_todo = int(on_todo) if on_todo is not None else int(existing.get("on_todo") or 0)
+        new_triage_status = triage_status or existing.get("triage_status") or "open"
+        new_snooze = snooze_until if snooze_until is not None else existing.get("snooze_until")
+        new_intent = intent or existing.get("intent") or "fyi"
+        new_reason = intent_reason if intent_reason is not None else existing.get("intent_reason") or ""
+        new_due_at = due_at if due_at is not None else existing.get("due_at")
+        user_moved = 0 if clear_user_moved else 1
+
+        if action == "add_todo":
+            new_on_todo = 1
+            new_triage_status = "open"
+            new_snooze = None
+            new_intent = "i_owe"
+            new_reason = "You added this to Do now"
+        elif action == "remove_todo":
+            new_on_todo = 0
+            new_triage_status = "open"
+            new_snooze = None
+            new_intent = "fyi"
+            new_reason = "You removed this from Do now"
+        elif action in ("dismiss_fyi", "clear_fyi", "done"):
+            new_on_todo = 0
+            new_triage_status = "done"
+            new_snooze = None
+        elif action == "snooze":
+            new_on_todo = 0
+            new_triage_status = "snoozed"
+        elif action == "hide":
+            new_on_todo = 0
+            new_intent = "noise"
+            new_reason = "You hid this thread"
+
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO thread_state (
+                    user_email, thread_id, summary, intent, intent_reason, due_at,
+                    triage_status, snooze_until, urgency, latest_email_id,
+                    last_inbound_at, last_from_me_at, on_todo, user_moved,
+                    user_action, user_action_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, '', NULL, NULL, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_email, thread_id) DO UPDATE SET
+                    on_todo = excluded.on_todo,
+                    user_moved = excluded.user_moved,
+                    user_action = excluded.user_action,
+                    user_action_at = excluded.user_action_at,
+                    triage_status = excluded.triage_status,
+                    snooze_until = excluded.snooze_until,
+                    intent = excluded.intent,
+                    intent_reason = excluded.intent_reason,
+                    due_at = excluded.due_at,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    user_email,
+                    thread_id,
+                    existing.get("summary") or "",
+                    new_intent,
+                    new_reason,
+                    new_due_at,
+                    new_triage_status,
+                    new_snooze,
+                    new_on_todo,
+                    user_moved,
+                    action,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE emails
+                SET triage_status = ?, snooze_until = ?, intent = ?, intent_reason = ?, due_at = ?
+                WHERE user_email = ? AND thread_id = ?
+                """,
+                (
+                    new_triage_status,
+                    new_snooze,
+                    new_intent,
+                    new_reason,
+                    new_due_at,
+                    user_email,
+                    thread_id,
+                ),
+            )
+
+    def thread_user_lock_active(
+        self,
+        existing: dict | None,
+        *,
+        last_inbound_at: str | None,
+        last_from_me_at: str | None,
+        today: datetime.date,
+    ) -> bool:
+        """Return True when user placement should block AI intent/status changes."""
+        if not existing or not existing.get("user_moved"):
+            return False
+        user_action_at = existing.get("user_action_at") or ""
+        if user_action_at and last_inbound_at and last_inbound_at > user_action_at:
+            return False
+        if (
+            last_from_me_at
+            and last_inbound_at
+            and last_from_me_at >= last_inbound_at
+        ):
+            return False
+        if existing.get("triage_status") == "snoozed" and existing.get("snooze_until"):
+            try:
+                if datetime.date.fromisoformat(str(existing["snooze_until"])[:10]) <= today:
+                    return False
+            except ValueError:
+                pass
+        return True
+
+    def clear_thread_user_lock(
+        self,
+        user_email: str,
+        thread_id: str,
+        *,
+        clear_on_todo: bool = False,
+    ) -> None:
+        """Release user_moved after lock exceptions (new inbound, sent reply, snooze expiry)."""
+        with self._connect() as connection:
+            if clear_on_todo:
+                connection.execute(
+                    """
+                    UPDATE thread_state
+                    SET user_moved = 0, user_action = '', user_action_at = NULL,
+                        on_todo = 0, updated_at = CURRENT_TIMESTAMP
+                    WHERE user_email = ? AND thread_id = ?
+                    """,
+                    (user_email, thread_id),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE thread_state
+                    SET user_moved = 0, user_action = '', user_action_at = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE user_email = ? AND thread_id = ?
+                    """,
+                    (user_email, thread_id),
+                )
 
     def mark_threads_read(self, user_email: str, thread_ids: list[str]) -> int:
         if not thread_ids:
@@ -2338,13 +2531,30 @@ class EmailStore:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT subject, sender, recipient, body, keywords, category
+                SELECT subject, sender, recipient, body, keywords, category, thread_id,
+                       triage_status, intent, intent_reason, due_at
                 FROM emails WHERE email_id = ? AND user_email = ?
                 """,
                 (email_id, user_email),
             ).fetchone()
             if row is None:
                 return
+
+            thread_id = row["thread_id"] or email_id
+            existing = self.get_thread_state(user_email, thread_id)
+            today = datetime.date.today()
+            lock_active = False
+            if existing and existing.get("user_moved"):
+                lock_active = self.thread_user_lock_active(
+                    existing,
+                    last_inbound_at=existing.get("last_inbound_at"),
+                    last_from_me_at=existing.get("last_from_me_at"),
+                    today=today,
+                )
+            if lock_active:
+                intent = existing.get("intent") or row["intent"] or intent
+                intent_reason = existing.get("intent_reason") or row["intent_reason"] or ""
+                due_at = existing.get("due_at") or row["due_at"]
 
             kw = keywords if keywords is not None else json.loads(row["keywords"])
             cat = category if category is not None else row["category"]

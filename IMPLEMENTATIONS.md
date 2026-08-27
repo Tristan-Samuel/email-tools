@@ -45,7 +45,8 @@ Entry: `app.py` → `create_app()` in `app/__init__.py`. All HTTP on blueprint `
 ### Triage-first product (2026 overhaul)
 
 - **`thread_state` + per-email intent** — `i_owe`, `waiting_on_them`, `deadline`, `fyi`, `noise`; `triage_status`, snooze, urgency.
-- **Today home** (`/` → `/today`) — Do now (capped), FYI digest + Clear FYI, Waiting fold; Done / Snooze / Draft.
+- **Today home** (`/` → `/today`) — Do now (capped + user-pinned to-do), curated FYI digest, FYI-by-urgency list, Waiting fold; Done / Snooze / Draft / Add to Do now / Dismiss.
+- **User-action locks** on `thread_state` (`user_moved`, `on_todo`) — Groq/rebuild respect Done, Snooze, hide, and to-do placement until release (new inbound, sent reply, snooze expiry).
 - **Single Groq analyze batch** — bullets + intent + due date in one pass; heuristic fallback without Groq.
 - **All mail** (`/inbox`) — thread-grouped browse; detail is summary-first with body behind disclosure.
 - **Sender rules** — VIP and always-hide in Settings.
@@ -94,4 +95,4 @@ SMTP send, attachments, calendar extraction, command palette, PWA.
 
 ---
 
-*Last updated after triage-first Today overhaul.*
+*Last updated after FYI lists, user-action locks, and Search sort.*

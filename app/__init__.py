@@ -81,7 +81,7 @@ def create_app() -> Flask:
         SMTP_PASSWORD=os.environ.get("SMTP_PASSWORD", ""),
         SMTP_FROM=os.environ.get("SMTP_FROM", "").strip(),
         SMTP_USE_TLS=os.environ.get("SMTP_USE_TLS", "true").lower() in ("1", "true", "yes"),
-        STATIC_VERSION="26",
+        STATIC_VERSION="27",
     )
 
     app.config["UPLOAD_FOLDER"].mkdir(parents=True, exist_ok=True)

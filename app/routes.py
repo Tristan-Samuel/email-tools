@@ -181,9 +181,11 @@ def _verify_signup_code(store, user_email: str, code: str) -> tuple[bool, str]:
 _NEEDS_REPLY_KV = "needs_reply_cache_v1"
 _INBOX_ROW_ORDER_KEY = "inbox_row_order"
 _INBOX_SUMMARY_SIZE_KEY = "inbox_summary_size"
+_SEARCH_SORT_KEY = "search_sort"
 _BODY_HTML_REFETCH_KEY = "body_html_refetch_v1"
 _VALID_INBOX_ROW_ORDERS = ("summary", "subject", "sender")
 _VALID_INBOX_SUMMARY_SIZES = ("normal", "large")
+_VALID_SEARCH_SORTS = ("urgency", "date_desc", "date_asc", "priority")
 _HIDE_SCAN_YES = "hide_yes"
 _HIDE_SCAN_NO = "hide_no"
 
@@ -220,6 +222,13 @@ def _inbox_summary_size(store, user_email: str) -> str:
     if size not in _VALID_INBOX_SUMMARY_SIZES:
         return "normal"
     return size
+
+
+def _search_sort(store, user_email: str) -> str:
+    sort = (store.get_kv(user_email, _SEARCH_SORT_KEY) or "urgency").strip().lower()
+    if sort not in _VALID_SEARCH_SORTS:
+        return "urgency"
+    return sort
 
 
 def _mailto_draft(email: dict, draft: str) -> str:
@@ -873,6 +882,8 @@ def today():
         do_now_hidden_count=view["do_now_hidden_count"],
         waiting=view["waiting"],
         fyi_digest=view["fyi_digest"],
+        fyi_ranked=view["fyi_ranked"],
+        fyi_ranked_more=view["fyi_ranked_more"],
         open_action_count=view["open_action_count"],
         source_account=source_account,
         groq_available=groq.enabled,
@@ -892,7 +903,7 @@ def today_done(thread_id: str):
         return login_redirect
     store = get_store()
     user_email = g.current_user_email
-    store.set_thread_triage_status(user_email, thread_id, triage_status="done")
+    store.record_thread_user_action(user_email, thread_id, "done")
     store.mark_threads_read(user_email, [thread_id])
     flash("Marked done.", "success")
     return redirect(url_for("main.today", source_account=request.form.get("source_account") or None))
@@ -908,8 +919,51 @@ def today_snooze(thread_id: str):
     until = (datetime.date.today() + datetime.timedelta(days=days)).isoformat()
     store = get_store()
     user_email = g.current_user_email
-    store.set_thread_triage_status(user_email, thread_id, triage_status="snoozed", snooze_until=until)
+    store.record_thread_user_action(
+        user_email,
+        thread_id,
+        "snooze",
+        triage_status="snoozed",
+        snooze_until=until,
+    )
     flash(f"Snoozed for {days} day(s).", "success")
+    return redirect(url_for("main.today", source_account=request.form.get("source_account") or None))
+
+
+@bp.post("/today/todo/<thread_id>")
+def today_add_todo(thread_id: str):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    store = get_store()
+    user_email = g.current_user_email
+    store.record_thread_user_action(user_email, thread_id, "add_todo")
+    flash("Added to Do now.", "success")
+    return redirect(url_for("main.today", source_account=request.form.get("source_account") or None))
+
+
+@bp.post("/today/todo/<thread_id>/remove")
+def today_remove_todo(thread_id: str):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    store = get_store()
+    user_email = g.current_user_email
+    store.record_thread_user_action(user_email, thread_id, "remove_todo")
+    flash("Removed from Do now.", "success")
+    return redirect(url_for("main.today", source_account=request.form.get("source_account") or None))
+
+
+@bp.post("/today/dismiss-fyi/<thread_id>")
+def today_dismiss_fyi(thread_id: str):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    store = get_store()
+    user_email = g.current_user_email
+    store.record_thread_user_action(user_email, thread_id, "dismiss_fyi")
+    store.mark_threads_read(user_email, [thread_id])
+    flash("FYI dismissed.", "success")
     return redirect(url_for("main.today", source_account=request.form.get("source_account") or None))
 
 
@@ -957,7 +1011,7 @@ def today_clear_fyi():
     thread_ids = [tid for tid in thread_ids_raw.split(",") if tid]
     if thread_ids:
         for tid in thread_ids:
-            store.set_thread_triage_status(user_email, tid, triage_status="done")
+            store.record_thread_user_action(user_email, tid, "clear_fyi")
         store.mark_threads_read(user_email, thread_ids)
         flash(f"Cleared {len(thread_ids)} FYI thread(s).", "success")
     else:
@@ -1139,7 +1193,12 @@ def email_hide(email_id: str):
     login_redirect = require_login()
     if login_redirect is not None:
         return login_redirect
-    get_store().set_email_hidden(email_id, g.current_user_email, True)
+    store = get_store()
+    user_email = g.current_user_email
+    email = store.get_email(email_id, user_email=user_email)
+    store.set_email_hidden(email_id, user_email, True)
+    if email and email.get("thread_id"):
+        store.record_thread_user_action(user_email, email["thread_id"], "hide")
     flash("Email hidden.", "success")
     return redirect(request.referrer or url_for("main.inbox"))
 
@@ -1478,6 +1537,7 @@ def search_page():
         return login_redirect
 
     store = get_store()
+    user_email = g.current_user_email
     query = request.args.get("query", "").strip()
     sender_filter = request.args.get("from_", "").strip()
     recipient_filter = request.args.get("to_", "").strip()
@@ -1489,7 +1549,9 @@ def search_page():
     tag_filter_raw = request.args.get("tag_id", "").strip()
     tag_filter = int(tag_filter_raw) if tag_filter_raw.isdigit() else None
     ai_mode = request.args.get("ai") == "1"
-    user_email = g.current_user_email
+    sort = request.args.get("sort") or _search_sort(store, user_email)
+    if sort not in _VALID_SEARCH_SORTS:
+        sort = "urgency"
 
     emails: list = []
     ai_answer: str | None = None
@@ -1513,9 +1575,9 @@ def search_page():
 
     if searched:
         if query:
-            emails = store.search(query, **common_kwargs)
+            emails = store.search(query, sort=sort, **common_kwargs)
         else:
-            emails = store.list_emails(**common_kwargs)
+            emails = store.list_emails(sort=sort, **common_kwargs)
 
         if ai_mode and query:
             if not emails:
@@ -1551,6 +1613,7 @@ def search_page():
         date_to=date_to or "",
         tags=tags,
         selected_tag=tag_filter,
+        sort=sort,
     )
 
 
@@ -1707,6 +1770,14 @@ def settings():
             flash("All mail display preferences saved.", "success")
             return redirect(url_for("main.settings"))
 
+        if action == "save_search_sort":
+            sort_val = (request.form.get("search_sort") or "urgency").strip().lower()
+            if sort_val not in _VALID_SEARCH_SORTS:
+                sort_val = "urgency"
+            store.set_kv(user_email, _SEARCH_SORT_KEY, sort_val)
+            flash("Default search sort saved.", "success")
+            return redirect(url_for("main.settings"))
+
         if action == "add_sender_rule":
             pattern = (request.form.get("pattern") or "").strip()
             rule_type = (request.form.get("rule_type") or "vip").strip()
@@ -1793,6 +1864,7 @@ def settings():
         groq_available=get_groq_client(user_email).enabled,
         inbox_row_order=_inbox_row_order(store, user_email),
         inbox_summary_size=_inbox_summary_size(store, user_email),
+        search_sort=_search_sort(store, user_email),
         sender_rules=sender_rules,
     )
 
@@ -2001,7 +2073,7 @@ def needs_reply_dismiss(email_id: str):
     user_email = g.current_user_email
     email = store.get_email(email_id, user_email=user_email)
     if email and email.get("thread_id"):
-        store.set_thread_triage_status(user_email, email["thread_id"], triage_status="done")
+        store.record_thread_user_action(user_email, email["thread_id"], "done")
     flash("Marked done.", "success")
     return redirect(url_for("main.today"))
 
@@ -2018,9 +2090,10 @@ def needs_reply_snooze(email_id: str):
     user_email = g.current_user_email
     email = store.get_email(email_id, user_email=user_email)
     if email and email.get("thread_id"):
-        store.set_thread_triage_status(
+        store.record_thread_user_action(
             user_email,
             email["thread_id"],
+            "snooze",
             triage_status="snoozed",
             snooze_until=until,
         )
