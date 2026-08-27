@@ -312,6 +312,7 @@ def build_email_record(
         "cc": message["cc"],
         "received_at": message["received_at"],
         "body": message["body"],
+        "body_html": message.get("body_html") or "",
         "preview": preview_text(message["body"]),
         "bullet_summary": bullet_summary,
         "category": category,

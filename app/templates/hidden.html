@@ -10,6 +10,14 @@
             <p class="page-subtitle">{{ emails|length }} email{{ 's' if emails|length != 1 else '' }} filtered from your inbox.</p>
         </div>
         <div class="page-header-actions">
+            {% if has_ai_confirm_tags %}
+            <form action="{{ url_for('main.hidden_review_ai') }}" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-teal" {% if not groq_available %}disabled title="Add Groq key in Settings"{% endif %}>
+                    ✨ Review hidden with AI
+                </button>
+            </form>
+            {% endif %}
             <a href="{{ url_for('main.inbox') }}" class="btn btn-ghost">← Back to Inbox</a>
         </div>
     </div>

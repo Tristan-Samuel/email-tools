@@ -146,7 +146,7 @@
         <button type="submit" formaction="{{ url_for('main.inbox_bulk_read') }}" name="read" value="1" class="btn btn-ghost" style="font-size:.82rem">Mark read</button>
         <button type="submit" formaction="{{ url_for('main.inbox_bulk_read') }}" name="read" value="0" class="btn btn-ghost" style="font-size:.82rem">Mark unread</button>
     </form>
-    <div class="inbox-list panel" id="inbox-list">
+    <div class="inbox-list panel {% if inbox_summary_size == 'large' %}inbox-list--summary-large{% endif %}" id="inbox-list">
         {% for email in emails %}
         <div class="inbox-row-wrap" data-email-id="{{ email.email_id }}" style="position:relative;display:flex;align-items:stretch">
             <label class="inbox-bulk-check" style="padding:12px 8px;display:flex;align-items:center">

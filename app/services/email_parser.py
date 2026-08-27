@@ -9,6 +9,8 @@ from email.parser import BytesParser
 from email.utils import getaddresses, parsedate_to_datetime
 from pathlib import Path
 
+from .html_sanitize import sanitize_email_html
+
 
 TAG_RE = re.compile(r"<[^>]+>")
 WHITESPACE_RE = re.compile(r"[ \t]+")
@@ -21,6 +23,16 @@ SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.I | re.DOTALL)
 BLOCK_BREAK_RE = re.compile(r"</?(?:p|div|tr|li|h[1-6]|table|section|article|header|footer)[^>]*>", re.I)
 BR_RE = re.compile(r"<br\s*/?>", re.I)
 URL_HEAVY_RE = re.compile(r"(?:<)?https?://", re.I)
+IMAGE_PLACEHOLDER_RE = re.compile(r"\[image:\s*[^\]]*\]", re.I)
+INLINE_BREAK_PATTERNS = (
+    re.compile(r"\s+(?=Begin forwarded message:)", re.I),
+    re.compile(r"\s+(?=Sent from my iPhone)", re.I),
+    re.compile(r"\s+(?=From:\s)", re.I),
+    re.compile(r"\s+(?=Date:\s)", re.I),
+    re.compile(r"\s+(?=To:\s)", re.I),
+    re.compile(r"\s+(?=Cc:\s)", re.I),
+    re.compile(r"\s+(?=Subject:\s)", re.I),
+)
 
 
 def strip_html(value: str) -> str:
@@ -46,21 +58,30 @@ def normalize_text(value: str) -> str:
     return WHITESPACE_RE.sub(" ", value).strip()
 
 
+def expand_inline_breaks(value: str) -> str:
+    """Insert line breaks before forward headers when stored as one long line."""
+    text = value.replace("\r\n", "\n")
+    for pattern in INLINE_BREAK_PATTERNS:
+        text = pattern.sub("\n", text)
+    return text
+
+
 def normalize_body_text(value: str) -> str:
-    """Collapse horizontal whitespace but preserve paragraph breaks."""
+    """Collapse horizontal whitespace but preserve single line breaks."""
     if not value:
         return ""
-    lines = [WHITESPACE_RE.sub(" ", line).strip() for line in value.replace("\r\n", "\n").split("\n")]
+    text = expand_inline_breaks(value)
+    lines = [WHITESPACE_RE.sub(" ", line).strip() for line in text.split("\n")]
     paragraphs: list[str] = []
     current: list[str] = []
     for line in lines:
         if line:
             current.append(line)
         elif current:
-            paragraphs.append(" ".join(current))
+            paragraphs.append("\n".join(current))
             current = []
     if current:
-        paragraphs.append(" ".join(current))
+        paragraphs.append("\n".join(current))
     joined = "\n\n".join(paragraphs)
     return MULTI_NEWLINE_RE.sub("\n\n", joined).strip()
 
@@ -80,6 +101,18 @@ def is_url_heavy_plaintext(text: str) -> bool:
     return url_chars / non_space > 0.35
 
 
+def _plain_prefers_html(plain_text: str) -> bool:
+    if not plain_text:
+        return True
+    if is_url_heavy_plaintext(plain_text):
+        return True
+    if IMAGE_PLACEHOLDER_RE.search(plain_text) and len(plain_text) > 120:
+        return True
+    if "\n" not in plain_text.strip() and len(plain_text) > 280:
+        return True
+    return False
+
+
 def parse_address_header(value: str | None) -> str:
     if not value:
         return ""
@@ -97,7 +130,8 @@ def parse_address_header(value: str | None) -> str:
     return ", ".join(formatted)
 
 
-def extract_body(message) -> str:
+def extract_body_parts(message) -> tuple[str, str]:
+    """Return (plaintext_body, sanitized_html_body)."""
     plain_parts: list[str] = []
     html_parts: list[str] = []
 
@@ -121,15 +155,24 @@ def extract_body(message) -> str:
             html_parts.append(str(content))
 
     plain_text = normalize_body_text("\n\n".join(plain_parts)) if plain_parts else ""
-    html_text = html_to_text(" ".join(html_parts)) if html_parts else ""
+    html_raw = " ".join(html_parts) if html_parts else ""
+    html_text = html_to_text(html_raw) if html_raw else ""
+    body_html = sanitize_email_html(html_raw) if html_raw else ""
 
-    if plain_text and html_parts and is_url_heavy_plaintext(plain_text):
-        return html_text or plain_text
+    if plain_text and html_parts and _plain_prefers_html(plain_text):
+        plain_text = html_text or plain_text
+    elif not plain_text and html_text:
+        plain_text = html_text
     if plain_text:
-        return plain_text
+        return plain_text, body_html
     if html_text:
-        return html_text
-    return ""
+        return html_text, body_html
+    return "", ""
+
+
+def extract_body(message) -> str:
+    plain, _html = extract_body_parts(message)
+    return plain
 
 
 def parsed_timestamp(message) -> str | None:
@@ -187,7 +230,7 @@ def is_mailing_list_message(message) -> bool:
 
 
 def parse_message(message) -> dict:
-    body = extract_body(message)
+    body, body_html = extract_body_parts(message)
     return {
         "email_id": message_email_id(message, body),
         "message_id": (message.get("message-id") or "").strip(),
@@ -199,6 +242,7 @@ def parse_message(message) -> dict:
         "cc": parse_address_header(message.get("cc")),
         "received_at": parsed_timestamp(message),
         "body": body,
+        "body_html": body_html,
         "is_mailing_list": 1 if is_mailing_list_message(message) else 0,
     }
 

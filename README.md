@@ -8,17 +8,17 @@ Flask web application for reading and triaging your inbox through AI-generated s
 - **Account login** — sign in with your Inbox Tools account password. If you remove the account password, the next login requires your mailbox **App Password** from a connected IMAP account (no email-only access).
 - **Multiple accounts per user** — connect as many IMAP accounts as you like. Filter with account pills in the nav bar, or view everything together.
 - **Background sync with a live activity panel** — Sync All / per-account sync runs in a background queue. Stacked phase meters (Fetch / Summarize / Tag / Brief) update as mail downloads and Groq runs. **Cancel** stops a stuck job; the panel dismisses so it does not keep the header. A one-line strip remains when mail still needs AI analysis.
-- Parse and cache every email in SQLite with full-text search (subject, sender, recipient, body, bullets, keywords, category). Marketing-style bodies are cleaned on ingest (HTML labels instead of URL dumps); cached mail linkifies `Label <url>` in the detail view.
-- Auto-sort messages into category signals (Urgent, Finance, Work, etc.) — **tags** are the user-facing filter taxonomy; categories appear as row chips. **School**, **Marketing**, and **Newsletters** tags are created on first inbox visit (Marketing/Newsletters hide matching mail; School catches admissions senders). Apply tags from the inbox row or message detail (multiple tags per email).
+- Parse and cache every email in SQLite with full-text search (subject, sender, recipient, body, bullets, keywords, category). New mail stores **sanitized HTML** (`body_html`) for the detail view with a **Load images** button; older cached mail gets improved plaintext (forward breaks, visible links, `[image: …]` chips). Next sync backfills HTML for your recent window.
+- Auto-sort messages into category signals (Urgent, Finance, Work, etc.) — **tags** are the user-facing filter taxonomy; categories appear as row chips. **School**, **Marketing**, and **Newsletters** tags are created on first inbox visit. **School** never auto-hides mail (even when Marketing rules also match). Marketing/Newsletters can hide matching mail; optional **Confirm with AI before hiding** on a tag vetoes false positives. **Review hidden with AI** on the Hidden page re-checks buried mail.
 - **Automatic AI summaries** — sync downloads mail quickly with local summaries, then Groq analyzes in small batches. A 429 rate limit switches to another chat model (TPM is per-model) instead of stopping. Dashboard and Inbox have **Analyze now**; Settings still shows AI vs heuristic counts.
 - Cached Groq model discovery (no `/models` call on every summarize). Inbox brief is generated after analysis and cached (dashboard load does not wait on Groq).
 - **Dashboard** (`/dashboard`) — cached AI or local inbox brief with **clickable bullets** that open the source email, important-mail highlights with links, sync controls, unread rows with a one-line summary, and stats. Primary nav includes Inbox, Dashboard, Search, Needs Reply, and Tags.
 - **Dark mode** — Light / Dark / System theme in the header menu (saved in your browser).
-- **Inbox** — default landing page with tag filters, quick-tag on rows, offset pagination, split-pane preview (`?pane=1`), keyboard triage (j/k/e/u), bulk hide / read / unread + hide undo. Row order (summary / subject / sender first) in **Settings**; sender shows display name with full address on hover.
+- **Inbox** — default landing page with tag filters, quick-tag on rows, offset pagination, split-pane preview (`?pane=1`), keyboard triage (j/k/e/u), bulk hide / read / unread + hide undo. Row order (summary / subject / sender first) and **summary size** (normal or large) in **Settings**; sender shows display name with full address on hover.
 - **Search** — filter chips for tags, save current filters as an auto-tag, optional Ask AI when results exist.
 - Import `.eml` and `.mbox` file exports as an alternative to IMAP.
 - **Needs Reply** — Groq triage with a durable cached list (stable across refresh until new mail arrives), dismiss/snooze, and draft reply (copy / mailto). Network/DNS failures keep the last good list.
-- Manual and AI tags, hide rules (manual hides preserved), thread grouping, draft reply on message detail. Saving a tag applies matching rules immediately; AI tags cache verdicts so Groq does not re-scan every sync. Hide matching without rules seeds a subject/body filter from the tag name.
+- Manual and AI tags, hide rules (manual hides preserved), thread grouping, draft reply on message detail. Saving a tag applies matching rules immediately; AI tags cache verdicts so Groq does not re-scan every sync. Hide matching without rules seeds a subject/body filter from the tag name. Hide tags can require Groq confirmation before hiding.
 
 ## Run Locally
 
@@ -98,7 +98,8 @@ app/
   routes.py                   All HTTP routes (login, inbox, dashboard, search, accounts, tags, settings)
   services/
     crypto.py                 Fernet encryption for IMAP passwords and Groq keys
-    email_parser.py           .eml / .mbox parsing and shared parse_message
+    email_parser.py           .eml / .mbox parsing, plaintext + HTML body extraction
+    html_sanitize.py          nh3 HTML sanitization and deferred remote images
     groq_client.py            Groq model discovery, 429 fallback, chat, draft reply, batch summarize
     imap_service.py           IMAP connection, UID sync, batched BODY.PEEK[] fetch
     llm_text.py               URL-stripped text compaction for Groq prompts

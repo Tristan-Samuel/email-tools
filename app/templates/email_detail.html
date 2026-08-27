@@ -157,10 +157,40 @@
                 <p class="eyebrow">Message content</p>
                 <h2>Email body</h2>
             </div>
+            {% if email.body_html %}
+            <button type="button" class="btn btn-ghost" id="load-email-images" style="font-size:.82rem">
+                Load images
+            </button>
+            {% endif %}
         </div>
+        {% if email.body_html %}
+        <div class="email-body-html" id="email-body-html">
+            {{ email.body_html | safe }}
+        </div>
+        {% else %}
         <div class="email-body-formatted">
             {{ email.body | format_email_body }}
         </div>
+        {% endif %}
     </section>
 </main>
+{% endblock %}
+
+{% block scripts %}
+{% if email.body_html %}
+<script>
+document.getElementById("load-email-images")?.addEventListener("click", () => {
+    document.querySelectorAll(".email-img-remote").forEach((placeholder) => {
+        const src = placeholder.getAttribute("data-src");
+        if (!src) return;
+        const img = document.createElement("img");
+        img.src = src;
+        img.alt = placeholder.getAttribute("aria-label") || "Email image";
+        img.loading = "lazy";
+        img.className = "email-body-img";
+        placeholder.replaceWith(img);
+    });
+});
+</script>
+{% endif %}
 {% endblock %}

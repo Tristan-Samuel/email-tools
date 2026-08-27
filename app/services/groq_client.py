@@ -494,6 +494,46 @@ class GroqClient:
             return False
         return _parse_bool(parsed.get("match", False))
 
+    def confirm_hide_email(
+        self,
+        tag_name: str,
+        sender: str,
+        subject: str,
+        body: str,
+    ) -> bool:
+        """Return True when email is commercial/promotional bulk mail worth hiding."""
+        if not self.enabled:
+            return False
+        compact_body = compact_for_llm(body, _TAG_BODY_CHARS)
+        parsed, _err = self._complete(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You produce strict JSON with a single boolean field 'hide'. "
+                        "Answer hide=true only for commercial marketing, promos, or bulk newsletters "
+                        "the user would want filtered. Personal, school, transactional, and 1:1 mail "
+                        "must be hide=false."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Tag filter: {tag_name}\n"
+                        f"Sender: {sender or 'Unknown'}\n"
+                        f"Subject: {subject}\n"
+                        f"Body:\n{compact_body}\n\n"
+                        'Respond with JSON: {"hide": true} or {"hide": false}'
+                    ),
+                },
+            ],
+            temperature=0.1,
+            timeout=20,
+        )
+        if not isinstance(parsed, dict):
+            return False
+        return _parse_bool(parsed.get("hide", False))
+
     def _email_summary_for_tag(self, email: dict) -> str:
         bullets = email.get("bullet_summary") or []
         summary = " ".join(str(b) for b in bullets if b) or (email.get("preview") or "")

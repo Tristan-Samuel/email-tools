@@ -81,7 +81,7 @@ def create_app() -> Flask:
         SMTP_PASSWORD=os.environ.get("SMTP_PASSWORD", ""),
         SMTP_FROM=os.environ.get("SMTP_FROM", "").strip(),
         SMTP_USE_TLS=os.environ.get("SMTP_USE_TLS", "true").lower() in ("1", "true", "yes"),
-        STATIC_VERSION="24",
+        STATIC_VERSION="25",
     )
 
     app.config["UPLOAD_FOLDER"].mkdir(parents=True, exist_ok=True)
@@ -173,33 +173,69 @@ def create_app() -> Flask:
             return name or raw
         return raw
 
-    def _linkify_body_paragraph(para: str) -> str:
-        """Escape paragraph text and turn Label <url> into short links."""
-        label_url = re.compile(r"([^<\n]+?)\s*<(https?://[^>\s]+)>", re.I)
+    def _format_image_chips(text: str) -> str:
+        image_re = re.compile(r"\[image:\s*([^\]]*)\]", re.I)
 
-        def _replace(match: re.Match[str]) -> str:
+        def _chip(match: re.Match[str]) -> str:
+            label = (match.group(1) or "image").strip() or "image"
+            return f'<span class="email-img-placeholder">[{_html.escape(label)}]</span>'
+
+        return image_re.sub(_chip, text)
+
+    def _linkify_body_paragraph(para: str) -> str:
+        """Escape paragraph text; linkify short labels and bare URLs."""
+        label_url = re.compile(
+            r"(?:^|[\s(])((?:[^\s<\n]{1,60}))\s*<(https?://[^>\s]+)>",
+            re.I,
+        )
+        raw_url = re.compile(r'(?<![\w/@])(https?://[^\s<>"\']+)', re.I)
+        text = _format_image_chips(_html.escape(para))
+        parts: list[str] = []
+        last = 0
+        for match in label_url.finditer(text):
+            if match.start() > last:
+                parts.append(text[last:match.start()])
+            prefix = match.group(0)[: match.start(1) - match.start()]
             label = match.group(1).strip()
             url = match.group(2).strip()
             safe_url = _html.escape(url, quote=True)
             safe_label = _html.escape(label or url[:48])
-            return f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer">{safe_label}</a>'
-
-        parts: list[str] = []
-        last = 0
-        for match in label_url.finditer(para):
-            if match.start() > last:
-                parts.append(_html.escape(para[last:match.start()]))
-            parts.append(_replace(match))
+            parts.append(
+                f'{prefix}<a href="{safe_url}" target="_blank" rel="noopener noreferrer">{safe_label}</a>'
+            )
             last = match.end()
-        if last < len(para):
-            parts.append(_html.escape(para[last:]))
-        return "".join(parts).replace("\n", "<br>")
+        if last < len(text):
+            parts.append(text[last:])
+        linked = "".join(parts)
+        linked = raw_url.sub(
+            lambda m: (
+                f'<a href="{_html.escape(m.group(1), quote=True)}" target="_blank" '
+                f'rel="noopener noreferrer">{_html.escape(m.group(1)[:72])}</a>'
+            ),
+            linked,
+        )
+        return linked.replace("\n", "<br>")
+
+    def _is_forward_block(para: str) -> bool:
+        lower = para.lower()
+        if "begin forwarded message" in lower or "sent from my iphone" in lower:
+            return True
+        lines = [line.strip() for line in para.split("\n") if line.strip()]
+        header_hits = sum(
+            1
+            for line in lines
+            if re.match(r"^(From|Date|To|Cc|Subject|Sent):\s", line, re.I)
+        )
+        return header_hits >= 2
 
     @app.template_filter("format_email_body")
     def format_email_body(body: str | None) -> Markup:
         """Render plain-text email body as safe HTML paragraphs with blockquote support."""
+        from .services.email_parser import expand_inline_breaks
+
         if not body or not body.strip():
             return Markup("<p><em>No body content.</em></p>")
+        body = expand_inline_breaks(body)
         result: list[str] = []
         for para in body.split("\n\n"):
             if not para.strip():
@@ -209,6 +245,9 @@ def create_app() -> Flask:
             if non_empty and all(line.lstrip().startswith(">") for line in non_empty):
                 inner = _html.escape("\n".join(line.lstrip("> ") for line in non_empty))
                 result.append(f'<blockquote class="email-quote">{inner}</blockquote>')
+            elif _is_forward_block(para):
+                inner = _linkify_body_paragraph(para)
+                result.append(f'<blockquote class="email-quote email-forward">{inner}</blockquote>')
             else:
                 content = _linkify_body_paragraph(para)
                 result.append(f"<p>{content}</p>")

@@ -179,7 +179,12 @@ def _verify_signup_code(store, user_email: str, code: str) -> tuple[bool, str]:
 
 _NEEDS_REPLY_KV = "needs_reply_cache_v1"
 _INBOX_ROW_ORDER_KEY = "inbox_row_order"
+_INBOX_SUMMARY_SIZE_KEY = "inbox_summary_size"
+_BODY_HTML_REFETCH_KEY = "body_html_refetch_v1"
 _VALID_INBOX_ROW_ORDERS = ("summary", "subject", "sender")
+_VALID_INBOX_SUMMARY_SIZES = ("normal", "large")
+_HIDE_SCAN_YES = "hide_yes"
+_HIDE_SCAN_NO = "hide_no"
 
 
 def _needs_reply_fingerprint(emails: list[dict]) -> str:
@@ -207,6 +212,13 @@ def _inbox_row_order(store, user_email: str) -> str:
     if order not in _VALID_INBOX_ROW_ORDERS:
         return "summary"
     return order
+
+
+def _inbox_summary_size(store, user_email: str) -> str:
+    size = (store.get_kv(user_email, _INBOX_SUMMARY_SIZE_KEY) or "normal").strip().lower()
+    if size not in _VALID_INBOX_SUMMARY_SIZES:
+        return "normal"
+    return size
 
 
 def _mailto_draft(email: dict, draft: str) -> str:
@@ -466,6 +478,42 @@ def sync_one_account(
     )
     if total_imported > 0:
         _invalidate_needs_reply_cache(store, user_email)
+
+    if not store.get_kv(user_email, _BODY_HTML_REFETCH_KEY):
+        log("Backfilling HTML bodies for recent mail…", phase="fetch")
+        refetched = 0
+        for folder in folders:
+            try:
+                recent_raw = imap_service.fetch_recent_emails(
+                    host=account["imap_host"],
+                    port=account["imap_port"],
+                    username=account["account_email"],
+                    password=password,
+                    folder=folder,
+                    limit=sync_max,
+                    on_progress=fetch_progress,
+                )
+            except Exception:
+                continue
+            if not recent_raw:
+                continue
+            records = [
+                build_email_record(
+                    msg,
+                    source_name=account["account_email"],
+                    user_email=user_email,
+                    source_account=account["account_email"],
+                    groq_client=None,
+                )
+                for msg in recent_raw
+                if msg.get("body_html")
+            ]
+            if records:
+                refetched += store.bulk_upsert(records)
+        if refetched:
+            log(f"Refreshed HTML for {refetched} message(s).", phase="fetch")
+        store.set_kv(user_email, _BODY_HTML_REFETCH_KEY, "1")
+
     return total_imported, None
 
 
@@ -1525,6 +1573,7 @@ def inbox():
         groq_available=get_groq_client(user_email).enabled,
         ai_pending=store.count_ai_stats(user_email)[1],
         inbox_row_order=_inbox_row_order(store, user_email),
+        inbox_summary_size=_inbox_summary_size(store, user_email),
     )
 
 
@@ -1545,8 +1594,12 @@ def settings():
             order = (request.form.get("inbox_row_order") or "summary").strip().lower()
             if order not in _VALID_INBOX_ROW_ORDERS:
                 order = "summary"
+            size = (request.form.get("inbox_summary_size") or "normal").strip().lower()
+            if size not in _VALID_INBOX_SUMMARY_SIZES:
+                size = "normal"
             store.set_kv(user_email, _INBOX_ROW_ORDER_KEY, order)
-            flash("Inbox row order saved.", "success")
+            store.set_kv(user_email, _INBOX_SUMMARY_SIZE_KEY, size)
+            flash("Inbox display preferences saved.", "success")
             return redirect(url_for("main.settings"))
 
         if action == "set_app_password":
@@ -1616,6 +1669,7 @@ def settings():
         ai_pending=ai_pending,
         groq_available=get_groq_client(user_email).enabled,
         inbox_row_order=_inbox_row_order(store, user_email),
+        inbox_summary_size=_inbox_summary_size(store, user_email),
     )
 
 
@@ -1763,7 +1817,47 @@ def hidden():
     store = get_store()
     user_email = g.current_user_email
     emails = store.list_emails(user_email=user_email, only_hidden=True, exclude_hidden=False, limit=500)
-    return render_template("hidden.html", emails=emails)
+    groq_available = get_groq_client(user_email).enabled
+    confirm_tags = [
+        t for t in store.list_tags(user_email) if t["hide_matching"] and t.get("ai_confirm")
+    ]
+    return render_template(
+        "hidden.html",
+        emails=emails,
+        groq_available=groq_available,
+        has_ai_confirm_tags=bool(confirm_tags),
+    )
+
+
+@bp.post("/hidden/review-ai")
+def hidden_review_ai():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    user_email = g.current_user_email
+    groq = get_groq_client(user_email)
+    if not groq.enabled:
+        flash("Add a Groq API key in Settings to review hidden mail with AI.", "error")
+        return redirect(url_for("main.hidden"))
+
+    confirm_tags = [
+        t for t in store.list_tags(user_email) if t["hide_matching"] and t.get("ai_confirm")
+    ]
+    if not confirm_tags:
+        flash("Enable “Confirm with AI before hiding” on a hide tag first.", "error")
+        return redirect(url_for("main.hidden"))
+
+    for tag in confirm_tags:
+        store.clear_tag_scans_for_tag(tag["id"])
+
+    _, queue_err = _queue_job(user_email, "hide_review", "Review hidden mail with AI")
+    if queue_err:
+        flash(queue_err, "error")
+    else:
+        flash("AI hide review started — watch the activity panel.", "success")
+    return redirect(url_for("main.hidden"))
 
 
 @bp.get("/needs-reply")
@@ -1925,11 +2019,14 @@ def tags():
         use_ai = bool(request.form.get("use_ai"))
         ai_instruction = (request.form.get("ai_instruction") or "").strip()
         hide_matching = bool(request.form.get("hide_matching"))
+        ai_confirm = bool(request.form.get("ai_confirm"))
 
         if not name:
             flash("Tag name is required.", "error")
         else:
-            tag_id = store.save_tag(user_email, name, color, use_ai, ai_instruction, hide_matching)
+            tag_id = store.save_tag(
+                user_email, name, color, use_ai, ai_instruction, hide_matching, ai_confirm
+            )
             saved_rules = _save_tag_rules_from_form(store, tag_id)
             _apply_tag_after_save(
                 store,
@@ -1991,11 +2088,14 @@ def tags_edit(tag_id: int):
         use_ai = bool(request.form.get("use_ai"))
         ai_instruction = (request.form.get("ai_instruction") or "").strip()
         hide_matching = bool(request.form.get("hide_matching"))
+        ai_confirm = bool(request.form.get("ai_confirm"))
 
         if not name:
             flash("Tag name is required.", "error")
         else:
-            store.update_tag(tag_id, user_email, name, color, use_ai, ai_instruction, hide_matching)
+            store.update_tag(
+                tag_id, user_email, name, color, use_ai, ai_instruction, hide_matching, ai_confirm
+            )
             saved_rules = _save_tag_rules_from_form(store, tag_id)
             _apply_tag_after_save(
                 store,
@@ -2093,6 +2193,7 @@ def register_routes(app):
         tag_apply_fn=_apply_all_tags,
         analyze_fn=analyze_pending_emails,
         digest_fn=refresh_cached_digest,
+        hide_confirm_fn=_apply_hide_ai_confirm,
     )
 
 
@@ -2137,8 +2238,98 @@ def _apply_tag_after_save(
             flash("AI tagging started — watch the activity panel.", "success")
 
 
+def _apply_hide_ai_confirm(
+    store,
+    user_email: str,
+    on_progress: Callable[..., None] | None = None,
+    *,
+    review_hidden: bool = False,
+) -> int:
+    """Confirm hide-tag matches with Groq before hiding (or unhide false positives)."""
+    groq = get_groq_client(user_email)
+    groq.cancel_check = lambda: current_job_is_cancelled(store)
+    if not groq.enabled:
+        return 0
+
+    all_tags = store.list_tags(user_email)
+    confirm_tags = [t for t in all_tags if t["hide_matching"] and t.get("ai_confirm")]
+    if not confirm_tags:
+        return 0
+
+    confirm_ids = {t["id"] for t in confirm_tags}
+    tag_by_id = {t["id"]: t for t in confirm_tags}
+    manual_tags = [t for t in all_tags if not t["use_ai"] or t["rules"]]
+
+    if review_hidden:
+        emails = store.list_hidden_by_tag(user_email)
+    else:
+        emails = store.list_emails(user_email=user_email, limit=500, exclude_hidden=True)
+
+    changed = 0
+    total = len(emails)
+    for index, email in enumerate(emails, start=1):
+        check_cancelled(store)
+        if on_progress:
+            on_progress(
+                f"Reviewing hide tags {index}/{total}…",
+                index,
+                total,
+                phase="tag",
+            )
+
+        matched_all = set(store.apply_manual_tags_to_email(email, manual_tags))
+        matched_confirm = matched_all & confirm_ids
+        if review_hidden:
+            tag_ids_on_email = {
+                t["id"] for t in store.get_email_tags(email["email_id"]) if t["id"] in confirm_ids
+            }
+            matched_confirm = matched_confirm or tag_ids_on_email
+        if not matched_confirm:
+            continue
+        if store._school_protected(matched_all, manual_tags):
+            store.set_email_hidden(email["email_id"], user_email, False, by_tag=True)
+            changed += 1
+            continue
+
+        scans = store.get_tag_scans_for_email(email["email_id"])
+        should_hide = False
+        for tag_id in matched_confirm:
+            tag = tag_by_id.get(tag_id)
+            if not tag:
+                continue
+            prior = scans.get(tag_id)
+            if not review_hidden and prior in (_HIDE_SCAN_YES, _HIDE_SCAN_NO):
+                if prior == _HIDE_SCAN_YES:
+                    should_hide = True
+                continue
+            hide_it = groq.confirm_hide_email(
+                tag["name"],
+                email.get("sender") or "",
+                email.get("subject") or "",
+                email.get("body") or "",
+            )
+            if groq.last_error and is_groq_unreachable(groq.last_error):
+                if on_progress:
+                    on_progress(f"Groq unreachable — skipping hide review. {groq.last_error}")
+                return changed
+            verdict = _HIDE_SCAN_YES if hide_it else _HIDE_SCAN_NO
+            store.save_tag_scan(email["email_id"], tag_id, verdict)
+            if hide_it:
+                should_hide = True
+
+        if should_hide:
+            store.set_email_hidden(email["email_id"], user_email, True, by_tag=True)
+        else:
+            store.set_email_hidden(email["email_id"], user_email, False, by_tag=True)
+        changed += 1
+
+    _cache_groq_model(groq)
+    return changed
+
+
 def _apply_all_tags(store, user_email: str, on_progress: Callable[..., None] | None = None) -> int:
     updated = store.apply_all_manual_tags(user_email)
+    updated += _apply_hide_ai_confirm(store, user_email, on_progress=on_progress)
     updated += _apply_all_ai_tags(store, user_email, on_progress=on_progress)
     return updated
 

@@ -19,6 +19,7 @@ SyncFn = Callable[..., Any]
 AnalyzeFn = Callable[..., int]
 DigestFn = Callable[..., None]
 TagFn = Callable[..., int]
+HideConfirmFn = Callable[..., int]
 
 
 class JobCancelled(Exception):
@@ -62,6 +63,7 @@ def start_sync_worker(
     tag_apply_fn: TagFn | None = None,
     analyze_fn: AnalyzeFn | None = None,
     digest_fn: DigestFn | None = None,
+    hide_confirm_fn: HideConfirmFn | None = None,
 ) -> None:
     """Start the daemon worker thread once per process."""
     global _worker_started
@@ -91,6 +93,7 @@ def start_sync_worker(
                     tag_apply_fn,
                     analyze_fn,
                     digest_fn,
+                    hide_confirm_fn,
                 )
             _sync_queue.task_done()
 
@@ -109,6 +112,7 @@ def _run_job(
     tag_apply_fn: TagFn | None,
     analyze_fn: AnalyzeFn | None,
     digest_fn: DigestFn | None,
+    hide_confirm_fn: HideConfirmFn | None = None,
 ) -> None:
     token = _current_job_id.set(job_id)
     try:
@@ -123,6 +127,7 @@ def _run_job(
             tag_apply_fn,
             analyze_fn,
             digest_fn,
+            hide_confirm_fn,
         )
     finally:
         _current_job_id.reset(token)
@@ -139,6 +144,7 @@ def _run_job_inner(
     tag_apply_fn: TagFn | None,
     analyze_fn: AnalyzeFn | None,
     digest_fn: DigestFn | None,
+    hide_confirm_fn: HideConfirmFn | None = None,
 ) -> None:
     if store.job_was_cancelled(job_id):
         store.append_job_log(job_id, "Skipped — already cancelled.")
@@ -180,6 +186,32 @@ def _run_job_inner(
             else:
                 report("No tag-apply handler configured.")
             store.update_job(job_id, status="done", current_step=100, total_steps=100, message="Tagging finished.")
+            return
+
+        if job_type == "hide_review":
+            if hide_confirm_fn:
+                report("Reviewing hidden mail with AI…", 0, 1, phase="tag")
+                reviewed = hide_confirm_fn(
+                    store,
+                    user_email,
+                    on_progress=report,
+                    review_hidden=True,
+                )
+                report(
+                    f"Hide review finished — {reviewed} message(s) updated.",
+                    1,
+                    1,
+                    phase="tag",
+                )
+            else:
+                report("No hide-review handler configured.")
+            store.update_job(
+                job_id,
+                status="done",
+                current_step=100,
+                total_steps=100,
+                message="Hide review finished.",
+            )
             return
 
         if job_type in ("sync", "backfill"):

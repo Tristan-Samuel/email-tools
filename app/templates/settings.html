@@ -39,8 +39,15 @@
                     <option value="sender" {% if inbox_row_order == 'sender' %}selected{% endif %}>Sender first</option>
                 </select>
             </label>
+            <label class="form-label">
+                Summary size
+                <select name="inbox_summary_size" class="form-input">
+                    <option value="normal" {% if inbox_summary_size == 'normal' %}selected{% endif %}>Normal</option>
+                    <option value="large" {% if inbox_summary_size == 'large' %}selected{% endif %}>Large (bigger than subject/sender)</option>
+                </select>
+            </label>
             <div class="form-actions">
-                <button type="submit" class="btn btn-primary">Save row order</button>
+                <button type="submit" class="btn btn-primary">Save inbox display</button>
             </div>
         </form>
     </section>

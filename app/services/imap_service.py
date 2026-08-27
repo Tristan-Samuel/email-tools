@@ -434,3 +434,29 @@ def fetch_emails(
             conn.logout()
         except Exception:
             pass
+
+
+def fetch_recent_emails(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    folder: str = "INBOX",
+    limit: int = 200,
+    on_progress: ProgressFn | None = None,
+) -> list[dict]:
+    """Re-fetch the most recent messages without advancing sync cursors (for body_html backfill)."""
+    conn = _connect(host, port, username, password)
+    try:
+        conn.select(folder, readonly=True)
+        all_uids = _uids_for_search(conn, "ALL")
+        if not all_uids:
+            return []
+        recent_uids = all_uids[-limit:]
+        emails, _, _ = _fetch_uid_batch(conn, recent_uids, 0, on_progress=on_progress)
+        return emails
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass

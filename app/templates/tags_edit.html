@@ -41,6 +41,20 @@
                         </label>
                     </div>
                 </label>
+                <label class="form-label" id="ai-confirm-label"
+                       style="flex:1;min-width:160px;{% if not tag.hide_matching %}display:none{% endif %}">
+                    <span>Confirm with AI before hiding</span>
+                    <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+                        <label class="toggle-switch" for="ai-confirm-toggle">
+                            <input type="checkbox" name="ai_confirm" id="ai-confirm-toggle"
+                                   {% if tag.ai_confirm %}checked{% endif %}>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    {% if not groq_available %}
+                    <small style="color:var(--muted)">Requires Groq key in Settings</small>
+                    {% endif %}
+                </label>
             </div>
 
             <div style="margin-bottom:18px;padding:16px;background:rgba(45,143,133,.07);border-radius:8px">
@@ -122,5 +136,15 @@ document.getElementById('edit-tag-color')?.addEventListener('input', function() 
 document.getElementById('edit-use-ai')?.addEventListener('change', function() {
     document.getElementById('ai-instruction-label').style.display = this.checked ? 'flex' : 'none';
 });
+function syncHideConfirmVisibility() {
+    const hideOn = document.getElementById('hide-matching-toggle')?.checked;
+    const confirmLabel = document.getElementById('ai-confirm-label');
+    if (confirmLabel) confirmLabel.style.display = hideOn ? 'flex' : 'none';
+    if (!hideOn) {
+        const confirmToggle = document.getElementById('ai-confirm-toggle');
+        if (confirmToggle) confirmToggle.checked = false;
+    }
+}
+document.getElementById('hide-matching-toggle')?.addEventListener('change', syncHideConfirmVisibility);
 </script>
 {% endblock %}

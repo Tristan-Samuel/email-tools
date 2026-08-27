@@ -353,6 +353,19 @@ class EmailStore:
             """
         )
 
+    def _migrate_v9(self, connection: sqlite3.Connection) -> None:
+        """Sanitized HTML bodies and AI confirm-before-hide on tags."""
+        email_cols = self._table_columns(connection, "emails")
+        if email_cols and "body_html" not in email_cols:
+            connection.execute(
+                "ALTER TABLE emails ADD COLUMN body_html TEXT NOT NULL DEFAULT ''"
+            )
+        tag_cols = self._table_columns(connection, "user_tags")
+        if tag_cols and "ai_confirm" not in tag_cols:
+            connection.execute(
+                "ALTER TABLE user_tags ADD COLUMN ai_confirm INTEGER NOT NULL DEFAULT 0"
+            )
+
     def initialize(self) -> None:
         with self._connect() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -376,18 +389,22 @@ class EmailStore:
                 self._migrate_v5(connection)
                 connection.execute("PRAGMA user_version = 5")
                 version = 5
-        if version < 6:
-            self._migrate_v6(connection)
-            connection.execute("PRAGMA user_version = 6")
-            version = 6
-        if version < 7:
-            self._migrate_v7(connection)
-            connection.execute("PRAGMA user_version = 7")
-            version = 7
-        if version < 8:
-            self._migrate_v8(connection)
-            connection.execute("PRAGMA user_version = 8")
-            version = 8
+            if version < 6:
+                self._migrate_v6(connection)
+                connection.execute("PRAGMA user_version = 6")
+                version = 6
+            if version < 7:
+                self._migrate_v7(connection)
+                connection.execute("PRAGMA user_version = 7")
+                version = 7
+            if version < 8:
+                self._migrate_v8(connection)
+                connection.execute("PRAGMA user_version = 8")
+                version = 8
+            if version < 9:
+                self._migrate_v9(connection)
+                connection.execute("PRAGMA user_version = 9")
+                version = 9
             try:
                 connection.execute("SELECT email_id FROM email_search LIMIT 0")
                 self.fts_enabled = True
@@ -453,6 +470,7 @@ class EmailStore:
                         cc,
                         received_at,
                         body,
+                        body_html,
                         preview,
                         bullet_summary,
                         category,
@@ -461,7 +479,7 @@ class EmailStore:
                         search_blob,
                         is_mailing_list,
                         ai_analyzed
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(email_id) DO UPDATE SET
                         user_email=excluded.user_email,
                         message_id=excluded.message_id,
@@ -475,6 +493,10 @@ class EmailStore:
                         cc=excluded.cc,
                         received_at=excluded.received_at,
                         body=excluded.body,
+                        body_html=CASE
+                            WHEN excluded.body_html != '' THEN excluded.body_html
+                            ELSE emails.body_html
+                        END,
                         preview=excluded.preview,
                         bullet_summary=CASE WHEN excluded.ai_analyzed=1 THEN excluded.bullet_summary ELSE emails.bullet_summary END,
                         ai_analyzed=MAX(emails.ai_analyzed, excluded.ai_analyzed),
@@ -498,6 +520,7 @@ class EmailStore:
                         record["cc"],
                         record["received_at"],
                         record["body"],
+                        record.get("body_html") or "",
                         record["preview"],
                         json.dumps(record["bullet_summary"]),
                         record["category"],
@@ -1637,20 +1660,37 @@ class EmailStore:
     # Custom tag management
     # ------------------------------------------------------------------
 
-    def save_tag(self, user_email: str, name: str, color: str, use_ai: bool,
-                 ai_instruction: str, hide_matching: bool) -> int:
+    def save_tag(
+        self,
+        user_email: str,
+        name: str,
+        color: str,
+        use_ai: bool,
+        ai_instruction: str,
+        hide_matching: bool,
+        ai_confirm: bool = False,
+    ) -> int:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO user_tags (user_email, name, color, use_ai, ai_instruction, hide_matching)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO user_tags (user_email, name, color, use_ai, ai_instruction, hide_matching, ai_confirm)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_email, name) DO UPDATE SET
                     color=excluded.color,
                     use_ai=excluded.use_ai,
                     ai_instruction=excluded.ai_instruction,
-                    hide_matching=excluded.hide_matching
+                    hide_matching=excluded.hide_matching,
+                    ai_confirm=excluded.ai_confirm
                 """,
-                (user_email, name, color, int(use_ai), ai_instruction, int(hide_matching)),
+                (
+                    user_email,
+                    name,
+                    color,
+                    int(use_ai),
+                    ai_instruction,
+                    int(hide_matching),
+                    int(ai_confirm),
+                ),
             )
             row = connection.execute(
                 "SELECT id FROM user_tags WHERE user_email = ? AND name = ?",
@@ -1658,15 +1698,33 @@ class EmailStore:
             ).fetchone()
         return row["id"]
 
-    def update_tag(self, tag_id: int, user_email: str, name: str, color: str,
-                   use_ai: bool, ai_instruction: str, hide_matching: bool) -> None:
+    def update_tag(
+        self,
+        tag_id: int,
+        user_email: str,
+        name: str,
+        color: str,
+        use_ai: bool,
+        ai_instruction: str,
+        hide_matching: bool,
+        ai_confirm: bool = False,
+    ) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
-                UPDATE user_tags SET name=?, color=?, use_ai=?, ai_instruction=?, hide_matching=?
+                UPDATE user_tags SET name=?, color=?, use_ai=?, ai_instruction=?, hide_matching=?, ai_confirm=?
                 WHERE id=? AND user_email=?
                 """,
-                (name, color, int(use_ai), ai_instruction, int(hide_matching), tag_id, user_email),
+                (
+                    name,
+                    color,
+                    int(use_ai),
+                    ai_instruction,
+                    int(hide_matching),
+                    int(ai_confirm),
+                    tag_id,
+                    user_email,
+                ),
             )
 
     def delete_tag(self, tag_id: int, user_email: str) -> None:
@@ -1748,6 +1806,9 @@ class EmailStore:
                 ("sender", "contains", "university"),
                 ("sender", "contains", "college"),
                 ("sender", "contains", ".edu"),
+                ("sender", "contains", "ghcds"),
+                ("sender", "contains", "school"),
+                ("sender", "contains", ".k12."),
                 ("subject", "contains", "admissions"),
                 ("body", "contains", "campus"),
                 ("body", "contains", "enroll"),
@@ -1770,7 +1831,6 @@ class EmailStore:
                 ("subject", "contains", "sale"),
                 ("body", "contains", "unsubscribe"),
                 ("body", "contains", "campaign"),
-                ("body", "contains", "offer"),
             ],
         },
         {
@@ -1795,6 +1855,7 @@ class EmailStore:
 
     def ensure_default_tags(self, user_email: str) -> None:
         """Create School / Marketing / Newsletters with synonym rules when missing."""
+        self._prune_obsolete_marketing_rules(user_email)
         existing = {t["name"].lower(): t for t in self.list_tags(user_email)}
         needs_apply = False
         for spec in self.DEFAULT_TAG_DEFS:
@@ -1826,6 +1887,42 @@ class EmailStore:
                     needs_apply = True
         if needs_apply:
             self.apply_all_manual_tags(user_email)
+
+    def _prune_obsolete_marketing_rules(self, user_email: str) -> None:
+        """Remove Marketing body rule for 'offer' — too many school false positives."""
+        tags = self.list_tags(user_email)
+        marketing = next((t for t in tags if t["name"].lower() == "marketing"), None)
+        if not marketing:
+            return
+        with self._connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM tag_rules
+                WHERE tag_id = ? AND field = 'body' AND LOWER(value) = 'offer'
+                """,
+                (marketing["id"],),
+            )
+
+    SCHOOL_PROTECT_TAG = "school"
+
+    def _school_protected(self, matched_ids: set[int], manual_tags: list[dict]) -> bool:
+        for tag in manual_tags:
+            if tag["name"].lower() == self.SCHOOL_PROTECT_TAG and tag["id"] in matched_ids:
+                return True
+        return False
+
+    def list_hidden_by_tag(self, user_email: str, limit: int = 500) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM emails
+                WHERE user_email = ? AND is_hidden = 1 AND hidden_by_tag = 1
+                ORDER BY received_at DESC
+                LIMIT ?
+                """,
+                (user_email, limit),
+            ).fetchall()
+        return [row for row in (self._deserialize_row(r) for r in rows) if row]
 
     def save_tag_scan(self, email_id: str, tag_id: int, verdict: str) -> None:
         with self._connect() as connection:
@@ -1941,6 +2038,10 @@ class EmailStore:
         emails = self.list_emails(user_email=user_email, limit=10000, exclude_hidden=False)
         updated = 0
         hide_tag_ids = {t["id"] for t in manual_tags if t["hide_matching"]}
+        confirm_hide_tag_ids = {
+            t["id"] for t in manual_tags if t["hide_matching"] and t.get("ai_confirm")
+        }
+        immediate_hide_tag_ids = hide_tag_ids - confirm_hide_tag_ids
 
         with self._connect() as connection:
             for email in emails:
@@ -1968,13 +2069,16 @@ class EmailStore:
                         )
                         updated += 1
 
-                should_hide = bool(matched_ids & hide_tag_ids)
+                school_protected = self._school_protected(matched_ids, manual_tags)
+                should_hide = (
+                    bool(matched_ids & immediate_hide_tag_ids) and not school_protected
+                )
                 if should_hide:
                     connection.execute(
                         "UPDATE emails SET is_hidden = 1, hidden_by_tag = 1 WHERE email_id = ? AND user_email = ?",
                         (email["email_id"], user_email),
                     )
-                else:
+                elif not (matched_ids & hide_tag_ids):
                     connection.execute(
                         """
                         UPDATE emails SET is_hidden = 0, hidden_by_tag = 0
