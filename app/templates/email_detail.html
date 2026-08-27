@@ -6,7 +6,7 @@
 <main class="detail-layout">
     <section class="panel detail-header reveal">
         <div class="detail-nav" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-            <a class="back-link" href="{{ url_for('main.inbox') }}">&#8592; Back to inbox</a>
+            <a href="{{ url_for('main.today') }}" class="back-link">&#8592; Back to Today</a>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                 {% if tags %}
                 <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -31,8 +31,15 @@
             </div>
         </div>
         <div class="detail-header-top">
+            {% if email.intent %}
+            <span class="category-tag">{{ email.intent|replace('_', ' ') }}</span>
+            {% endif %}
             <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>
+            {% if email.urgency %}
+            <span class="priority-score">Urgency {{ email.urgency }}</span>
+            {% else %}
             <span class="priority-score">Priority {{ email.priority_score }}</span>
+            {% endif %}
         </div>
         <h1 class="detail-subject">{{ email.subject }}</h1>
         <div class="detail-meta-row">
@@ -124,6 +131,9 @@
                 ✨ AI analysis ran automatically on first view.
             </div>
             {% endif %}
+            {% if email.intent_reason %}
+            <p class="panel-hint" style="margin-bottom:12px">{{ email.intent_reason }}</p>
+            {% endif %}
             <ul class="bullet-list">
                 {% for bullet in email.bullet_summary %}
                 <li>{{ bullet }}</li>
@@ -152,17 +162,19 @@
     </section>
 
     <section class="panel reveal">
-        <div class="section-heading">
-            <div>
-                <p class="eyebrow">Message content</p>
-                <h2>Email body</h2>
-            </div>
+        <details>
+            <summary class="section-heading" style="cursor:pointer;list-style:none">
+                <div>
+                    <p class="eyebrow">Original message</p>
+                    <h2>Show email body</h2>
+                </div>
+            </summary>
+        <div style="margin-top:12px">
             {% if email.body_html %}
-            <button type="button" class="btn btn-ghost" id="load-email-images" style="font-size:.82rem">
+            <button type="button" class="btn btn-ghost" id="load-email-images" style="font-size:.82rem;margin-bottom:12px">
                 Load images
             </button>
             {% endif %}
-        </div>
         {% if email.body_html %}
         <div class="email-body-html" id="email-body-html">
             {{ email.body_html | safe }}
@@ -172,6 +184,8 @@
             {{ email.body | format_email_body }}
         </div>
         {% endif %}
+        </div>
+        </details>
     </section>
 </main>
 {% endblock %}

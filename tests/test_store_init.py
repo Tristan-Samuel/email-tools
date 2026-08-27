@@ -24,4 +24,6 @@ def test_initialize_fresh_db() -> None:
         assert "user_settings" in tables
         assert "emails" in tables
         assert "imap_accounts" in tables
-        assert version >= 3
+        assert "thread_state" in tables
+        assert "sender_rules" in tables
+        assert version >= 10

@@ -25,7 +25,8 @@ from .services.groq_client import (
     is_rate_limit_error,
 )
 from .services.summary import build_digest, build_email_record, build_important_items
-from .services import sync_worker
+from .services import sync_worker, triage
+from .services.triage import build_today_view, rebuild_thread_states, analyze_heuristic_batch
 from .services.sync_worker import JobCancelled, check_cancelled, current_job_is_cancelled
 
 logger = logging.getLogger(__name__)
@@ -459,6 +460,8 @@ def sync_one_account(
                 user_email=user_email,
                 source_account=account["account_email"],
                 groq_client=None,
+                from_me=imap_service.is_sent_folder(folder)
+                or triage.sender_is_account(msg.get("sender") or "", account["account_email"]),
             )
             for msg in emails_raw
         ]
@@ -477,7 +480,7 @@ def sync_one_account(
         uidvalidity=inbox_uidvalidity,
     )
     if total_imported > 0:
-        _invalidate_needs_reply_cache(store, user_email)
+        rebuild_thread_states(store, user_email)
 
     if not store.get_kv(user_email, _BODY_HTML_REFETCH_KEY):
         log("Backfilling HTML bodies for recent mail…", phase="fetch")
@@ -524,14 +527,16 @@ def analyze_pending_emails(
     on_progress: Callable[..., None],
     limit: int = 400,
 ) -> int:
-    """Write Groq summaries for unanalyzed mail. Return how many succeeded."""
+    """Write Groq summaries + intent for unanalyzed mail. Return how many succeeded."""
     emails = store.list_unanalyzed_emails(user_email, limit)
     if not emails:
         on_progress("All cached emails already have AI summaries.")
+        rebuild_thread_states(store, user_email)
         return 0
     if not groq.enabled:
-        on_progress("Groq is not configured — skipped AI analysis.")
-        return 0
+        count = analyze_heuristic_batch(store, user_email, limit)
+        on_progress(f"Heuristic triage applied to {count} email(s).")
+        return count
 
     total = len(emails)
     model_name = groq.select_max_context_model()
@@ -539,16 +544,18 @@ def analyze_pending_emails(
     _cache_groq_model(groq)
     analyzed = 0
     batch_size = 8
+    vip_patterns = store.list_sender_rules(user_email, "vip")
+    today = datetime.date.today()
     for start in range(0, total, batch_size):
         check_cancelled(store)
         chunk = emails[start : start + batch_size]
         on_progress(
-            f"AI summarizing {start + 1}–{min(start + batch_size, total)} of {total}…",
+            f"AI analyzing {start + 1}–{min(start + batch_size, total)} of {total}…",
             min(start + batch_size, total),
             total,
             phase="summarize",
         )
-        results = groq.summarize_emails_batch(chunk, batch_size=batch_size)
+        results = groq.analyze_emails_batch(chunk, batch_size=batch_size)
         if groq.last_model_used and groq.last_model_used != model_name:
             model_name = groq.last_model_used
             on_progress(f"Switched to Groq model {model_name}…")
@@ -565,28 +572,56 @@ def analyze_pending_emails(
             if groq.last_error == "Cancelled.":
                 raise JobCancelled()
         for email in chunk:
-            bullets = results.get(email["email_id"])
-            if not bullets:
+            data = results.get(email["email_id"])
+            if not data:
                 bullets = groq.summarize_email(
                     sender=email.get("sender") or "",
                     subject=email.get("subject") or "",
                     body=email.get("body") or "",
                 )
-                if groq.last_model_used and groq.last_model_used != model_name:
-                    model_name = groq.last_model_used
-                    on_progress(f"Switched to Groq model {model_name}…")
-            if bullets:
-                store.update_email_summary(email["email_id"], user_email, bullets)
-                analyzed += 1
-            elif groq.last_error and is_fatal_groq_auth_error(groq.last_error):
-                on_progress(f"Groq error: {groq.last_error}")
-                on_progress("Stopping analysis — Groq rejected this API key.")
-                return analyzed
+                if bullets:
+                    data = {
+                        "bullets": bullets,
+                        "intent": "fyi",
+                        "reason": "",
+                        "due_at": None,
+                        "tags": [],
+                    }
+            if not data or not data.get("bullets"):
+                if groq.last_error and is_fatal_groq_auth_error(groq.last_error):
+                    on_progress(f"Groq error: {groq.last_error}")
+                    on_progress("Stopping analysis — Groq rejected this API key.")
+                    return analyzed
+                continue
+            sender = email.get("sender") or ""
+            vip = any(triage.sender_matches_pattern(sender, p) for p in vip_patterns)
+            intent = data.get("intent") or "fyi"
+            if vip and intent == "fyi":
+                intent = "i_owe"
+            urgency = triage.compute_urgency(
+                intent=intent,
+                due_at=data.get("due_at"),
+                received_at=email.get("received_at"),
+                vip=vip,
+                today=today,
+            )
+            store.update_email_analysis(
+                email["email_id"],
+                user_email,
+                bullet_summary=data.get("bullets") or [],
+                intent=intent,
+                intent_reason=data.get("reason") or "",
+                due_at=data.get("due_at"),
+                urgency=urgency,
+                ai_analyzed=True,
+            )
+            analyzed += 1
         _cache_groq_model(groq)
+    rebuild_thread_states(store, user_email)
     if analyzed == 0 and groq.last_error:
-        on_progress(f"No emails could be summarized. {groq.last_error}")
+        on_progress(f"No emails could be analyzed. {groq.last_error}")
     else:
-        on_progress(f"Summarized {analyzed} of {total}.", total, total, phase="summarize")
+        on_progress(f"Analyzed {analyzed} of {total}.", total, total, phase="summarize")
     return analyzed
 
 
@@ -628,7 +663,7 @@ def login():
             session["user_email"] = user_email
             flash("Logged in successfully.", "success")
             store.ensure_default_tags(user_email)
-            return redirect(url_for("main.inbox"))
+            return redirect(url_for("main.today"))
 
         imap_accounts = store.list_imap_accounts(user_email)
         imap_pw = (request.form.get("imap_password") or "").strip()
@@ -669,13 +704,13 @@ def login():
                 store.set_app_password(user_email, generate_password_hash(new_pw, method="pbkdf2:sha256"))
             session["user_email"] = user_email
             flash("Logged in with IMAP verification.", "success")
-            return redirect(url_for("main.inbox"))
+            return redirect(url_for("main.today"))
 
         flash("No account found for this email. Create one first.", "error")
         return render_template("login.html", prefill_email=user_email)
 
     if getattr(g, "current_user_email", ""):
-        return redirect(url_for("main.inbox"))
+        return redirect(url_for("main.today"))
 
     return render_template("login.html")
 
@@ -683,7 +718,7 @@ def login():
 @bp.route("/signup", methods=["GET", "POST"])
 def signup():
     if getattr(g, "current_user_email", ""):
-        return redirect(url_for("main.inbox"))
+        return redirect(url_for("main.today"))
 
     store = get_store()
     step = "email"
@@ -794,8 +829,140 @@ def logout():
 @bp.get("/")
 def index():
     if getattr(g, "current_user_email", ""):
-        return redirect(url_for("main.inbox"))
+        return redirect(url_for("main.today"))
     return redirect(url_for("main.login"))
+
+
+@bp.get("/today")
+def today():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    user_email = g.current_user_email
+    store.ensure_default_tags(user_email)
+    source_account = request.args.get("source_account") or None
+
+    rebuild_thread_states(store, user_email)
+    view = build_today_view(store, user_email, source_account=source_account)
+    groq = get_groq_client(user_email)
+    ai_analyzed, ai_pending = store.count_ai_stats(user_email)
+
+    thread_ids = [row["thread_id"] for row in view["do_now"] + view["waiting"]]
+    email_ids = [row.get("latest_email_id") or "" for row in view["do_now"] + view["waiting"]]
+    email_ids = [eid for eid in email_ids if eid]
+    email_tags_map = store.get_email_tags_batch(email_ids)
+
+    draft_reply = None
+    draft_email = None
+    mailto_link = None
+    if session.get("today_draft"):
+        draft_payload = session.pop("today_draft")
+        draft_reply = draft_payload.get("draft")
+        draft_email = store.get_email(draft_payload.get("email_id", ""), user_email=user_email)
+        if draft_email and draft_reply:
+            mailto_link = _mailto_draft(draft_email, draft_reply)
+
+    if groq.enabled and ai_pending > 0 and store.get_active_job(user_email) is None:
+        _queue_job(user_email, "reanalyze", f"Analyze {ai_pending} email(s) with AI")
+
+    return render_template(
+        "today.html",
+        do_now=view["do_now"],
+        do_now_hidden_count=view["do_now_hidden_count"],
+        waiting=view["waiting"],
+        fyi_digest=view["fyi_digest"],
+        open_action_count=view["open_action_count"],
+        source_account=source_account,
+        groq_available=groq.enabled,
+        ai_analyzed=ai_analyzed,
+        ai_pending=ai_pending,
+        email_tags_map=email_tags_map,
+        draft_reply=draft_reply,
+        draft_email=draft_email,
+        mailto_link=mailto_link,
+    )
+
+
+@bp.post("/today/done/<thread_id>")
+def today_done(thread_id: str):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    store = get_store()
+    user_email = g.current_user_email
+    store.set_thread_triage_status(user_email, thread_id, triage_status="done")
+    store.mark_threads_read(user_email, [thread_id])
+    flash("Marked done.", "success")
+    return redirect(url_for("main.today", source_account=request.form.get("source_account") or None))
+
+
+@bp.post("/today/snooze/<thread_id>")
+def today_snooze(thread_id: str):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    days_raw = request.form.get("days", "3")
+    days = int(days_raw) if days_raw.isdigit() and 1 <= int(days_raw) <= 30 else 3
+    until = (datetime.date.today() + datetime.timedelta(days=days)).isoformat()
+    store = get_store()
+    user_email = g.current_user_email
+    store.set_thread_triage_status(user_email, thread_id, triage_status="snoozed", snooze_until=until)
+    flash(f"Snoozed for {days} day(s).", "success")
+    return redirect(url_for("main.today", source_account=request.form.get("source_account") or None))
+
+
+@bp.post("/today/draft/<email_id>")
+def today_draft(email_id: str):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    store = get_store()
+    user_email = g.current_user_email
+    email = store.get_email(email_id, user_email=user_email)
+    if email is None:
+        flash("Email not found.", "error")
+        return redirect(url_for("main.today"))
+
+    groq = get_groq_client(user_email)
+    if not groq.enabled:
+        flash("Add a Groq API key in Settings to draft replies.", "error")
+        return redirect(url_for("main.today"))
+
+    reason = (request.form.get("reason") or "").strip()
+    draft = groq.draft_reply(
+        sender=email["sender"],
+        subject=email["subject"],
+        body=email["body"],
+        reason=reason,
+    )
+    _cache_groq_model(groq)
+    if not draft:
+        flash("Could not generate a draft reply.", "error")
+        return redirect(url_for("main.today"))
+
+    session["today_draft"] = {"email_id": email_id, "draft": draft}
+    return redirect(url_for("main.today", source_account=request.form.get("source_account") or None))
+
+
+@bp.post("/today/clear-fyi")
+def today_clear_fyi():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    store = get_store()
+    user_email = g.current_user_email
+    thread_ids_raw = (request.form.get("thread_ids") or "").strip()
+    thread_ids = [tid for tid in thread_ids_raw.split(",") if tid]
+    if thread_ids:
+        for tid in thread_ids:
+            store.set_thread_triage_status(user_email, tid, triage_status="done")
+        store.mark_threads_read(user_email, thread_ids)
+        flash(f"Cleared {len(thread_ids)} FYI thread(s).", "success")
+    else:
+        flash("Nothing to clear.", "success")
+    return redirect(url_for("main.today", source_account=request.form.get("source_account") or None))
 
 
 @bp.get("/dashboard")
@@ -803,66 +970,7 @@ def dashboard():
     login_redirect = require_login()
     if login_redirect is not None:
         return login_redirect
-
-    store = get_store()
-    user_email = g.current_user_email
-    source_account = request.args.get("source_account") or None
-
-    stats = store.get_stats(user_email=user_email, source_account=source_account)
-    categories = store.get_categories(user_email=user_email, source_account=source_account)
-    imap_accounts = store.list_imap_accounts(user_email)
-    recent_unread = store.list_emails(
-        limit=20,
-        user_email=user_email,
-        only_unread=True,
-        source_account=source_account,
-        sort="date_desc",
-    )
-    urgent_emails = store.list_emails(
-        limit=15,
-        user_email=user_email,
-        source_account=source_account,
-        sort="priority",
-    )
-    urgent_emails = [e for e in urgent_emails if e["priority_score"] >= 75]
-    cached_emails = store.list_emails(limit=50, user_email=user_email, source_account=source_account)
-    groq = get_groq_client(user_email)
-    digest = None
-    cached_digest = store.get_kv(user_email, "inbox_digest")
-    if cached_digest:
-        try:
-            parsed = json.loads(cached_digest)
-            if isinstance(parsed, dict) and parsed.get("headline"):
-                digest = parsed
-        except (TypeError, ValueError):
-            digest = None
-    if digest is None:
-        digest = build_digest(
-            cached_emails,
-            has_imap_accounts=bool(imap_accounts),
-            groq_client=None,
-        )
-    important_emails = build_important_items(cached_emails)
-    ai_analyzed, ai_pending = store.count_ai_stats(user_email)
-    if groq.enabled and ai_pending > 0 and store.get_active_job(user_email) is None:
-        _queue_job(user_email, "reanalyze", f"Analyze {ai_pending} email(s) with AI")
-
-    return render_template(
-        "dashboard.html",
-        stats=stats,
-        categories=categories,
-        digest=digest,
-        imap_accounts=_enrich_imap_accounts(store, imap_accounts),
-        source_account=source_account,
-        recent_unread=recent_unread,
-        urgent_emails=urgent_emails,
-        important_emails=important_emails,
-        default_sync_since=_default_sync_since(),
-        default_sync_max=200,
-        groq_available=groq.enabled,
-        ai_analyzed=ai_analyzed,
-        ai_pending=ai_pending,
-    )
+    return redirect(url_for("main.today", **request.args))
 
 
 @bp.post("/upload")
@@ -874,7 +982,7 @@ def upload():
     files = [file for file in request.files.getlist("email_files") if file and file.filename]
     if not files:
         flash("Select one or more .eml or .mbox files to analyze.", "error")
-        return redirect(url_for("main.dashboard"))
+        return redirect(url_for("main.today"))
 
     store = get_store()
     groq_client = get_groq_client()
@@ -911,7 +1019,7 @@ def upload():
         flash(f"Analyzed {imported_count} emails with Groq-powered summaries.", "success")
     else:
         flash(f"Analyzed {imported_count} emails and refreshed the cached summaries.", "success")
-    return redirect(url_for("main.dashboard"))
+    return redirect(url_for("main.today"))
 
 
 @bp.get("/email/<email_id>")
@@ -1201,7 +1309,7 @@ def accounts_add():
         store.update_imap_sync_prefs(account_id, _default_sync_since(), 200)
         try:
             remote_folders = imap_service.list_folders(imap_host, imap_port, account_email, password)
-            store.ensure_folder_sync_rows(account_id, remote_folders)
+            store.enable_default_folders(account_id, remote_folders)
         except Exception:
             store.ensure_folder_sync_rows(account_id, ["INBOX"])
 
@@ -1341,7 +1449,7 @@ def accounts_load_older(account_id: int):
         flash(queue_err, "error")
     else:
         flash("Loading older mail in the background — watch the activity panel.", "success")
-    return redirect(request.referrer or url_for("main.dashboard"))
+    return redirect(request.referrer or url_for("main.today"))
 
 
 @bp.post("/accounts/<int:account_id>/folders")
@@ -1490,7 +1598,7 @@ def inbox():
     tag_filter_raw = request.args.get("tag_id", "").strip()
     tag_filter = int(tag_filter_raw) if tag_filter_raw.isdigit() else None
     sort = request.args.get("sort", "date_desc")
-    if sort not in ("date_desc", "date_asc", "priority"):
+    if sort not in ("date_desc", "date_asc", "priority", "urgency"):
         sort = "date_desc"
     only_unread = request.args.get("unread") == "1"
     exclude_mailing_list = request.args.get("no_lists") == "1"
@@ -1500,30 +1608,27 @@ def inbox():
     offset = int(offset_raw) if offset_raw.isdigit() and int(offset_raw) >= 0 else 0
     selected_email_id = request.args.get("email_id") or None
 
-    common_kwargs = dict(
-        user_email=user_email,
+    emails, total_count = store.list_inbox_thread_heads(
+        user_email,
+        limit=limit,
+        offset=offset,
         source_account=source_account,
-        category=category,
-        date_from=date_from,
-        date_to=date_to,
         tag_filter=tag_filter,
         sort=sort,
         only_unread=only_unread,
         exclude_mailing_list=exclude_mailing_list,
+        category=category,
+        date_from=date_from,
+        date_to=date_to,
+        query=query or None,
     )
-
-    if query:
-        emails = store.search(query, limit=limit, offset=offset, **common_kwargs)
-        total_count = store.count_emails(search_term=query, **{k: v for k, v in common_kwargs.items() if k != "sort"})
-    else:
-        emails = store.list_emails(limit=limit, offset=offset, **common_kwargs)
-        total_count = store.count_emails(**{k: v for k, v in common_kwargs.items() if k != "sort"})
 
     thread_counts: dict[str, int] = {}
     for email in emails:
-        tid = email.get("thread_id") or ""
+        tid = email.get("thread_id") or email["email_id"]
+        count = int(email.get("thread_count") or 1)
         if tid:
-            thread_counts[tid] = thread_counts.get(tid, 0) + 1
+            thread_counts[tid] = count
 
     selected_email = None
     if selected_email_id:
@@ -1599,7 +1704,24 @@ def settings():
                 size = "normal"
             store.set_kv(user_email, _INBOX_ROW_ORDER_KEY, order)
             store.set_kv(user_email, _INBOX_SUMMARY_SIZE_KEY, size)
-            flash("Inbox display preferences saved.", "success")
+            flash("All mail display preferences saved.", "success")
+            return redirect(url_for("main.settings"))
+
+        if action == "add_sender_rule":
+            pattern = (request.form.get("pattern") or "").strip()
+            rule_type = (request.form.get("rule_type") or "vip").strip()
+            if pattern:
+                store.save_sender_rule(user_email, pattern, rule_type)
+                rebuild_thread_states(store, user_email)
+                flash("Sender rule saved.", "success")
+            return redirect(url_for("main.settings"))
+
+        if action == "delete_sender_rule":
+            rule_id_raw = request.form.get("rule_id", "")
+            if rule_id_raw.isdigit():
+                store.delete_sender_rule(int(rule_id_raw), user_email)
+                rebuild_thread_states(store, user_email)
+                flash("Sender rule removed.", "success")
             return redirect(url_for("main.settings"))
 
         if action == "set_app_password":
@@ -1660,6 +1782,7 @@ def settings():
     active_model = current_app.config.get("GROQ_DEFAULT_MODEL", DEFAULT_CHAT_MODEL)
     has_app_password = bool(store.get_app_password_hash(user_email))
     ai_analyzed, ai_pending = store.count_ai_stats(user_email)
+    sender_rules = store.list_sender_rule_rows(user_email)
     return render_template(
         "settings.html",
         has_groq_key=has_groq_key,
@@ -1670,6 +1793,7 @@ def settings():
         groq_available=get_groq_client(user_email).enabled,
         inbox_row_order=_inbox_row_order(store, user_email),
         inbox_summary_size=_inbox_summary_size(store, user_email),
+        sender_rules=sender_rules,
     )
 
 
@@ -1742,7 +1866,7 @@ def analyze_now():
     pending = store.count_ai_stats(user_email)[1]
     if pending <= 0:
         flash("All cached emails already have AI summaries.", "success")
-        return redirect(request.referrer or url_for("main.dashboard"))
+        return redirect(request.referrer or url_for("main.today"))
 
     job_id, queue_err = _queue_job(
         user_email,
@@ -1753,7 +1877,7 @@ def analyze_now():
         flash(queue_err, "error")
     else:
         flash("AI analysis started — watch the activity panel for progress.", "success")
-    return redirect(request.referrer or url_for("main.dashboard"))
+    return redirect(request.referrer or url_for("main.today"))
 
 
 @bp.post("/accounts/<int:account_id>/password")
@@ -1865,71 +1989,7 @@ def respond_now():
     login_redirect = require_login()
     if login_redirect is not None:
         return login_redirect
-
-    groq = get_groq_client()
-    if not groq.enabled:
-        flash("Add a Groq API key in Settings to use Needs Reply.", "error")
-        return redirect(url_for("main.inbox"))
-
-    store = get_store()
-    user_email = g.current_user_email
-    today = datetime.date.today().isoformat()
-    groq_error = False
-    network_error = False
-    recent = store.list_emails(user_email=user_email, limit=50)
-    recent_count = len(recent)
-    fingerprint = _needs_reply_fingerprint(recent)
-    kv_cache = _load_needs_reply_cache(store, user_email)
-    dismissed = set(kv_cache.get("dismissed", []))
-    snoozed = kv_cache.get("snoozed", {}) or {}
-
-    if kv_cache.get("fingerprint") == fingerprint and kv_cache.get("items"):
-        action_items = kv_cache.get("items", [])
-        recent_count = kv_cache.get("total", recent_count)
-    else:
-        action_items, err = groq.identify_action_items(recent, today=today)
-        if err:
-            if is_groq_unreachable(err) and kv_cache.get("items"):
-                action_items = kv_cache.get("items", [])
-                dismissed = set(kv_cache.get("dismissed", []))
-                snoozed = kv_cache.get("snoozed", {}) or {}
-                network_error = True
-            else:
-                action_items = []
-                groq_error = True
-        else:
-            _cache_groq_model(groq)
-            _save_needs_reply_cache(
-                store,
-                user_email,
-                {
-                    "fingerprint": fingerprint,
-                    "items": action_items,
-                    "total": recent_count,
-                    "dismissed": list(dismissed),
-                    "snoozed": snoozed,
-                },
-            )
-
-    email_map = {e["email_id"]: e for e in recent}
-    results = []
-    for item in action_items:
-        eid = item.get("email_id", "")
-        if eid in dismissed:
-            continue
-        snooze_until = snoozed.get(eid)
-        if snooze_until and snooze_until > today:
-            continue
-        if eid in email_map:
-            results.append({"email": email_map[eid], "reason": item.get("reason", "")})
-
-    return render_template(
-        "respond_now.html",
-        results=results,
-        total=recent_count,
-        groq_error=groq_error,
-        network_error=network_error,
-    )
+    return redirect(url_for("main.today"))
 
 
 @bp.post("/needs-reply/dismiss/<email_id>")
@@ -1939,13 +1999,11 @@ def needs_reply_dismiss(email_id: str):
         return login_redirect
     store = get_store()
     user_email = g.current_user_email
-    cache = _load_needs_reply_cache(store, user_email)
-    dismissed = set(cache.get("dismissed", []))
-    dismissed.add(email_id)
-    cache["dismissed"] = list(dismissed)
-    _save_needs_reply_cache(store, user_email, cache)
-    flash("Removed from Needs Reply.", "success")
-    return redirect(url_for("main.respond_now"))
+    email = store.get_email(email_id, user_email=user_email)
+    if email and email.get("thread_id"):
+        store.set_thread_triage_status(user_email, email["thread_id"], triage_status="done")
+    flash("Marked done.", "success")
+    return redirect(url_for("main.today"))
 
 
 @bp.post("/needs-reply/snooze/<email_id>")
@@ -1958,50 +2016,21 @@ def needs_reply_snooze(email_id: str):
     until = (datetime.date.today() + datetime.timedelta(days=days)).isoformat()
     store = get_store()
     user_email = g.current_user_email
-    cache = _load_needs_reply_cache(store, user_email)
-    snoozed = dict(cache.get("snoozed", {}) or {})
-    snoozed[email_id] = until
-    cache["snoozed"] = snoozed
-    _save_needs_reply_cache(store, user_email, cache)
+    email = store.get_email(email_id, user_email=user_email)
+    if email and email.get("thread_id"):
+        store.set_thread_triage_status(
+            user_email,
+            email["thread_id"],
+            triage_status="snoozed",
+            snooze_until=until,
+        )
     flash(f"Snoozed for {days} day(s).", "success")
-    return redirect(url_for("main.respond_now"))
+    return redirect(url_for("main.today"))
 
 
 @bp.post("/needs-reply/draft/<email_id>")
 def needs_reply_draft(email_id: str):
-    login_redirect = require_login()
-    if login_redirect is not None:
-        return login_redirect
-
-    store = get_store()
-    email = store.get_email(email_id, user_email=g.current_user_email)
-    if email is None:
-        flash("Email not found.", "error")
-        return redirect(url_for("main.respond_now"))
-
-    groq = get_groq_client()
-    reason = (request.form.get("reason") or "").strip()
-    draft = groq.draft_reply(
-        sender=email["sender"],
-        subject=email["subject"],
-        body=email["body"],
-        reason=reason,
-    )
-    _cache_groq_model(groq)
-    if not draft:
-        flash("Could not generate a draft reply.", "error")
-        return redirect(url_for("main.respond_now"))
-
-    mailto = f"mailto:{quote(email.get('sender') or '')}?subject={quote('Re: ' + (email.get('subject') or ''))}&body={quote(draft)}"
-    return render_template(
-        "respond_now.html",
-        results=[],
-        total=0,
-        groq_error=False,
-        draft_reply=draft,
-        draft_email=email,
-        mailto_link=mailto,
-    )
+    return today_draft(email_id)
 
 
 @bp.route("/tags", methods=["GET", "POST"])

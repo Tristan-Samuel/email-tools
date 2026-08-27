@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+
+{% block title %}Today | Inbox Tools{% endblock %}
+
+{% block content %}
+<main class="page-main" data-reload-on-job="1">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">Today</h1>
+            <p class="page-subtitle">
+                {% if draft_reply %}
+                Draft reply ready to copy or send.
+                {% elif do_now %}
+                {{ do_now|length }} thread{{ 's' if do_now|length != 1 else '' }} need you now
+                {% if do_now_hidden_count > 0 %}
+                · {{ do_now_hidden_count }} lower-urgency item{{ 's' if do_now_hidden_count != 1 else '' }} hidden
+                {% endif %}
+                {% else %}
+                Nothing urgent — skim FYI below or clear it in one click.
+                {% endif %}
+            </p>
+        </div>
+        <div class="page-header-actions" style="display:flex;gap:8px;flex-wrap:wrap">
+            {% if groq_available and ai_pending > 0 %}
+            <form action="{{ url_for('main.analyze_now') }}" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-teal">Analyze {{ ai_pending }}</button>
+            </form>
+            {% endif %}
+            <a href="{{ url_for('main.inbox') }}" class="btn btn-ghost">All mail →</a>
+        </div>
+    </div>
+
+    {% if draft_reply and draft_email %}
+    <section class="panel" style="padding:20px;margin-bottom:16px">
+        <h2 class="panel-title">Draft reply — {{ draft_email.subject }}</h2>
+        <pre class="draft-reply-text">{{ draft_reply }}</pre>
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+            <button type="button" class="btn btn-primary" onclick="navigator.clipboard.writeText(document.querySelector('.draft-reply-text').textContent)">Copy draft</button>
+            {% if mailto_link %}
+            <a href="{{ mailto_link }}" class="btn btn-teal">Open in mail app</a>
+            {% endif %}
+            <a href="{{ url_for('main.today') }}" class="btn btn-ghost">← Back to Today</a>
+        </div>
+    </section>
+    {% endif %}
+
+    <section class="panel reveal" style="padding:20px;margin-bottom:16px">
+        <p class="eyebrow">Do now</p>
+        {% if do_now %}
+        <div class="respond-list">
+            {% for row in do_now %}
+            {% set eid = row.latest_email_id %}
+            {% set tags = email_tags_map.get(eid, []) %}
+            <div class="respond-card">
+                <div class="inbox-row-avatar" style="flex-shrink:0">
+                    {{ (row.sender or '?')[0].upper() }}
+                </div>
+                <div class="respond-card-body">
+                    <a class="inbox-row-subject" href="{{ url_for('main.email_detail', email_id=eid) }}"
+                       style="font-size:1rem;font-weight:700;color:var(--text)">
+                        {{ row.subject }}
+                    </a>
+                    <p class="email-meta" style="margin:4px 0">
+                        <strong>From</strong> {{ row.sender or 'Unknown sender' }}
+                        {% if row.days_waiting and row.days_waiting > 0 %}
+                        &nbsp;&middot;&nbsp; waiting {{ row.days_waiting }} day{{ 's' if row.days_waiting != 1 else '' }}
+                        {% endif %}
+                    </p>
+                    <p class="respond-reason">{{ row.summary or row.intent_reason }}</p>
+                    {% if tags %}
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+                        {% for tag in tags %}
+                        <span class="tag-chip" style="background:{{ tag.color }}">{{ tag.name }}</span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                </div>
+                <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end;flex-shrink:0">
+                    <a href="{{ url_for('main.email_detail', email_id=eid) }}" class="btn btn-primary">Open</a>
+                    {% if groq_available %}
+                    <form action="{{ url_for('main.today_draft', email_id=eid) }}" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
+                        <input type="hidden" name="reason" value="{{ row.intent_reason or '' }}">
+                        <button type="submit" class="btn btn-teal" style="font-size:.78rem">Draft reply</button>
+                    </form>
+                    {% endif %}
+                    <form action="{{ url_for('main.today_snooze', thread_id=row.thread_id) }}" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
+                        <input type="hidden" name="days" value="3">
+                        <button type="submit" class="btn btn-ghost" style="padding:5px 12px;font-size:.78rem">Snooze 3d</button>
+                    </form>
+                    <form action="{{ url_for('main.today_done', thread_id=row.thread_id) }}" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
+                        <button type="submit" class="btn btn-ghost" style="padding:5px 12px;font-size:.78rem">Done</button>
+                    </form>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state" style="padding:24px 0">
+            <h3>You're caught up on replies</h3>
+            <p>No threads need your response right now.</p>
+        </div>
+        {% endif %}
+    </section>
+
+    <section class="panel reveal dashboard-brief-panel" style="padding:20px;margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+            <div>
+                <p class="eyebrow">FYI digest</p>
+                <h2 style="font-size:1.25rem;margin:8px 0">{{ fyi_digest.headline }}</h2>
+            </div>
+            {% if fyi_digest.thread_ids %}
+            <form action="{{ url_for('main.today_clear_fyi') }}" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
+                <input type="hidden" name="thread_ids" value="{{ fyi_digest.thread_ids|join(',') }}">
+                <button type="submit" class="btn btn-primary">Clear FYI</button>
+            </form>
+            {% endif %}
+        </div>
+        <ul class="bullet-list" style="margin-top:12px">
+            {% for bullet in fyi_digest.bullets %}
+            {% set bullet_text = bullet.text if bullet is mapping else bullet %}
+            {% set bullet_id = bullet.email_id if bullet is mapping else '' %}
+            <li>
+                {% if bullet_id %}
+                <a href="{{ url_for('main.email_detail', email_id=bullet_id) }}">{{ bullet_text|sanitize_bullet }}</a>
+                {% else %}
+                {{ bullet_text|sanitize_bullet }}
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+    </section>
+
+    {% if waiting %}
+    <details class="panel" style="padding:16px 20px;margin-bottom:16px">
+        <summary style="cursor:pointer;font-weight:600">Waiting on them ({{ waiting|length }})</summary>
+        <div class="respond-list" style="margin-top:12px">
+            {% for row in waiting %}
+            <div class="respond-card" style="padding:12px 0;border-bottom:1px solid var(--line)">
+                <div class="respond-card-body">
+                    <a href="{{ url_for('main.email_detail', email_id=row.latest_email_id) }}" class="inbox-row-subject">
+                        {{ row.subject }}
+                    </a>
+                    <p class="email-meta" style="margin:4px 0">{{ row.summary or row.intent_reason }}</p>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </details>
+    {% endif %}
+</main>
+{% endblock %}

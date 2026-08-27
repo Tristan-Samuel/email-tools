@@ -835,8 +835,8 @@ class GroqClient:
             return {"headline": headline, "bullets": cleaned_bullets[:6]}
         return None
 
-    def summarize_emails_batch(self, emails: list[dict], batch_size: int = 8) -> dict[str, list[str]]:
-        """Return {email_id: bullets} for emails Groq summarized in this batch."""
+    def analyze_emails_batch(self, emails: list[dict], batch_size: int = 8) -> dict[str, dict]:
+        """Return {email_id: {bullets, intent, reason, due_at, tags}} for one Groq batch."""
         if not self.enabled or not emails:
             return {}
 
@@ -848,49 +848,58 @@ class GroqClient:
                 f"ID: {email['email_id']}\n"
                 f"From: {email.get('sender') or 'Unknown'}\n"
                 f"Subject: {email.get('subject') or '(no subject)'}\n"
+                f"FromMe: {bool(email.get('from_me'))}\n"
                 f"Body:\n{body}"
             )
         prompt = (
-            "Summarize each email as concise triage bullets. "
-            "Return JSON only: {\"items\": [{\"id\": \"...\", \"bullets\": [\"...\", \"...\"]}]}. "
-            "Up to 3 bullets per email. "
-            f"{_SUMMARY_TRIAGE_HINT} "
-            "Use the given ID values exactly."
+            "Analyze each email for inbox triage. Return JSON only: "
+            '{"items": [{"id": "...", "bullets": ["..."], "intent": "i_owe|waiting_on_them|deadline|fyi|noise", '
+            '"reason": "short why", "due_at": "YYYY-MM-DD or empty", "tags": ["optional tag names"]}]}. '
+            "Up to 3 bullets per email. intent=i_owe when the user must reply; waiting_on_them when user sent last; "
+            "deadline when a real due date exists; fyi for informational; noise for promos/newsletters. "
+            f"{_SUMMARY_TRIAGE_HINT} Use the given ID values exactly."
         )
         parsed, _err = self._complete(
             [
-                {"role": "system", "content": "You produce strict JSON."},
+                {"role": "system", "content": "You produce strict JSON for email triage."},
                 {
                     "role": "user",
                     "content": f"{prompt}\n\n" + "\n\n---\n\n".join(blocks),
                 },
             ],
-            timeout=45,
+            timeout=50,
         )
         if not isinstance(parsed, dict):
             return {}
         entries = parsed.get("items") or parsed.get("summaries") or []
-        by_id: dict[str, list[str]] = {}
-        if isinstance(entries, dict):
-            for eid, bullets in entries.items():
-                cleaned = [str(b).strip() for b in (bullets or []) if str(b).strip()]
-                if eid and cleaned:
-                    by_id[str(eid)] = cleaned[:4]
-            return by_id
+        by_id: dict[str, dict] = {}
         if not isinstance(entries, list):
-            return {}
+            return by_id
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
             eid = str(entry.get("id") or entry.get("email_id") or "")
+            if not eid:
+                continue
             bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
-            if eid and bullets:
-                by_id[eid] = bullets[:4]
-        if not by_id and len(entries) == len(chunk):
-            for email, entry in zip(chunk, entries):
-                if not isinstance(entry, dict):
-                    continue
-                bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
-                if bullets:
-                    by_id[email["email_id"]] = bullets[:4]
+            intent = str(entry.get("intent") or "fyi").strip().lower()
+            if intent not in ("i_owe", "waiting_on_them", "deadline", "fyi", "noise"):
+                intent = "fyi"
+            reason = str(entry.get("reason") or "").strip()
+            due_raw = str(entry.get("due_at") or "").strip()
+            due_at = due_raw[:10] if due_raw and due_raw.lower() not in ("", "null", "none") else None
+            raw_tags = entry.get("tags") or []
+            tags = [str(t).strip() for t in raw_tags if str(t).strip()] if isinstance(raw_tags, list) else []
+            by_id[eid] = {
+                "bullets": bullets[:4] if bullets else [],
+                "intent": intent,
+                "reason": reason,
+                "due_at": due_at,
+                "tags": tags,
+            }
         return by_id
+
+    def summarize_emails_batch(self, emails: list[dict], batch_size: int = 8) -> dict[str, list[str]]:
+        """Return {email_id: bullets} — legacy wrapper around analyze_emails_batch."""
+        analyzed = self.analyze_emails_batch(emails, batch_size=batch_size)
+        return {eid: data.get("bullets") or [] for eid, data in analyzed.items() if data.get("bullets")}

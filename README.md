@@ -1,6 +1,6 @@
 # email-tools
 
-Flask web application for reading and triaging your inbox through AI-generated summaries — no manual email-by-email reading required.
+Flask web application for triaging your inbox through AI summaries — see what still needs you on **Today**, not a message-by-message inbox.
 
 ## Features
 
@@ -9,16 +9,15 @@ Flask web application for reading and triaging your inbox through AI-generated s
 - **Multiple accounts per user** — connect as many IMAP accounts as you like. Filter with account pills in the nav bar, or view everything together.
 - **Background sync with a live activity panel** — Sync All / per-account sync runs in a background queue. Stacked phase meters (Fetch / Summarize / Tag / Brief) update as mail downloads and Groq runs. **Cancel** stops a stuck job; the panel dismisses so it does not keep the header. A one-line strip remains when mail still needs AI analysis.
 - Parse and cache every email in SQLite with full-text search (subject, sender, recipient, body, bullets, keywords, category). New mail stores **sanitized HTML** (`body_html`) for the detail view with a **Load images** button; older cached mail gets improved plaintext (forward breaks, visible links, `[image: …]` chips). Next sync backfills HTML for your recent window.
-- Auto-sort messages into category signals (Urgent, Finance, Work, etc.) — **tags** are the user-facing filter taxonomy; categories appear as row chips. **School**, **Marketing**, and **Newsletters** tags are created on first inbox visit. **School** never auto-hides mail (even when Marketing rules also match). Marketing/Newsletters can hide matching mail; optional **Confirm with AI before hiding** on a tag vetoes false positives. **Review hidden with AI** on the Hidden page re-checks buried mail.
-- **Automatic AI summaries** — sync downloads mail quickly with local summaries, then Groq analyzes in small batches. A 429 rate limit switches to another chat model (TPM is per-model) instead of stopping. Dashboard and Inbox have **Analyze now**; Settings still shows AI vs heuristic counts.
-- Cached Groq model discovery (no `/models` call on every summarize). Inbox brief is generated after analysis and cached (dashboard load does not wait on Groq).
-- **Dashboard** (`/dashboard`) — cached AI or local inbox brief with **clickable bullets** that open the source email, important-mail highlights with links, sync controls, unread rows with a one-line summary, and stats. Primary nav includes Inbox, Dashboard, Search, Needs Reply, and Tags.
+- Auto-sort messages into category signals (Urgent, Finance, Work, etc.) — **tags** are the user-facing filter taxonomy; **intent** (`i_owe`, `waiting_on_them`, `deadline`, `fyi`, `noise`) is the system triage taxonomy stored on each message and rolled up per thread. **School**, **Marketing**, and **Newsletters** tags are created on first visit. **School** never auto-hides mail (even when Marketing rules also match). Marketing/Newsletters can hide matching mail; optional **Confirm with AI before hiding** on a tag vetoes false positives. **Review hidden with AI** on the Hidden page re-checks buried mail.
+- **Automatic AI analysis** — sync downloads mail quickly with local summaries, then Groq analyzes in batches (bullets + intent + due date in one pass). A 429 rate limit switches to another chat model (TPM is per-model) instead of stopping. **Today** and **All mail** have **Analyze now**; without Groq, heuristic intent still powers Today.
+- **Today** (`/` and `/today`) — forgive-the-pile home: **Do now** (replies owed and deadlines, capped), **FYI digest** with one-click **Clear FYI**, and a fold for **Waiting on them**. Done / Snooze / Draft reply without opening every message. Original bodies stay one click away on the detail page.
+- **All mail** (`/inbox`) — browse archive with tag filters, thread-grouped rows, split-pane preview (`?pane=1`), keyboard triage (j/k/e/u), bulk hide / read / unread + hide undo. Row order and summary size in **Settings**.
 - **Dark mode** — Light / Dark / System theme in the header menu (saved in your browser).
-- **Inbox** — default landing page with tag filters, quick-tag on rows, offset pagination, split-pane preview (`?pane=1`), keyboard triage (j/k/e/u), bulk hide / read / unread + hide undo. Row order (summary / subject / sender first) and **summary size** (normal or large) in **Settings**; sender shows display name with full address on hover.
 - **Search** — filter chips for tags, save current filters as an auto-tag, optional Ask AI when results exist.
 - Import `.eml` and `.mbox` file exports as an alternative to IMAP.
-- **Needs Reply** — Groq triage with a durable cached list (stable across refresh until new mail arrives), dismiss/snooze, and draft reply (copy / mailto). Network/DNS failures keep the last good list.
-- Manual and AI tags, hide rules (manual hides preserved), thread grouping, draft reply on message detail. Saving a tag applies matching rules immediately; AI tags cache verdicts so Groq does not re-scan every sync. Hide matching without rules seeds a subject/body filter from the tag name. Hide tags can require Groq confirmation before hiding.
+- **Sender rules** in Settings — VIP (always surfaces on Today) and always-hide (noise). Sent folder is enabled by default on connect so the app can tell *I owe* vs *waiting on them*.
+- Manual and AI tags, hide rules (manual hides preserved), thread grouping, draft reply on Today and detail. Saving a tag applies matching rules immediately; AI tags cache verdicts so Groq does not re-scan every sync.
 
 ## Run Locally
 
@@ -31,7 +30,7 @@ flask --app app run --debug
 
 Optional: copy `.env.example` to `.env` and fill in `GROQ_API_KEY` and the `SMTP_*` values. The app loads `.env` on startup (existing shell environment variables win). Without `SMTP_HOST`, development signup shows the verification code on the page instead of emailing it.
 
-Then open the local Flask URL shown in the terminal (lands on **Inbox** when logged in).
+Then open the local Flask URL shown in the terminal (lands on **Today** when logged in).
 
 Run tests:
 
@@ -41,7 +40,7 @@ pytest
 
 ## Adding a Groq API Key
 
-Groq powers AI summaries and Needs Reply. Without a key the app uses local heuristic summaries.
+Groq powers AI summaries and Today triage. Without a key the app uses local heuristic summaries and intent.
 
 **Option 1 — per-user key (recommended):**
 Log in → account menu → **Settings**. Paste your key from [console.groq.com](https://console.groq.com). It is stored **encrypted** in the database; the UI never redisplays the key.
@@ -49,7 +48,7 @@ Log in → account menu → **Settings**. Paste your key from [console.groq.com]
 **Option 2 — server-level key:**
 Set `GROQ_API_KEY` before starting the app (fallback when no per-user key is set).
 
-The default chat model is `openai/gpt-oss-20b` (smaller, with its own TPM bucket). Groq retired `llama-3.3-70b-versatile` on 2026-08-16. If a model returns HTTP 429, the client switches to the next live model (`qwen/qwen3.8-27b`, `qwen/qwen3.6-27b`, then `openai/gpt-oss-120b`) instead of aborting analysis. DNS or network failures fail fast with a short message and keep local summaries / cached Needs Reply lists.
+The default chat model is `openai/gpt-oss-20b` (smaller, with its own TPM bucket). Groq retired `llama-3.3-70b-versatile` on 2026-08-16. If a model returns HTTP 429, the client switches to the next live model (`qwen/qwen3.8-27b`, `qwen/qwen3.6-27b`, then `openai/gpt-oss-120b`) instead of aborting analysis. DNS or network failures fail fast with a short message and keep local summaries / stored thread intent.
 
 ## Connecting Your Inbox
 
@@ -62,7 +61,7 @@ The default chat model is `openai/gpt-oss-20b` (smaller, with its own TPM bucket
    - **Yahoo**: Account Security → Generate app password
    - **iCloud**: Apple ID → App-Specific Passwords
    - **Proton Mail**: install [Proton Bridge](https://proton.me/mail/bridge) — host `127.0.0.1`, port `1143` (auto-filled)
-4. Submit — the app tests IMAP, encrypts credentials, and runs an initial sync (default: mail from the last 90 days, up to 200 messages).
+4. Submit — the app tests IMAP, encrypts credentials, and runs an initial sync (default: mail from the last 90 days, up to 200 messages). **INBOX** and **Sent** (or provider equivalent) are enabled by default so reply-vs-waiting triage works.
 
 On **Accounts**, each mailbox has **Mail since**, **Max messages**, folder checkboxes, **Sync now**, **Update App Password**, and **Load older mail** when more history is available on the server.
 
@@ -95,21 +94,22 @@ IMPLEMENTATIONS.md            Audit + remaining follow-ups
 app.py                        Application entry point
 app/
   __init__.py                 Flask app factory, CSRF, configuration
-  routes.py                   All HTTP routes (login, inbox, dashboard, search, accounts, tags, settings)
+  routes.py                   All HTTP routes (login, today, inbox, search, accounts, tags, settings)
   services/
     crypto.py                 Fernet encryption for IMAP passwords and Groq keys
     email_parser.py           .eml / .mbox parsing, plaintext + HTML body extraction
     html_sanitize.py          nh3 HTML sanitization and deferred remote images
-    groq_client.py            Groq model discovery, 429 fallback, chat, draft reply, batch summarize
-    imap_service.py           IMAP connection, UID sync, batched BODY.PEEK[] fetch
+    groq_client.py            Groq model discovery, 429 fallback, batch analyze (summary + intent)
+    imap_service.py           IMAP connection, UID sync, Sent folder detection
     llm_text.py               URL-stripped text compaction for Groq prompts
     mail.py                   Outbound SMTP for signup verification codes
-    store.py                  SQLite persistence, FTS, migrations, job logs
+    store.py                  SQLite persistence, FTS, thread_state, sender_rules, migrations
     summary.py                Categorisation, summaries, digest, thread ids
     sync_worker.py            Background sync, auto-analyze, tagging, and job progress
+    triage.py                 Intent, urgency, Today view assembly, thread rollup
   templates/                  Jinja2 HTML templates
   static/                     CSS and JavaScript assets
-tests/                        pytest (store init, auth, IMAP sync mocks, record fields)
+tests/                        pytest (store init, auth, IMAP sync mocks, triage, record fields)
 instance/
   email_tools.db              SQLite database (created on first run)
   secret_key                  Auto-generated dev session secret (if FLASK_SECRET_KEY unset)

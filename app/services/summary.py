@@ -272,6 +272,8 @@ def build_email_record(
     user_email: str,
     groq_client: GroqClient | None = None,
     source_account: str = "",
+    *,
+    from_me: bool = False,
 ) -> dict:
     category, priority_score = choose_category(message["subject"], message["body"])
     keywords = extract_keywords(message["subject"], message["body"])
@@ -321,6 +323,13 @@ def build_email_record(
         "search_blob": search_blob,
         "is_mailing_list": message.get("is_mailing_list", 0),
         "ai_analyzed": 1 if ai_analyzed else 0,
+        "from_me": from_me,
+        "intent": "fyi",
+        "intent_reason": "",
+        "due_at": None,
+        "triage_status": "open",
+        "snooze_until": None,
+        "urgency": 0,
     }
 
 

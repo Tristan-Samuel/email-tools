@@ -14,13 +14,13 @@ Working audit for **email-tools**. Shipped items below are done in the current t
 
 ## What this app actually is
 
-A **Flask inbox cache + Groq/heuristic triage** app. Users sign up (email verification code), log in, connect IMAP (or upload `.eml`/`.mbox`), mail is parsed, summarized, categorized, tagged, and browsed via Jinja templates. Persistence is SQLite (`EmailStore`). Outbound SMTP is used only for signup verification; no user-facing send-mail yet.
+A **Flask inbox cache + Groq/heuristic triage** app. Users sign up (email verification code), log in, connect IMAP (or upload `.eml`/`.mbox`), mail is parsed, summarized, intent-tagged, categorized, tagged, and browsed via Jinja templates. **Today** is the home surface — Do now, FYI digest, Waiting — not a traditional inbox list. Persistence is SQLite (`EmailStore`). Outbound SMTP is used only for signup verification; no user-facing send-mail yet.
 
 Entry: `app.py` → `create_app()` in `app/__init__.py`. All HTTP on blueprint `main` in `app/routes.py`.
 
 ---
 
-## Shipped (P0–P4 core)
+## Shipped (P0–P4 core + triage overhaul)
 
 ### Security and boot
 
@@ -40,32 +40,41 @@ Entry: `app.py` → `create_app()` in `app/__init__.py`. All HTTP on blueprint `
 - FTS5 includes subject, sender, recipient, body, bullets, keywords, category (aligned with LIKE).
 - Shared `parse_message`; `sync_one_account`; background `sync_worker` queue.
 - Groq chosen model cached on `current_app` keyed by API-key fingerprint.
+- **Sent folder enabled by default** on account connect; `from_me` on messages for reply-vs-waiting.
+
+### Triage-first product (2026 overhaul)
+
+- **`thread_state` + per-email intent** — `i_owe`, `waiting_on_them`, `deadline`, `fyi`, `noise`; `triage_status`, snooze, urgency.
+- **Today home** (`/` → `/today`) — Do now (capped), FYI digest + Clear FYI, Waiting fold; Done / Snooze / Draft.
+- **Single Groq analyze batch** — bullets + intent + due date in one pass; heuristic fallback without Groq.
+- **All mail** (`/inbox`) — thread-grouped browse; detail is summary-first with body behind disclosure.
+- **Sender rules** — VIP and always-hide in Settings.
+- `/dashboard` and `/needs-reply` redirect to Today; dismiss/snooze persisted on threads (not ephemeral KV scan).
 
 ### Product honesty
 
-- Needs Reply: Groq error vs empty; cache invalidated on sync; dismiss/snooze; draft reply.
 - Tag apply does not unhide manual hides (`hidden_by_tag`).
-- Categories are row chips / digest signals; tags are the filter taxonomy.
+- Categories are row chips / digest signals; tags are the filter taxonomy; intent is the system triage taxonomy.
 - Heuristic DATE_RE scheduling bullet only from a high-scoring sentence; sender/subject fallback only when body is empty.
 - Proton add-account: empty host/port, JS-fill `127.0.0.1:1143`.
 
 ### IA and design
 
-- `/` → `/inbox`; Dashboard at `/dashboard` in the account menu.
-- Inbox offset pagination (cap 500). Split-pane (`?pane=1`), keyboard j/k/e/u.
+- Primary nav: **Today · All mail · Search**; Tags / Accounts / Settings in account menu.
+- All mail offset pagination (cap 500). Split-pane (`?pane=1`), keyboard j/k/e/u.
 - Bulk hide / unhide / read / unread + hide undo toast.
 - Tag toggles have `for`/`id`.
-- CSS: system UI font, 10px radius, media queries after components, no unused `.topbar-actions`.
+- CSS: system UI font, 10px radius, media queries after components.
 - Branding: Inbox Tools.
 
-### P4 shipped in this pass
+### P4 shipped earlier
 
 1. Background queued sync and AI tag apply.
 2. Split-pane inbox + keyboard.
 3. Bulk actions beyond hide + undo toast.
-4. Groq draft reply (copy / mailto) on Needs Reply and detail.
+4. Groq draft reply (copy / mailto) on Today and detail.
 5. Thread grouping (`In-Reply-To` / References / normalized subject).
-6. Needs Reply saved-view dismiss/snooze.
+6. Needs Reply dismiss/snooze → now thread triage on Today.
 
 ---
 
@@ -73,18 +82,16 @@ Entry: `app.py` → `create_app()` in `app/__init__.py`. All HTTP on blueprint `
 
 ### High-leverage triage
 
-- Sender VIP / always-hide rules.
 - One-click `List-Unsubscribe`.
-- Follow-up tracker (“waiting on them” vs “I owe a reply”).
-- Real digest brief (not keyword category counts).
+- Real Groq FYI rollup brief (local digest exists; optional second rollup call).
 - Semantic / hybrid search rerank.
 
 ### Later
 
-SMTP send, attachments, calendar extraction, dark mode, command palette, PWA.
+SMTP send, attachments, calendar extraction, command palette, PWA.
 
 `app/routes.py` remains one blueprint (project rule). File is large; further extract helpers next to `sync_one_account` if it grows again.
 
 ---
 
-*Last updated against repo layout after remaining-implementations slices 1–5.*
+*Last updated after triage-first Today overhaul.*

@@ -52,6 +52,33 @@ _MX_IMAP_SUFFIXES: tuple[tuple[tuple[str, ...], str], ...] = (
 _DNS_SERVERS = ("8.8.8.8", "1.1.1.1")
 _PARSER = BytesParser(policy=policy.default)
 _FOLDER_LINE_RE = re.compile(r'"([^"]+)"\s*$')
+
+SENT_FOLDER_MARKERS = (
+    "sent",
+    "sent items",
+    "sent messages",
+    "[gmail]/sent mail",
+    "inbox.sent",
+)
+
+
+def is_sent_folder(folder: str) -> bool:
+    """Return True when folder name looks like the provider's Sent mailbox."""
+    normalized = (folder or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized in ("sent", "sent items", "sent messages"):
+        return True
+    return any(marker in normalized for marker in SENT_FOLDER_MARKERS if marker not in ("sent",))
+
+
+def default_enabled_folders(folders: list[str]) -> set[str]:
+    """INBOX plus Sent-like folders enabled on first connect."""
+    enabled = {"INBOX"}
+    for folder in folders:
+        if is_sent_folder(folder):
+            enabled.add(folder)
+    return enabled
 UID_META_RE = re.compile(rb"UID (\d+)")
 FETCH_CHUNK_SIZE = 25
 logger = logging.getLogger(__name__)

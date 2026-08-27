@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 
-{% block title %}Inbox | Inbox Tools{% endblock %}
+{% block title %}All mail | Inbox Tools{% endblock %}
 
 {% block content %}
 <main class="page-main" data-reload-on-job="1">
     <div class="inbox-toolbar">
         <div class="inbox-toolbar-left">
-            <h1 class="inbox-title">Inbox</h1>
+            <h1 class="inbox-title">All mail</h1>
             <span class="inbox-count">{{ emails|length }} shown</span>
             {% if unread_count > 0 %}
             <a href="{{ url_for('main.inbox') }}?unread=1{% if source_account %}&source_account={{ source_account }}{% endif %}"
@@ -43,6 +43,7 @@
                     <option value="date_desc" {% if sort == 'date_desc' %}selected{% endif %}>Date ↓ Newest</option>
                     <option value="date_asc"  {% if sort == 'date_asc'  %}selected{% endif %}>Date ↑ Oldest</option>
                     <option value="priority"  {% if sort == 'priority'  %}selected{% endif %}>Priority</option>
+                    <option value="urgency"  {% if sort == 'urgency'  %}selected{% endif %}>Urgency</option>
                 </select>
             </form>
 
@@ -152,7 +153,7 @@
             <label class="inbox-bulk-check" style="padding:12px 8px;display:flex;align-items:center">
                 <input type="checkbox" name="email_ids" value="{{ email.email_id }}" form="bulk-hide-form" aria-label="Select {{ email.subject }}">
             </label>
-            <a class="inbox-row {% if not email.is_read %}inbox-row--unread{% endif %} {% if email.priority_score >= 80 %}inbox-row--urgent{% endif %} {% if selected_email and selected_email.email_id == email.email_id %}inbox-row--selected{% endif %}"
+            <a class="inbox-row {% if not email.is_read %}inbox-row--unread{% endif %} {% if (email.urgency or email.priority_score or 0) >= 80 %}inbox-row--urgent{% endif %} {% if selected_email and selected_email.email_id == email.email_id %}inbox-row--selected{% endif %}"
                href="{% if split_pane %}{{ url_for('main.inbox', email_id=email.email_id, pane='1', offset=offset, limit=limit, source_account=source_account, tag_id=selected_tag, unread=1 if only_unread else None, no_lists=1 if exclude_mailing_list else None, sort=sort if sort != 'date_desc' else None, query=query or None) }}{% else %}{{ url_for('main.email_detail', email_id=email.email_id) }}{% endif %}"
                style="flex:1">
                 <div class="inbox-row-avatar">{{ (email.sender|sender_name or '?')[0].upper() }}</div>
@@ -164,11 +165,13 @@
                     <div class="inbox-row-subject inbox-field inbox-field--subject">
                         {% if not email.is_read %}<span class="inbox-unread-dot" aria-hidden="true">● </span>{% endif %}
                         {{ email.subject }}
-                        {% set tc = thread_counts.get(email.thread_id, 0) %}
+                        {% set tc = email.thread_count or thread_counts.get(email.thread_id, 0) %}
                         {% if tc > 1 %}<span class="thread-badge" title="{{ tc }} in thread">{{ tc }}</span>{% endif %}
                     </div>
                     <div class="inbox-row-preview inbox-field inbox-field--summary">
-                        {% if email.bullet_summary %}
+                        {% if email.thread_summary %}
+                            {{ email.thread_summary|sanitize_bullet }}
+                        {% elif email.bullet_summary %}
                             {{ email.bullet_summary[0]|sanitize_bullet }}
                         {% else %}
                             {{ email.preview or 'No preview available.' }}

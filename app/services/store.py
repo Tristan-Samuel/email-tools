@@ -366,6 +366,57 @@ class EmailStore:
                 "ALTER TABLE user_tags ADD COLUMN ai_confirm INTEGER NOT NULL DEFAULT 0"
             )
 
+    def _migrate_v10(self, connection: sqlite3.Connection) -> None:
+        """Intent triage columns, thread rollup, and sender VIP/hide rules."""
+        email_cols = self._table_columns(connection, "emails")
+        for col, ddl in (
+            ("intent", "ALTER TABLE emails ADD COLUMN intent TEXT NOT NULL DEFAULT 'fyi'"),
+            ("intent_reason", "ALTER TABLE emails ADD COLUMN intent_reason TEXT NOT NULL DEFAULT ''"),
+            ("due_at", "ALTER TABLE emails ADD COLUMN due_at TEXT"),
+            ("triage_status", "ALTER TABLE emails ADD COLUMN triage_status TEXT NOT NULL DEFAULT 'open'"),
+            ("snooze_until", "ALTER TABLE emails ADD COLUMN snooze_until TEXT"),
+            ("from_me", "ALTER TABLE emails ADD COLUMN from_me INTEGER NOT NULL DEFAULT 0"),
+            ("urgency", "ALTER TABLE emails ADD COLUMN urgency INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if email_cols and col not in email_cols:
+                connection.execute(ddl)
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS thread_state (
+                user_email TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                intent TEXT NOT NULL DEFAULT 'fyi',
+                intent_reason TEXT NOT NULL DEFAULT '',
+                due_at TEXT,
+                triage_status TEXT NOT NULL DEFAULT 'open',
+                snooze_until TEXT,
+                urgency INTEGER NOT NULL DEFAULT 0,
+                latest_email_id TEXT NOT NULL DEFAULT '',
+                last_inbound_at TEXT,
+                last_from_me_at TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_email, thread_id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_thread_state_user ON thread_state(user_email, urgency DESC)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sender_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_email TEXT NOT NULL,
+                pattern TEXT NOT NULL,
+                rule_type TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_email, pattern, rule_type)
+            )
+            """
+        )
+
     def initialize(self) -> None:
         with self._connect() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -405,6 +456,10 @@ class EmailStore:
                 self._migrate_v9(connection)
                 connection.execute("PRAGMA user_version = 9")
                 version = 9
+            if version < 10:
+                self._migrate_v10(connection)
+                connection.execute("PRAGMA user_version = 10")
+                version = 10
             try:
                 connection.execute("SELECT email_id FROM email_search LIMIT 0")
                 self.fts_enabled = True
@@ -478,8 +533,15 @@ class EmailStore:
                         keywords,
                         search_blob,
                         is_mailing_list,
-                        ai_analyzed
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ai_analyzed,
+                        intent,
+                        intent_reason,
+                        due_at,
+                        triage_status,
+                        snooze_until,
+                        from_me,
+                        urgency
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(email_id) DO UPDATE SET
                         user_email=excluded.user_email,
                         message_id=excluded.message_id,
@@ -504,7 +566,12 @@ class EmailStore:
                         priority_score=excluded.priority_score,
                         keywords=excluded.keywords,
                         search_blob=excluded.search_blob,
-                        is_mailing_list=excluded.is_mailing_list
+                        is_mailing_list=excluded.is_mailing_list,
+                        from_me=CASE WHEN excluded.from_me=1 THEN 1 ELSE emails.from_me END,
+                        intent=CASE WHEN excluded.ai_analyzed=1 THEN excluded.intent ELSE emails.intent END,
+                        intent_reason=CASE WHEN excluded.ai_analyzed=1 THEN excluded.intent_reason ELSE emails.intent_reason END,
+                        due_at=CASE WHEN excluded.ai_analyzed=1 THEN excluded.due_at ELSE emails.due_at END,
+                        urgency=CASE WHEN excluded.urgency > emails.urgency THEN excluded.urgency ELSE emails.urgency END
                     """,
                     (
                         record["email_id"],
@@ -529,6 +596,13 @@ class EmailStore:
                         record["search_blob"],
                         record.get("is_mailing_list", 0),
                         record.get("ai_analyzed", 0),
+                        record.get("intent", "fyi"),
+                        record.get("intent_reason", ""),
+                        record.get("due_at"),
+                        record.get("triage_status", "open"),
+                        record.get("snooze_until"),
+                        1 if record.get("from_me") else 0,
+                        record.get("urgency", 0),
                     ),
                 )
                 keywords_list = record["keywords"]
@@ -627,7 +701,8 @@ class EmailStore:
 
         _order = {
             "date_asc":  "COALESCE(received_at, created_at) ASC",
-            "priority":  "priority_score DESC, COALESCE(received_at, created_at) DESC",
+            "priority":  "urgency DESC, priority_score DESC, COALESCE(received_at, created_at) DESC",
+            "urgency":   "urgency DESC, COALESCE(received_at, created_at) DESC",
         }.get(sort, "COALESCE(received_at, created_at) DESC")
         query += f" ORDER BY {_order} LIMIT ? OFFSET ?"
         params.append(limit)
@@ -2087,3 +2162,377 @@ class EmailStore:
                         (email["email_id"], user_email),
                     )
         return updated
+
+    def list_thread_groups(self, user_email: str, source_account: str | None = None) -> dict[str, list[dict]]:
+        """Return {thread_id: [emails...]} for non-hidden mail."""
+        emails = self.list_emails(
+            user_email=user_email,
+            source_account=source_account,
+            limit=5000,
+            exclude_hidden=True,
+            sort="date_asc",
+        )
+        groups: dict[str, list[dict]] = {}
+        for email in emails:
+            tid = email.get("thread_id") or email["email_id"]
+            groups.setdefault(tid, []).append(email)
+        return groups
+
+    def upsert_thread_state(
+        self,
+        user_email: str,
+        thread_id: str,
+        *,
+        summary: str,
+        intent: str,
+        intent_reason: str,
+        due_at: str | None,
+        triage_status: str,
+        snooze_until: str | None,
+        urgency: int,
+        latest_email_id: str,
+        last_inbound_at: str | None,
+        last_from_me_at: str | None,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO thread_state (
+                    user_email, thread_id, summary, intent, intent_reason, due_at,
+                    triage_status, snooze_until, urgency, latest_email_id,
+                    last_inbound_at, last_from_me_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_email, thread_id) DO UPDATE SET
+                    summary=excluded.summary,
+                    intent=excluded.intent,
+                    intent_reason=excluded.intent_reason,
+                    due_at=excluded.due_at,
+                    triage_status=excluded.triage_status,
+                    snooze_until=excluded.snooze_until,
+                    urgency=excluded.urgency,
+                    latest_email_id=excluded.latest_email_id,
+                    last_inbound_at=excluded.last_inbound_at,
+                    last_from_me_at=excluded.last_from_me_at,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    user_email,
+                    thread_id,
+                    summary,
+                    intent,
+                    intent_reason,
+                    due_at,
+                    triage_status,
+                    snooze_until,
+                    urgency,
+                    latest_email_id,
+                    last_inbound_at,
+                    last_from_me_at,
+                ),
+            )
+
+    def list_thread_states(
+        self,
+        user_email: str,
+        *,
+        source_account: str | None = None,
+    ) -> list[dict]:
+        query = """
+            SELECT thread_state.*, emails.subject, emails.sender, emails.received_at,
+                   emails.is_hidden, emails.source_account
+            FROM thread_state
+            JOIN emails ON emails.email_id = thread_state.latest_email_id
+            WHERE thread_state.user_email = ?
+        """
+        params: list[object] = [user_email]
+        if source_account:
+            query += " AND emails.source_account = ?"
+            params.append(source_account)
+        query += " ORDER BY thread_state.urgency DESC, thread_state.last_inbound_at DESC"
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_thread_state(self, user_email: str, thread_id: str) -> dict | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM thread_state WHERE user_email = ? AND thread_id = ?",
+                (user_email, thread_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def set_thread_triage_status(
+        self,
+        user_email: str,
+        thread_id: str,
+        *,
+        triage_status: str,
+        snooze_until: str | None = None,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE thread_state
+                SET triage_status = ?, snooze_until = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE user_email = ? AND thread_id = ?
+                """,
+                (triage_status, snooze_until, user_email, thread_id),
+            )
+            connection.execute(
+                """
+                UPDATE emails
+                SET triage_status = ?, snooze_until = ?
+                WHERE user_email = ? AND thread_id = ?
+                """,
+                (triage_status, snooze_until, user_email, thread_id),
+            )
+
+    def mark_threads_read(self, user_email: str, thread_ids: list[str]) -> int:
+        if not thread_ids:
+            return 0
+        placeholders = ",".join("?" * len(thread_ids))
+        with self._connect() as connection:
+            connection.execute(
+                f"""
+                UPDATE emails SET is_read = 1
+                WHERE user_email = ? AND thread_id IN ({placeholders})
+                """,
+                [user_email, *thread_ids],
+            )
+        return len(thread_ids)
+
+    def update_email_triage_fields(
+        self,
+        email_id: str,
+        user_email: str,
+        *,
+        intent: str,
+        intent_reason: str,
+        due_at: str | None,
+        urgency: int,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE emails
+                SET intent = ?, intent_reason = ?, due_at = ?, urgency = ?
+                WHERE email_id = ? AND user_email = ?
+                """,
+                (intent, intent_reason, due_at, urgency, email_id, user_email),
+            )
+
+    def update_email_analysis(
+        self,
+        email_id: str,
+        user_email: str,
+        *,
+        bullet_summary: list[str],
+        intent: str = "fyi",
+        intent_reason: str = "",
+        due_at: str | None = None,
+        urgency: int = 0,
+        ai_analyzed: bool = True,
+        keywords: list[str] | None = None,
+        category: str | None = None,
+    ) -> None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT subject, sender, recipient, body, keywords, category
+                FROM emails WHERE email_id = ? AND user_email = ?
+                """,
+                (email_id, user_email),
+            ).fetchone()
+            if row is None:
+                return
+
+            kw = keywords if keywords is not None else json.loads(row["keywords"])
+            cat = category if category is not None else row["category"]
+            search_blob = " ".join(
+                [
+                    row["subject"],
+                    row["sender"] or "",
+                    row["recipient"] or "",
+                    row["body"],
+                    " ".join(bullet_summary),
+                    " ".join(kw),
+                    cat,
+                    intent,
+                    intent_reason or "",
+                ]
+            )
+            connection.execute(
+                """
+                UPDATE emails SET
+                    bullet_summary = ?,
+                    ai_analyzed = ?,
+                    search_blob = ?,
+                    intent = ?,
+                    intent_reason = ?,
+                    due_at = ?,
+                    urgency = ?
+                WHERE email_id = ? AND user_email = ?
+                """,
+                (
+                    json.dumps(bullet_summary),
+                    1 if ai_analyzed else 0,
+                    search_blob,
+                    intent,
+                    intent_reason,
+                    due_at,
+                    urgency,
+                    email_id,
+                    user_email,
+                ),
+            )
+            self._write_search_index(
+                connection,
+                email_id,
+                row["subject"],
+                row["sender"] or "",
+                row["recipient"] or "",
+                row["body"],
+                bullet_summary,
+                kw,
+                cat,
+                search_blob,
+            )
+
+    def list_sender_rules(self, user_email: str, rule_type: str | None = None) -> list[str]:
+        query = "SELECT pattern FROM sender_rules WHERE user_email = ?"
+        params: list[object] = [user_email]
+        if rule_type:
+            query += " AND rule_type = ?"
+            params.append(rule_type)
+        query += " ORDER BY created_at"
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [row["pattern"] for row in rows]
+
+    def save_sender_rule(self, user_email: str, pattern: str, rule_type: str) -> None:
+        pattern = (pattern or "").strip().lower()
+        if not pattern or rule_type not in ("vip", "always_hide"):
+            return
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO sender_rules (user_email, pattern, rule_type)
+                VALUES (?, ?, ?)
+                """,
+                (user_email, pattern, rule_type),
+            )
+
+    def delete_sender_rule(self, rule_id: int, user_email: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM sender_rules WHERE id = ? AND user_email = ?",
+                (rule_id, user_email),
+            )
+
+    def list_sender_rule_rows(self, user_email: str) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM sender_rules WHERE user_email = ? ORDER BY rule_type, pattern",
+                (user_email,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def enable_default_folders(self, account_id: int, folders: list[str]) -> None:
+        """Enable INBOX and Sent-like folders by default."""
+        from . import imap_service
+
+        defaults = imap_service.default_enabled_folders(folders)
+        self.ensure_folder_sync_rows(account_id, folders)
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE imap_folder_sync SET enabled = 0 WHERE account_id = ?",
+                (account_id,),
+            )
+            for folder in defaults:
+                connection.execute(
+                    """
+                    INSERT INTO imap_folder_sync (account_id, folder, enabled)
+                    VALUES (?, ?, 1)
+                    ON CONFLICT(account_id, folder) DO UPDATE SET enabled = 1
+                    """,
+                    (account_id, folder),
+                )
+
+    def list_inbox_thread_heads(
+        self,
+        user_email: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        source_account: str | None = None,
+        tag_filter: int | None = None,
+        sort: str = "date_desc",
+        only_unread: bool = False,
+        exclude_mailing_list: bool = False,
+        category: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        query: str | None = None,
+    ) -> tuple[list[dict], int]:
+        """One row per thread — latest message metadata plus thread_state when present."""
+        if query:
+            emails = self.search(
+                query,
+                limit=5000,
+                user_email=user_email,
+                source_account=source_account,
+                tag_filter=tag_filter,
+                only_unread=only_unread,
+                exclude_mailing_list=exclude_mailing_list,
+                category=category,
+                date_from=date_from,
+                date_to=date_to,
+            )
+        else:
+            emails = self.list_emails(
+                limit=5000,
+                user_email=user_email,
+                source_account=source_account,
+                tag_filter=tag_filter,
+                only_unread=only_unread,
+                exclude_mailing_list=exclude_mailing_list,
+                category=category,
+                date_from=date_from,
+                date_to=date_to,
+                sort="date_desc",
+            )
+        by_thread: dict[str, dict] = {}
+        for email in emails:
+            tid = email.get("thread_id") or email["email_id"]
+            existing = by_thread.get(tid)
+            if existing is None:
+                by_thread[tid] = {**email, "thread_count": 1}
+            else:
+                existing["thread_count"] = int(existing.get("thread_count") or 1) + 1
+                if (email.get("received_at") or "") > (existing.get("received_at") or ""):
+                    by_thread[tid] = {**email, "thread_count": existing["thread_count"]}
+
+        rows = list(by_thread.values())
+        if sort == "urgency" or sort == "priority":
+            rows.sort(key=lambda r: (-int(r.get("urgency") or r.get("priority_score") or 0), r.get("received_at") or ""), reverse=False)
+        elif sort == "date_asc":
+            rows.sort(key=lambda r: r.get("received_at") or "")
+        else:
+            rows.sort(key=lambda r: r.get("received_at") or "", reverse=True)
+
+        total = len(rows)
+        page = rows[offset : offset + limit]
+        thread_ids = [r.get("thread_id") or r["email_id"] for r in page]
+        states = {
+            s["thread_id"]: s
+            for s in self.list_thread_states(user_email, source_account=source_account)
+            if s["thread_id"] in thread_ids
+        }
+        for row in page:
+            tid = row.get("thread_id") or row["email_id"]
+            state = states.get(tid)
+            if state:
+                row["thread_summary"] = state.get("summary") or ""
+                row["intent"] = state.get("intent") or row.get("intent") or "fyi"
+                row["urgency"] = state.get("urgency") or row.get("urgency") or 0
+        return page, total

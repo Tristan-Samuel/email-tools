@@ -19,7 +19,7 @@
     <a class="skip-link" href="#main-content">Skip to content</a>
     <div class="page-shell">
         <header class="topbar">
-            <a href="{{ url_for('main.inbox') }}" class="brand">
+            <a href="{{ url_for('main.today') }}" class="brand">
                 <span class="brand-mark">IT</span>
                 <span>
                     <strong>Inbox Tools</strong>
@@ -28,17 +28,15 @@
             </a>
             {% if current_user_email %}
                 <nav class="topbar-nav" aria-label="Primary">
-                    <a href="{{ url_for('main.inbox') }}" class="topbar-nav-link {% if request.endpoint == 'main.inbox' %}topbar-nav-link--active{% endif %}">Inbox</a>
-                    <a href="{{ url_for('main.dashboard') }}" class="topbar-nav-link {% if request.endpoint == 'main.dashboard' %}topbar-nav-link--active{% endif %}">Dashboard</a>
+                    <a href="{{ url_for('main.today') }}" class="topbar-nav-link {% if request.endpoint == 'main.today' %}topbar-nav-link--active{% endif %}">Today</a>
+                    <a href="{{ url_for('main.inbox') }}" class="topbar-nav-link {% if request.endpoint == 'main.inbox' %}topbar-nav-link--active{% endif %}">All mail</a>
                     <a href="{{ url_for('main.search_page') }}" class="topbar-nav-link {% if request.endpoint == 'main.search_page' %}topbar-nav-link--active{% endif %}">Search</a>
-                    <a href="{{ url_for('main.respond_now') }}" class="topbar-nav-link {% if request.endpoint == 'main.respond_now' %}topbar-nav-link--active{% endif %}">Needs Reply</a>
-                    <a href="{{ url_for('main.tags') }}" class="topbar-nav-link {% if request.endpoint in ('main.tags', 'main.tags_edit') %}topbar-nav-link--active{% endif %}">Tags</a>
                 </nav>
                 {% if active_accounts %}
                 <nav class="acct-pills" aria-label="Account filter">
-                    <a href="{{ url_for('main.inbox') }}" class="acct-pill {% if not source_account %}acct-pill--active{% endif %}">All</a>
+                    <a href="{{ url_for('main.today') }}" class="acct-pill {% if not source_account %}acct-pill--active{% endif %}">All</a>
                     {% for acct in active_accounts %}
-                    <a href="{{ url_for('main.inbox', source_account=acct.account_email) }}"
+                    <a href="{{ url_for('main.today', source_account=acct.account_email) }}"
                        class="acct-pill {% if source_account == acct.account_email %}acct-pill--active{% endif %}">
                         {{ acct.account_email.split('@')[0] }}
                     </a>

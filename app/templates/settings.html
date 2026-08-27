@@ -11,7 +11,8 @@
         </div>
         <div class="page-header-actions">
             <a href="{{ url_for('main.accounts') }}" class="btn btn-ghost">Accounts</a>
-            <a href="{{ url_for('main.inbox') }}" class="btn btn-ghost">Inbox</a>
+            <a href="{{ url_for('main.today') }}" class="btn btn-ghost">Today</a>
+            <a href="{{ url_for('main.inbox') }}" class="btn btn-ghost">All mail</a>
         </div>
     </div>
 
@@ -26,8 +27,8 @@
     </section>
 
     <section class="panel settings-panel">
-        <h2 class="panel-title">Inbox rows</h2>
-        <p class="panel-hint">Choose which line appears first in the inbox list. Sender shows the display name; hover for the full address.</p>
+        <h2 class="panel-title">All mail rows</h2>
+        <p class="panel-hint">Choose which line appears first in the All mail list. Sender shows the display name; hover for the full address.</p>
         <form action="{{ url_for('main.settings') }}" method="post" class="settings-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="action" value="save_inbox_row_order">
@@ -50,6 +51,44 @@
                 <button type="submit" class="btn btn-primary">Save inbox display</button>
             </div>
         </form>
+    </section>
+
+    <section class="panel settings-panel">
+        <h2 class="panel-title">Sender rules</h2>
+        <p class="panel-hint">VIP senders always surface on Today. Always-hide senders are filtered as noise.</p>
+        <form action="{{ url_for('main.settings') }}" method="post" class="settings-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="add_sender_rule">
+            <label class="form-label">
+                Match sender contains
+                <input type="text" name="pattern" class="form-input" placeholder="name@domain.com or domain.com" required>
+            </label>
+            <label class="form-label">
+                Rule type
+                <select name="rule_type" class="form-input">
+                    <option value="vip">VIP — always Do now</option>
+                    <option value="always_hide">Always hide — noise</option>
+                </select>
+            </label>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Add rule</button>
+            </div>
+        </form>
+        {% if sender_rules %}
+        <ul style="margin-top:16px;list-style:none;padding:0">
+            {% for rule in sender_rules %}
+            <li style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--line)">
+                <span><strong>{{ rule.rule_type }}</strong> — {{ rule.pattern }}</span>
+                <form action="{{ url_for('main.settings') }}" method="post">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="action" value="delete_sender_rule">
+                    <input type="hidden" name="rule_id" value="{{ rule.id }}">
+                    <button type="submit" class="btn btn-ghost" style="font-size:.78rem">Remove</button>
+                </form>
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
     </section>
 
     <section class="panel settings-panel">
@@ -92,11 +131,11 @@
     <section class="panel settings-panel">
         <h2 class="panel-title">Groq AI</h2>
         <p class="panel-hint">
-            Powers summaries, inbox brief, Needs Reply, and tag classification.
+            Powers summaries, Today triage, and tag classification.
             {% if has_groq_key %}
             <strong class="text-ok">✓ Key saved (encrypted).</strong>
             {% endif %}
-            After you sync, analysis starts automatically. You can also click <strong>Analyze now</strong> on the Dashboard or Inbox.
+            After you sync, analysis starts automatically. You can also click <strong>Analyze now</strong> on Today or All mail.
         </p>
         <p class="panel-hint">
             <strong>{{ ai_analyzed }}</strong> emails analyzed with AI ·
@@ -133,7 +172,7 @@
         {% endif %}
         <p class="panel-hint" style="margin-top:1rem">
             Mail sync date and message limits are configured per account on
-            <a href="{{ url_for('main.accounts') }}">Accounts</a> or the Dashboard sidebar.
+            <a href="{{ url_for('main.accounts') }}">Accounts</a> to import `.eml` / `.mbox` files.
         </p>
     </section>
 </main>
