@@ -12,6 +12,7 @@ from flask_wtf.csrf import CSRFProtect
 from markupsafe import Markup
 
 from .routes import register_routes
+from .services.gemini_client import DEFAULT_GEMINI_MODEL, resolve_gemini_model
 from .services.groq_client import DEFAULT_CHAT_MODEL, resolve_chat_model
 from .services.store import EmailStore
 
@@ -67,6 +68,7 @@ def create_app() -> Flask:
 
     secret_key = _load_secret_key(Path(app.instance_path))
     groq_model = resolve_chat_model(os.environ.get("GROQ_DEFAULT_MODEL", DEFAULT_CHAT_MODEL))
+    gemini_model = resolve_gemini_model(os.environ.get("GEMINI_DEFAULT_MODEL", DEFAULT_GEMINI_MODEL))
     app.config.from_mapping(
         SECRET_KEY=secret_key,
         CREDENTIAL_ENCRYPTION_KEY=_credential_encryption_key(secret_key),
@@ -75,13 +77,15 @@ def create_app() -> Flask:
         MAX_CONTENT_LENGTH=50 * 1024 * 1024,
         GROQ_API_KEY=os.environ.get("GROQ_API_KEY", ""),
         GROQ_DEFAULT_MODEL=groq_model,
+        GEMINI_API_KEY=os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", ""),
+        GEMINI_DEFAULT_MODEL=gemini_model,
         SMTP_HOST=os.environ.get("SMTP_HOST", "").strip(),
         SMTP_PORT=int(os.environ.get("SMTP_PORT", "587")),
         SMTP_USERNAME=os.environ.get("SMTP_USERNAME", "").strip(),
         SMTP_PASSWORD=os.environ.get("SMTP_PASSWORD", ""),
         SMTP_FROM=os.environ.get("SMTP_FROM", "").strip(),
         SMTP_USE_TLS=os.environ.get("SMTP_USE_TLS", "true").lower() in ("1", "true", "yes"),
-        STATIC_VERSION="27",
+        STATIC_VERSION="28",
     )
 
     app.config["UPLOAD_FOLDER"].mkdir(parents=True, exist_ok=True)
@@ -118,11 +122,13 @@ def create_app() -> Flask:
             except Exception:
                 pass
             try:
-                from .routes import get_groq_client
+                from .routes import get_ai_client
 
-                groq_available = get_groq_client(user_email).enabled
+                groq_available = get_ai_client(user_email).enabled
             except Exception:
-                groq_available = bool(app.config.get("GROQ_API_KEY"))
+                groq_available = bool(
+                    app.config.get("GEMINI_API_KEY") or app.config.get("GROQ_API_KEY")
+                )
         return {
             "current_user_email": user_email,
             "active_accounts": active_accounts,

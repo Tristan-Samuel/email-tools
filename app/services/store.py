@@ -432,6 +432,14 @@ class EmailStore:
             if col not in thread_cols:
                 connection.execute(ddl)
 
+    def _migrate_v12(self, connection: sqlite3.Connection) -> None:
+        """Per-user encrypted Gemini API key."""
+        settings_cols = self._table_columns(connection, "user_settings")
+        if settings_cols and "gemini_api_key" not in settings_cols:
+            connection.execute(
+                "ALTER TABLE user_settings ADD COLUMN gemini_api_key TEXT NOT NULL DEFAULT ''"
+            )
+
     def initialize(self) -> None:
         with self._connect() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -479,6 +487,10 @@ class EmailStore:
                 self._migrate_v11(connection)
                 connection.execute("PRAGMA user_version = 11")
                 version = 11
+            if version < 12:
+                self._migrate_v12(connection)
+                connection.execute("PRAGMA user_version = 12")
+                version = 12
             try:
                 connection.execute("SELECT email_id FROM email_search LIMIT 0")
                 self.fts_enabled = True
@@ -1325,6 +1337,19 @@ class EmailStore:
                     """,
                     (user_email, value),
                 )
+            return
+        if key == "gemini_api_key":
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO user_settings (user_email, gemini_api_key, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(user_email) DO UPDATE SET
+                        gemini_api_key=excluded.gemini_api_key,
+                        updated_at=excluded.updated_at
+                    """,
+                    (user_email, value),
+                )
 
     def get_setting(self, user_email: str, key: str) -> str:
         if key == "groq_api_key":
@@ -1334,6 +1359,13 @@ class EmailStore:
                     (user_email,),
                 ).fetchone()
             return row["groq_api_key"] if row else ""
+        if key == "gemini_api_key":
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT gemini_api_key FROM user_settings WHERE user_email = ?",
+                    (user_email,),
+                ).fetchone()
+            return row["gemini_api_key"] if row else ""
         return ""
 
     def set_kv(self, user_email: str, key: str, value: str) -> None:

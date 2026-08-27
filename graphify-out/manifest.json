@@ -5,18 +5,18 @@
     "semantic_hash": "4af32791ebb5c19fea7629ae618be243"
   },
   "app/__init__.py": {
-    "mtime": 1787872681.640112,
-    "ast_hash": "6f8258399833b03c372a3ffb181bf356",
+    "mtime": 1787874055.8394113,
+    "ast_hash": "733a96cbafc38430eb445db063188e48",
     "semantic_hash": ""
   },
   "app/routes.py": {
-    "mtime": 1787872689.4293795,
-    "ast_hash": "6a2edbfaa9e2014865df17a042126ea1",
+    "mtime": 1787874082.7638788,
+    "ast_hash": "5445384f206d3600136a5cc0d6d2b8e8",
     "semantic_hash": ""
   },
   "app/services/crypto.py": {
-    "mtime": 1787795843.0753405,
-    "ast_hash": "60e22fb059c1b05fc4c51ec37a66a524",
+    "mtime": 1787874065.0085573,
+    "ast_hash": "305f23f327c36eb933001816c6eec729",
     "semantic_hash": ""
   },
   "app/services/email_parser.py": {
@@ -35,13 +35,13 @@
     "semantic_hash": ""
   },
   "app/services/store.py": {
-    "mtime": 1787872583.108115,
-    "ast_hash": "7828bd11a52a567f22b4fa825dbe57bc",
+    "mtime": 1787873987.1996262,
+    "ast_hash": "c57222eb5ce332e5a205a2a14b3479b8",
     "semantic_hash": ""
   },
   "app/services/summary.py": {
-    "mtime": 1787850026.3759203,
-    "ast_hash": "3c37a834a904e572de4e537dd0507eed",
+    "mtime": 1787874064.758113,
+    "ast_hash": "c9da2c3da609934badefbb0659aedb73",
     "semantic_hash": ""
   },
   "app/static/js/app.js": {
@@ -55,8 +55,8 @@
     "semantic_hash": "a9210bf67debd9b64be1a442d9caf0f8"
   },
   "README.md": {
-    "mtime": 1787872723.094846,
-    "ast_hash": "fcdf9c39c24488b4af8f530ef044b5a1",
+    "mtime": 1787874195.6038697,
+    "ast_hash": "99d4ca328e5fd94eac0abffddf8ff293",
     "semantic_hash": ""
   },
   "app/templates/accounts.html": {
@@ -105,8 +105,8 @@
     "semantic_hash": ""
   },
   "app/templates/settings.html": {
-    "mtime": 1787872678.4952562,
-    "ast_hash": "55d08f7670a9059aee2bfcc38610ee6c",
+    "mtime": 1787874077.8715875,
+    "ast_hash": "095bb2e83c6a01bd965fef3083180cb1",
     "semantic_hash": ""
   },
   "app/templates/tags.html": {
@@ -120,8 +120,8 @@
     "semantic_hash": ""
   },
   "requirements.txt": {
-    "mtime": 1787846990.2539196,
-    "ast_hash": "93dfb6b5b7f19c6684e78f429ac50726",
+    "mtime": 1787874069.944011,
+    "ast_hash": "7ba7dfdc7ee305f71d49ce921a451d8b",
     "semantic_hash": ""
   },
   "tests/test_auth.py": {
@@ -140,13 +140,13 @@
     "semantic_hash": ""
   },
   "IMPLEMENTATIONS.md": {
-    "mtime": 1787872725.1917555,
-    "ast_hash": "f86773ef6b3edc9efa9e3caf732d9ab0",
+    "mtime": 1787872733.8760102,
+    "ast_hash": "badc90351ee406b15a83162d67d332e0",
     "semantic_hash": ""
   },
   "app/services/sync_worker.py": {
-    "mtime": 1787847208.809435,
-    "ast_hash": "477b16d2972b95a9d5088907b442edec",
+    "mtime": 1787874062.5094826,
+    "ast_hash": "5f73519180a8902208fec9c6b8320119",
     "semantic_hash": ""
   },
   "tests/test_imap_sync.py": {
@@ -195,8 +195,8 @@
     "semantic_hash": ""
   },
   "app/services/llm_text.py": {
-    "mtime": 1787835595.262683,
-    "ast_hash": "0fed9e8a0c1c962e694949595e585681",
+    "mtime": 1787874064.7585359,
+    "ast_hash": "9ed0fff22083b33d5c88ef1b5d78d141",
     "semantic_hash": ""
   },
   "tests/test_email_parser.py": {
@@ -232,6 +232,36 @@
   "app/templates/today.html": {
     "mtime": 1787872655.3607295,
     "ast_hash": "51b72f7360b94881645afb3c7c737e98",
+    "semantic_hash": ""
+  },
+  "app/services/ai_client.py": {
+    "mtime": 1787873976.1134458,
+    "ast_hash": "0c2bf8c0c2aa209129225ed9b07a267c",
+    "semantic_hash": ""
+  },
+  "app/services/gemini_client.py": {
+    "mtime": 1787874099.8548212,
+    "ast_hash": "c6d6ea3f7d170c8e640bf0dbf23d1c66",
+    "semantic_hash": ""
+  },
+  "app/services/token_budget.py": {
+    "mtime": 1787873917.1735477,
+    "ast_hash": "a748946e8b84bef2874f955869ec7858",
+    "semantic_hash": ""
+  },
+  "tests/test_ai_client.py": {
+    "mtime": 1787874099.5387375,
+    "ast_hash": "4878785e35069f029b08a0206a204ac7",
+    "semantic_hash": ""
+  },
+  "tests/test_gemini_client.py": {
+    "mtime": 1787874157.6279197,
+    "ast_hash": "3d5bde696857830a5c54b864e5528fbb",
+    "semantic_hash": ""
+  },
+  "tests/test_token_budget.py": {
+    "mtime": 1787874151.2261744,
+    "ast_hash": "911422e15396145a819d29523e4f74e1",
     "semantic_hash": ""
   }
 }

@@ -1,5 +1,5 @@
 """
-Symmetric encryption for stored IMAP passwords and Groq API keys.
+Symmetric encryption for stored IMAP passwords, Groq keys, and Gemini keys.
 
 Uses Fernet with a key derived from CREDENTIAL_ENCRYPTION_KEY or
 SECRET_KEY plus a per-purpose salt so session and credential keys differ.

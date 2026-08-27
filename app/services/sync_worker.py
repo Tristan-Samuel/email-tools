@@ -252,7 +252,7 @@ def _run_job_inner(
                 analyzed = analyze_fn(store, user_email, groq, report)
                 report(f"AI analysis finished — {analyzed} email(s) summarized.", 1, 1, phase="summarize")
             elif not groq.enabled:
-                report("No Groq key — mail is cached with quick local summaries. Add a key in Settings for a real AI brief.")
+                report("No AI key — mail is cached with quick local summaries. Add Gemini or Groq in Settings for a real AI brief.")
 
             if tag_apply_fn:
                 report("Applying tags…", 0, 1, phase="tag")
@@ -269,10 +269,10 @@ def _run_job_inner(
                 store.update_job(
                     job_id,
                     status="error",
-                    error="Add a Groq API key in Settings to analyze with AI.",
-                    message="Groq is not configured.",
+                    error="Add a Gemini or Groq API key in Settings to analyze with AI.",
+                    message="AI is not configured.",
                 )
-                report("Stopped — Groq API key missing.")
+                report("Stopped — no Gemini or Groq API key.")
                 return
             if analyze_fn:
                 report("Starting AI analysis…", 0, 1, phase="summarize")

@@ -1,4 +1,4 @@
-"""Shared text compaction for Groq prompts — no imports from groq_client or summary."""
+"""Shared text compaction for LLM prompts — no imports from provider clients."""
 from __future__ import annotations
 
 import re

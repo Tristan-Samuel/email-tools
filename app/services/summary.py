@@ -6,7 +6,7 @@ import re
 from collections import Counter
 from markupsafe import Markup
 
-from .groq_client import GroqClient
+from .ai_client import AiClient
 
 
 STOP_WORDS = {
@@ -248,9 +248,9 @@ def summarize_email_with_groq(
     sender: str,
     subject: str,
     body: str,
-    groq_client: GroqClient | None,
+    groq_client: AiClient | None,
 ) -> tuple[list[str], bool]:
-    """Return (bullets, ai_analyzed). ai_analyzed is True when Groq produced bullets."""
+    """Return (bullets, ai_analyzed). ai_analyzed is True when AI produced bullets."""
     if groq_client is not None and groq_client.enabled:
         groq_bullets = groq_client.summarize_email(sender=sender, subject=subject, body=body)
         if groq_bullets:
@@ -270,7 +270,7 @@ def build_email_record(
     message: dict,
     source_name: str,
     user_email: str,
-    groq_client: GroqClient | None = None,
+    groq_client: AiClient | None = None,
     source_account: str = "",
     *,
     from_me: bool = False,
@@ -336,7 +336,7 @@ def build_email_record(
 def build_digest(
     emails: list[dict],
     has_imap_accounts: bool = False,
-    groq_client: GroqClient | None = None,
+    groq_client: AiClient | None = None,
 ) -> dict:
     if not emails:
         if has_imap_accounts:

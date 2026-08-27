@@ -7,7 +7,7 @@
     <div class="page-header">
         <div>
             <h1 class="page-title">Settings</h1>
-            <p class="page-subtitle">Appearance, account password, and Groq AI.</p>
+            <p class="page-subtitle">Appearance, account password, and AI keys.</p>
         </div>
         <div class="page-header-actions">
             <a href="{{ url_for('main.accounts') }}" class="btn btn-ghost">Accounts</a>
@@ -150,9 +150,42 @@
     </section>
 
     <section class="panel settings-panel">
-        <h2 class="panel-title">Groq AI</h2>
+        <h2 class="panel-title">Gemini AI (primary)</h2>
         <p class="panel-hint">
-            Powers summaries, Today triage, and tag classification.
+            Google AI Studio powers summaries and Today triage. Mail is analyzed in large token-budget batches
+            to stay under Gemini rate limits (15 requests/min).
+            {% if has_gemini_key %}
+            <strong class="text-ok">✓ Key saved (encrypted).</strong>
+            {% endif %}
+        </p>
+        <form action="{{ url_for('main.settings') }}" method="post" class="settings-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="save_gemini">
+            <label class="form-label">
+                Gemini API Key
+                <input type="password" name="gemini_api_key" class="form-input"
+                       placeholder="AIza… (leave blank to keep existing)" autocomplete="off">
+            </label>
+            {% if active_model %}
+            <p class="model-badge">Default model: <code>{{ active_model }}</code></p>
+            {% endif %}
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Save Gemini Key</button>
+            </div>
+        </form>
+        {% if has_gemini_key %}
+        <form action="{{ url_for('main.settings') }}" method="post" style="margin-top:12px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="clear_gemini">
+            <button type="submit" class="btn btn-ghost">Clear Gemini Key</button>
+        </form>
+        {% endif %}
+    </section>
+
+    <section class="panel settings-panel">
+        <h2 class="panel-title">Groq AI (fallback)</h2>
+        <p class="panel-hint">
+            Used when Gemini is unavailable or daily token budget is exhausted.
             {% if has_groq_key %}
             <strong class="text-ok">✓ Key saved (encrypted).</strong>
             {% endif %}
@@ -177,8 +210,8 @@
                 <input type="password" name="groq_api_key" class="form-input"
                        placeholder="gsk_… (leave blank to keep existing)" autocomplete="off">
             </label>
-            {% if active_model %}
-            <p class="model-badge">Default model: <code>{{ active_model }}</code></p>
+            {% if groq_model %}
+            <p class="model-badge">Fallback model: <code>{{ groq_model }}</code></p>
             {% endif %}
             <div class="form-actions">
                 <button type="submit" class="btn btn-primary">Save Key</button>

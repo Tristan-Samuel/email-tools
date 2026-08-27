@@ -17,12 +17,17 @@ from werkzeug.utils import secure_filename
 
 from .services import crypto, imap_service, mail
 from .services.email_parser import parse_email_upload
+from .services.ai_client import (
+    AiClient,
+    is_fatal_auth_error,
+    is_rate_limit_error,
+    is_unreachable,
+)
+from .services.gemini_client import DEFAULT_GEMINI_MODEL, GeminiClient
 from .services.groq_client import (
     DEFAULT_CHAT_MODEL,
     GroqClient,
-    is_fatal_groq_auth_error,
-    is_groq_unreachable,
-    is_rate_limit_error,
+    resolve_chat_model,
 )
 from .services.summary import build_digest, build_email_record, build_important_items
 from .services import sync_worker, triage
@@ -260,28 +265,54 @@ def get_credential_key() -> str:
 
 
 def get_groq_client(user_email: str = "") -> GroqClient:
+    """Return the Groq client only (legacy / tests). Prefer get_ai_client()."""
+    return get_ai_client(user_email)._groq
+
+
+def get_ai_client(user_email: str = "") -> AiClient:
     email = user_email or getattr(g, "current_user_email", "")
-    user_api_key = ""
+    user_groq_key = ""
+    user_gemini_key = ""
     if email:
         try:
-            stored = get_store().get_setting(email, "groq_api_key")
-            if stored:
-                user_api_key, _ = crypto.decrypt_with_fallback(
-                    stored, _credential_keys(), purpose="groq"
+            stored_groq = get_store().get_setting(email, "groq_api_key")
+            if stored_groq:
+                user_groq_key, _ = crypto.decrypt_with_fallback(
+                    stored_groq, _credential_keys(), purpose="groq"
+                )
+            stored_gemini = get_store().get_setting(email, "gemini_api_key")
+            if stored_gemini:
+                user_gemini_key, _ = crypto.decrypt_with_fallback(
+                    stored_gemini, _credential_keys(), purpose="gemini"
                 )
         except Exception:
             pass
-    api_key = user_api_key or current_app.config.get("GROQ_API_KEY", "")
-    client = GroqClient(
-        api_key=api_key,
+    groq_key = user_groq_key or current_app.config.get("GROQ_API_KEY", "")
+    gemini_key = (
+        user_gemini_key
+        or current_app.config.get("GEMINI_API_KEY", "")
+        or current_app.config.get("GOOGLE_API_KEY", "")
+    )
+    groq = GroqClient(
+        api_key=groq_key,
         default_model=current_app.config.get("GROQ_DEFAULT_MODEL", DEFAULT_CHAT_MODEL),
     )
-    if api_key:
-        cache_key = _groq_model_cache_key(api_key)
+    gemini = GeminiClient(
+        api_key=gemini_key,
+        default_model=current_app.config.get("GEMINI_DEFAULT_MODEL", DEFAULT_GEMINI_MODEL),
+    )
+    if groq_key:
+        cache_key = _groq_model_cache_key(groq_key)
         cached = current_app.extensions.get(cache_key)
         if cached:
-            client._cached_best_model = cached
+            groq._cached_best_model = cached
+    client = AiClient(gemini=gemini, groq=groq)
     return client
+
+
+def _cache_ai_model(ai: AiClient) -> None:
+    if ai.last_provider == "groq" and ai._groq.enabled and ai._groq._cached_best_model:
+        _cache_groq_model(ai._groq)
 
 
 def _cache_groq_model(client: GroqClient) -> None:
@@ -395,14 +426,14 @@ def sync_one_account(
     store,
     account: dict,
     user_email: str,
-    groq_client: GroqClient,
+    groq_client: AiClient,
     limit: int | None = None,
     since_date: datetime.date | None = None,
     backfill_only: bool = False,
     on_progress: Callable[..., None] | None = None,
 ) -> tuple[int, str | None]:
     """Fetch and upsert one account. Heuristic summaries only — AI runs after sync."""
-    del groq_client  # IMAP ingest stays fast; Groq runs in the analyze phase.
+    del groq_client  # IMAP ingest stays fast; AI runs in the analyze phase.
 
     def log(
         message: str,
@@ -529,61 +560,73 @@ def sync_one_account(
     return total_imported, None
 
 
+def _persist_email_analysis(
+    store,
+    user_email: str,
+    email: dict,
+    data: dict,
+    *,
+    vip_patterns: list[str],
+    today: datetime.date,
+) -> None:
+    sender = email.get("sender") or ""
+    vip = any(triage.sender_matches_pattern(sender, p) for p in vip_patterns)
+    intent = data.get("intent") or "fyi"
+    if vip and intent == "fyi":
+        intent = "i_owe"
+    urgency = triage.compute_urgency(
+        intent=intent,
+        due_at=data.get("due_at"),
+        received_at=email.get("received_at"),
+        vip=vip,
+        today=today,
+    )
+    store.update_email_analysis(
+        email["email_id"],
+        user_email,
+        bullet_summary=data.get("bullets") or [],
+        intent=intent,
+        intent_reason=data.get("reason") or "",
+        due_at=data.get("due_at"),
+        urgency=urgency,
+        ai_analyzed=True,
+    )
+
+
 def analyze_pending_emails(
     store,
     user_email: str,
-    groq: GroqClient,
+    ai: AiClient,
     on_progress: Callable[..., None],
     limit: int = 400,
 ) -> int:
-    """Write Groq summaries + intent for unanalyzed mail. Return how many succeeded."""
+    """Write AI summaries + intent for unanalyzed mail. Return how many succeeded."""
     emails = store.list_unanalyzed_emails(user_email, limit)
     if not emails:
         on_progress("All cached emails already have AI summaries.")
         rebuild_thread_states(store, user_email)
         return 0
-    if not groq.enabled:
+    if not ai.enabled:
         count = analyze_heuristic_batch(store, user_email, limit)
         on_progress(f"Heuristic triage applied to {count} email(s).")
         return count
 
     total = len(emails)
-    model_name = groq.select_max_context_model()
-    on_progress(f"Using Groq model {model_name}…", 0, total, phase="summarize")
-    _cache_groq_model(groq)
+    model_name = ai.select_max_context_model()
+    provider = "Gemini" if ai.gemini_enabled else "Groq"
+    on_progress(f"Using {provider} model {model_name}…", 0, total, phase="summarize")
+    _cache_ai_model(ai)
     analyzed = 0
-    batch_size = 8
     vip_patterns = store.list_sender_rules(user_email, "vip")
     today = datetime.date.today()
-    for start in range(0, total, batch_size):
-        check_cancelled(store)
-        chunk = emails[start : start + batch_size]
-        on_progress(
-            f"AI analyzing {start + 1}–{min(start + batch_size, total)} of {total}…",
-            min(start + batch_size, total),
-            total,
-            phase="summarize",
-        )
-        results = groq.analyze_emails_batch(chunk, batch_size=batch_size)
-        if groq.last_model_used and groq.last_model_used != model_name:
-            model_name = groq.last_model_used
-            on_progress(f"Switched to Groq model {model_name}…")
-        if not results and groq.last_error:
-            on_progress(f"Groq error: {groq.last_error}")
-            if is_fatal_groq_auth_error(groq.last_error):
-                on_progress("Stopping analysis — Groq rejected this API key.")
-                return analyzed
-            if is_groq_unreachable(groq.last_error):
-                on_progress("Stopping analysis — Groq is unreachable (network/DNS).")
-                return analyzed
-            if is_rate_limit_error(groq.last_error):
-                on_progress("Rate limited — switching Groq model and retrying smaller requests.")
-            if groq.last_error == "Cancelled.":
-                raise JobCancelled()
+
+    def process_chunk(chunk: list[dict], results: dict[str, dict]) -> int:
+        nonlocal analyzed
+        count = 0
         for email in chunk:
             data = results.get(email["email_id"])
             if not data:
-                bullets = groq.summarize_email(
+                bullets = ai.summarize_email(
                     sender=email.get("sender") or "",
                     subject=email.get("subject") or "",
                     body=email.get("body") or "",
@@ -597,55 +640,107 @@ def analyze_pending_emails(
                         "tags": [],
                     }
             if not data or not data.get("bullets"):
-                if groq.last_error and is_fatal_groq_auth_error(groq.last_error):
-                    on_progress(f"Groq error: {groq.last_error}")
-                    on_progress("Stopping analysis — Groq rejected this API key.")
-                    return analyzed
+                if ai.last_error and is_fatal_auth_error(ai.last_error):
+                    on_progress(f"AI error: {ai.last_error}")
+                    on_progress("Stopping analysis — API key rejected.")
+                    return -1
                 continue
-            sender = email.get("sender") or ""
-            vip = any(triage.sender_matches_pattern(sender, p) for p in vip_patterns)
-            intent = data.get("intent") or "fyi"
-            if vip and intent == "fyi":
-                intent = "i_owe"
-            urgency = triage.compute_urgency(
-                intent=intent,
-                due_at=data.get("due_at"),
-                received_at=email.get("received_at"),
-                vip=vip,
-                today=today,
-            )
-            store.update_email_analysis(
-                email["email_id"],
-                user_email,
-                bullet_summary=data.get("bullets") or [],
-                intent=intent,
-                intent_reason=data.get("reason") or "",
-                due_at=data.get("due_at"),
-                urgency=urgency,
-                ai_analyzed=True,
+            _persist_email_analysis(
+                store, user_email, email, data, vip_patterns=vip_patterns, today=today
             )
             analyzed += 1
-        _cache_groq_model(groq)
+            count += 1
+        return count
+
+    if ai.gemini_enabled:
+        processed = 0
+        gemini_batches = ai.analyze_with_token_packing(emails, store, user_email)
+        for packed, results, _tokens in gemini_batches:
+            check_cancelled(store)
+            batch_end = processed + len(packed)
+            on_progress(
+                f"AI analyzing {processed + 1}–{batch_end} of {total} "
+                f"({len(packed)} per request)…",
+                batch_end,
+                total,
+                phase="summarize",
+            )
+            if ai.last_model_used and ai.last_model_used != model_name:
+                model_name = ai.last_model_used
+                on_progress(f"Using Gemini model {model_name}…")
+            if not results and ai.last_error:
+                on_progress(f"Gemini error: {ai.last_error}")
+                if ai.last_error == "Cancelled.":
+                    raise JobCancelled()
+            wrote = process_chunk(packed, results)
+            if wrote < 0:
+                return analyzed
+            processed += len(packed)
+            _cache_ai_model(ai)
+
+        if not ai.gemini_enabled and ai.groq_enabled:
+            remaining = emails[processed:]
+            if remaining:
+                on_progress("Switching to Groq for remaining mail…")
+                emails = remaining
+                total = len(emails)
+                processed = 0
+            else:
+                emails = []
+        else:
+            emails = []
+
+    batch_size = 8
+    for start in range(0, len(emails), batch_size):
+        check_cancelled(store)
+        chunk = emails[start : start + batch_size]
+        on_progress(
+            f"AI analyzing {start + 1}–{min(start + batch_size, len(emails))} of {len(emails)}…",
+            min(start + batch_size, len(emails)),
+            len(emails),
+            phase="summarize",
+        )
+        results = ai.analyze_emails_batch(chunk, batch_size=batch_size)
+        if ai.last_model_used and ai.last_model_used != model_name:
+            model_name = ai.last_model_used
+            on_progress(f"Switched to {ai.last_provider} model {model_name}…")
+        if not results and ai.last_error:
+            on_progress(f"AI error: {ai.last_error}")
+            if is_fatal_auth_error(ai.last_error):
+                on_progress("Stopping analysis — API key rejected.")
+                return analyzed
+            if is_unreachable(ai.last_error):
+                on_progress("Stopping analysis — AI provider is unreachable (network/DNS).")
+                return analyzed
+            if is_rate_limit_error(ai.last_error):
+                on_progress("Rate limited — retrying with smaller batches or fallback provider.")
+            if ai.last_error == "Cancelled.":
+                raise JobCancelled()
+        wrote = process_chunk(chunk, results)
+        if wrote < 0:
+            return analyzed
+        _cache_ai_model(ai)
+
     rebuild_thread_states(store, user_email)
-    if analyzed == 0 and groq.last_error:
-        on_progress(f"No emails could be analyzed. {groq.last_error}")
+    if analyzed == 0 and ai.last_error:
+        on_progress(f"No emails could be analyzed. {ai.last_error}")
     else:
         on_progress(f"Analyzed {analyzed} of {total}.", total, total, phase="summarize")
     return analyzed
 
 
-def refresh_cached_digest(store, user_email: str, groq: GroqClient | None) -> None:
-    """Store an inbox brief so the dashboard does not wait on Groq."""
+def refresh_cached_digest(store, user_email: str, ai: AiClient | None) -> None:
+    """Store an inbox brief so the dashboard does not wait on AI."""
     emails = store.list_emails(limit=40, user_email=user_email)
     accounts = store.list_imap_accounts(user_email)
     digest = build_digest(
         emails,
         has_imap_accounts=bool(accounts),
-        groq_client=groq,
+        groq_client=ai,
     )
     store.set_kv(user_email, "inbox_digest", json.dumps(digest))
-    if groq is not None and groq.enabled:
-        _cache_groq_model(groq)
+    if ai is not None and ai.enabled:
+        _cache_ai_model(ai)
 
 
 @bp.route("/login", methods=["GET", "POST"])
@@ -855,7 +950,7 @@ def today():
 
     rebuild_thread_states(store, user_email)
     view = build_today_view(store, user_email, source_account=source_account)
-    groq = get_groq_client(user_email)
+    ai = get_ai_client(user_email)
     ai_analyzed, ai_pending = store.count_ai_stats(user_email)
 
     thread_ids = [row["thread_id"] for row in view["do_now"] + view["waiting"]]
@@ -873,7 +968,7 @@ def today():
         if draft_email and draft_reply:
             mailto_link = _mailto_draft(draft_email, draft_reply)
 
-    if groq.enabled and ai_pending > 0 and store.get_active_job(user_email) is None:
+    if ai.enabled and ai_pending > 0 and store.get_active_job(user_email) is None:
         _queue_job(user_email, "reanalyze", f"Analyze {ai_pending} email(s) with AI")
 
     return render_template(
@@ -886,7 +981,7 @@ def today():
         fyi_ranked_more=view["fyi_ranked_more"],
         open_action_count=view["open_action_count"],
         source_account=source_account,
-        groq_available=groq.enabled,
+        groq_available=ai.enabled,
         ai_analyzed=ai_analyzed,
         ai_pending=ai_pending,
         email_tags_map=email_tags_map,
@@ -979,19 +1074,19 @@ def today_draft(email_id: str):
         flash("Email not found.", "error")
         return redirect(url_for("main.today"))
 
-    groq = get_groq_client(user_email)
-    if not groq.enabled:
-        flash("Add a Groq API key in Settings to draft replies.", "error")
+    ai = get_ai_client(user_email)
+    if not ai.enabled:
+        flash("Add a Gemini or Groq API key in Settings to draft replies.", "error")
         return redirect(url_for("main.today"))
 
     reason = (request.form.get("reason") or "").strip()
-    draft = groq.draft_reply(
+    draft = ai.draft_reply(
         sender=email["sender"],
         subject=email["subject"],
         body=email["body"],
         reason=reason,
     )
-    _cache_groq_model(groq)
+    _cache_ai_model(ai)
     if not draft:
         flash("Could not generate a draft reply.", "error")
         return redirect(url_for("main.today"))
@@ -1039,7 +1134,7 @@ def upload():
         return redirect(url_for("main.today"))
 
     store = get_store()
-    groq_client = get_groq_client()
+    ai = get_ai_client()
     user_email = g.current_user_email
     imported_count = 0
     upload_folder = Path(current_app.config["UPLOAD_FOLDER"])
@@ -1089,10 +1184,10 @@ def email_detail(email_id: str):
         flash("That email could not be found.", "error")
         return redirect(url_for("main.inbox"))
 
-    groq = get_groq_client()
+    ai = get_ai_client()
     auto_analyzed = False
-    if groq.enabled and not email.get("ai_analyzed"):
-        bullets = groq.summarize_email(
+    if ai.enabled and not email.get("ai_analyzed"):
+        bullets = ai.summarize_email(
             sender=email["sender"],
             subject=email["subject"],
             body=email["body"],
@@ -1108,19 +1203,19 @@ def email_detail(email_id: str):
     assigned_tag_ids = {t["id"] for t in tags}
     thread_emails = store.list_thread_emails(email.get("thread_id", ""), user_email)
     draft_reply = None
-    if groq.enabled and request.args.get("draft") == "1":
-        draft_reply = groq.draft_reply(
+    if ai.enabled and request.args.get("draft") == "1":
+        draft_reply = ai.draft_reply(
             sender=email["sender"],
             subject=email["subject"],
             body=email["body"],
         )
-        _cache_groq_model(groq)
+        _cache_ai_model(ai)
     if not email.get("is_read"):
         store.set_email_read(email_id, user_email, True)
     return render_template(
         "email_detail.html",
         email=email,
-        groq_available=groq.enabled,
+        groq_available=ai.enabled,
         auto_analyzed=auto_analyzed,
         tags=tags,
         all_tags=all_tags,
@@ -1170,12 +1265,12 @@ def email_reanalyze(email_id: str):
         flash("Email not found.", "error")
         return redirect(url_for("main.inbox"))
 
-    groq = get_groq_client()
-    if not groq.enabled:
-        flash("Add a Groq API key in Settings to enable AI analysis.", "error")
+    ai = get_ai_client()
+    if not ai.enabled:
+        flash("Add a Gemini or Groq API key in Settings to enable AI analysis.", "error")
         return redirect(url_for("main.email_detail", email_id=email_id))
 
-    bullets = groq.summarize_email(
+    bullets = ai.summarize_email(
         sender=email["sender"],
         subject=email["subject"],
         body=email["body"],
@@ -1270,19 +1365,19 @@ def email_draft_reply(email_id: str):
         flash("Email not found.", "error")
         return redirect(url_for("main.inbox"))
 
-    groq = get_groq_client()
-    if not groq.enabled:
-        flash("Add a Groq API key in Settings to draft replies.", "error")
+    ai = get_ai_client()
+    if not ai.enabled:
+        flash("Add a Gemini or Groq API key in Settings to draft replies.", "error")
         return redirect(url_for("main.email_detail", email_id=email_id))
 
     reason = (request.form.get("reason") or "").strip()
-    draft = groq.draft_reply(
+    draft = ai.draft_reply(
         sender=email["sender"],
         subject=email["subject"],
         body=email["body"],
         reason=reason,
     )
-    _cache_groq_model(groq)
+    _cache_ai_model(ai)
     if not draft:
         flash("Could not generate a draft reply.", "error")
         return redirect(url_for("main.email_detail", email_id=email_id))
@@ -1583,17 +1678,17 @@ def search_page():
             if not emails:
                 ai_no_candidates = True
             else:
-                groq = get_groq_client()
-                if groq.enabled:
-                    ai_answer = groq.answer_about_emails(query, emails)
+                ai = get_ai_client()
+                if ai.enabled:
+                    ai_answer = ai.answer_about_emails(query, emails)
                     if ai_answer is None:
                         flash("AI search failed — check your Groq key.", "error")
                 else:
-                    flash("Add a Groq API key in Settings to use AI search.", "error")
+                    flash("Add a Gemini or Groq API key in Settings to use AI search.", "error")
 
     categories = store.get_categories(user_email=user_email)
     tags = store.list_tags(user_email)
-    groq_available = get_groq_client().enabled
+    groq_available = get_ai_client().enabled
     return render_template(
         "search.html",
         emails=emails,
@@ -1738,7 +1833,7 @@ def inbox():
         bulk_undo_ids=session.pop("bulk_undo_ids", None),
         email_tags_map=email_tags_map,
         all_tags=tags,
-        groq_available=get_groq_client(user_email).enabled,
+        groq_available=get_ai_client(user_email).enabled,
         ai_pending=store.count_ai_stats(user_email)[1],
         inbox_row_order=_inbox_row_order(store, user_email),
         inbox_summary_size=_inbox_summary_size(store, user_email),
@@ -1823,10 +1918,25 @@ def settings():
             flash("Groq API key cleared.", "success")
             return redirect(url_for("main.settings"))
 
+        if action == "clear_gemini":
+            store.save_setting(user_email, "gemini_api_key", "")
+            flash("Gemini API key cleared.", "success")
+            return redirect(url_for("main.settings"))
+
+        if action == "save_gemini":
+            gemini_key = (request.form.get("gemini_api_key") or "").strip()
+            if gemini_key:
+                encrypted = crypto.encrypt(gemini_key, get_credential_key(), purpose="gemini")
+                store.save_setting(user_email, "gemini_api_key", encrypted)
+                flash("Gemini API key saved.", "success")
+            else:
+                flash("Settings saved (Gemini key unchanged).", "success")
+            return redirect(url_for("main.settings"))
+
         if action == "reanalyze_unanalyzed":
-            groq = get_groq_client(user_email)
-            if not groq.enabled:
-                flash("Add a Groq API key to re-analyze emails.", "error")
+            ai = get_ai_client(user_email)
+            if not ai.enabled:
+                flash("Add a Gemini or Groq API key to re-analyze emails.", "error")
             else:
                 pending = store.count_ai_stats(user_email)[1]
                 job_id, queue_err = _queue_job(
@@ -1845,23 +1955,27 @@ def settings():
             encrypted = crypto.encrypt(groq_key, get_credential_key(), purpose="groq")
             store.save_setting(user_email, "groq_api_key", encrypted)
             flash("Groq API key saved.", "success")
-        else:
+        elif action == "save_groq":
             flash("Settings saved (Groq key unchanged).", "success")
         return redirect(url_for("main.settings"))
 
     has_groq_key = bool(store.get_setting(user_email, "groq_api_key"))
-    active_model = current_app.config.get("GROQ_DEFAULT_MODEL", DEFAULT_CHAT_MODEL)
+    has_gemini_key = bool(store.get_setting(user_email, "gemini_api_key"))
+    active_model = current_app.config.get("GEMINI_DEFAULT_MODEL", DEFAULT_GEMINI_MODEL)
+    groq_model = current_app.config.get("GROQ_DEFAULT_MODEL", DEFAULT_CHAT_MODEL)
     has_app_password = bool(store.get_app_password_hash(user_email))
     ai_analyzed, ai_pending = store.count_ai_stats(user_email)
     sender_rules = store.list_sender_rule_rows(user_email)
     return render_template(
         "settings.html",
         has_groq_key=has_groq_key,
+        has_gemini_key=has_gemini_key,
         active_model=active_model,
+        groq_model=groq_model,
         has_app_password=has_app_password,
         ai_analyzed=ai_analyzed,
         ai_pending=ai_pending,
-        groq_available=get_groq_client(user_email).enabled,
+        groq_available=get_ai_client(user_email).enabled,
         inbox_row_order=_inbox_row_order(store, user_email),
         inbox_summary_size=_inbox_summary_size(store, user_email),
         search_sort=_search_sort(store, user_email),
@@ -1885,7 +1999,7 @@ def api_jobs():
         return auth
     store = get_store()
     user_email = g.current_user_email
-    groq = get_groq_client(user_email)
+    ai = get_ai_client(user_email)
     analyzed, pending = store.count_ai_stats(user_email)
     return jsonify(
         {
@@ -1895,7 +2009,7 @@ def api_jobs():
             "ai": {
                 "analyzed": analyzed,
                 "pending": pending,
-                "groq_enabled": groq.enabled,
+                "groq_enabled": ai.enabled,
             },
         }
     )
@@ -1930,9 +2044,9 @@ def analyze_now():
 
     store = get_store()
     user_email = g.current_user_email
-    groq = get_groq_client(user_email)
-    if not groq.enabled:
-        flash("Add a Groq API key in Settings to generate AI summaries.", "error")
+    ai = get_ai_client(user_email)
+    if not ai.enabled:
+        flash("Add a Gemini or Groq API key in Settings to generate AI summaries.", "error")
         return redirect(url_for("main.settings"))
 
     pending = store.count_ai_stats(user_email)[1]
@@ -2013,7 +2127,7 @@ def hidden():
     store = get_store()
     user_email = g.current_user_email
     emails = store.list_emails(user_email=user_email, only_hidden=True, exclude_hidden=False, limit=500)
-    groq_available = get_groq_client(user_email).enabled
+    groq_available = get_ai_client(user_email).enabled
     confirm_tags = [
         t for t in store.list_tags(user_email) if t["hide_matching"] and t.get("ai_confirm")
     ]
@@ -2033,9 +2147,9 @@ def hidden_review_ai():
 
     store = get_store()
     user_email = g.current_user_email
-    groq = get_groq_client(user_email)
-    if not groq.enabled:
-        flash("Add a Groq API key in Settings to review hidden mail with AI.", "error")
+    ai = get_ai_client(user_email)
+    if not ai.enabled:
+        flash("Add a Gemini or Groq API key in Settings to review hidden mail with AI.", "error")
         return redirect(url_for("main.hidden"))
 
     confirm_tags = [
@@ -2142,7 +2256,7 @@ def tags():
         return redirect(url_for("main.tags"))
 
     user_tags = store.list_tags(user_email)
-    groq_available = get_groq_client().enabled
+    groq_available = get_ai_client().enabled
     return render_template("tags.html", tags=user_tags, groq_available=groq_available)
 
 
@@ -2163,9 +2277,9 @@ def tags_edit(tag_id: int):
         action = request.form.get("action", "save")
 
         if action == "apply_ai":
-            groq = get_groq_client()
-            if not groq.enabled:
-                flash("Add a Groq API key in Settings to use AI tagging.", "error")
+            ai = get_ai_client()
+            if not ai.enabled:
+                flash("Add a Gemini or Groq API key in Settings to use AI tagging.", "error")
             elif not tag["use_ai"]:
                 flash("Enable AI for this tag before applying.", "error")
             else:
@@ -2210,7 +2324,7 @@ def tags_edit(tag_id: int):
             )
             return redirect(url_for("main.tags"))
 
-    groq_available = get_groq_client().enabled
+    groq_available = get_ai_client().enabled
     return render_template("tags_edit.html", tag=tag, groq_available=groq_available)
 
 
@@ -2252,9 +2366,9 @@ def tags_apply_ai(tag_id: int):
         return redirect(url_for("main.tags"))
 
     store.clear_tag_scans_for_tag(tag_id)
-    groq = get_groq_client()
-    if not groq.enabled:
-        flash("Add a Groq API key in Settings to use AI tagging.", "error")
+    ai = get_ai_client()
+    if not ai.enabled:
+        flash("Add a Gemini or Groq API key in Settings to use AI tagging.", "error")
         return redirect(url_for("main.tags"))
 
     job_id, queue_err = _queue_job(
@@ -2291,7 +2405,7 @@ def register_routes(app):
     start_sync_worker(
         app,
         sync_one_account,
-        get_groq_client,
+        get_ai_client,
         tag_apply_fn=_apply_all_tags,
         analyze_fn=analyze_pending_emails,
         digest_fn=refresh_cached_digest,
@@ -2348,9 +2462,9 @@ def _apply_hide_ai_confirm(
     review_hidden: bool = False,
 ) -> int:
     """Confirm hide-tag matches with Groq before hiding (or unhide false positives)."""
-    groq = get_groq_client(user_email)
-    groq.cancel_check = lambda: current_job_is_cancelled(store)
-    if not groq.enabled:
+    ai = get_ai_client(user_email)
+    ai.cancel_check = lambda: current_job_is_cancelled(store)
+    if not ai.enabled:
         return 0
 
     all_tags = store.list_tags(user_email)
@@ -2404,15 +2518,15 @@ def _apply_hide_ai_confirm(
                 if prior == _HIDE_SCAN_YES:
                     should_hide = True
                 continue
-            hide_it = groq.confirm_hide_email(
+            hide_it = ai.confirm_hide_email(
                 tag["name"],
                 email.get("sender") or "",
                 email.get("subject") or "",
                 email.get("body") or "",
             )
-            if groq.last_error and is_groq_unreachable(groq.last_error):
+            if ai.last_error and is_unreachable(ai.last_error):
                 if on_progress:
-                    on_progress(f"Groq unreachable — skipping hide review. {groq.last_error}")
+                    on_progress(f"AI unreachable — skipping hide review. {ai.last_error}")
                 return changed
             verdict = _HIDE_SCAN_YES if hide_it else _HIDE_SCAN_NO
             store.save_tag_scan(email["email_id"], tag_id, verdict)
@@ -2425,7 +2539,7 @@ def _apply_hide_ai_confirm(
             store.set_email_hidden(email["email_id"], user_email, False, by_tag=True)
         changed += 1
 
-    _cache_groq_model(groq)
+    _cache_ai_model(ai)
     return changed
 
 
@@ -2441,9 +2555,9 @@ def _apply_all_ai_tags(
     user_email: str,
     on_progress: Callable[..., None] | None = None,
 ) -> int:
-    groq = get_groq_client(user_email)
-    groq.cancel_check = lambda: current_job_is_cancelled(store)
-    if not groq.enabled:
+    ai = get_ai_client(user_email)
+    ai.cancel_check = lambda: current_job_is_cancelled(store)
+    if not ai.enabled:
         return 0
     tags = [t for t in store.list_tags(user_email) if t["use_ai"]]
     if not tags:
@@ -2480,10 +2594,10 @@ def _apply_all_ai_tags(
                 unscanned_map[email["email_id"]] = unscanned
         if not pending:
             continue
-        matches = groq.classify_emails_for_tags(pending, tags)
-        if groq.last_error and is_groq_unreachable(groq.last_error):
+        matches = ai.classify_emails_for_tags(pending, tags)
+        if ai.last_error and is_unreachable(ai.last_error):
             if on_progress:
-                on_progress(f"Groq unreachable — skipping AI tags. {groq.last_error}")
+                on_progress(f"AI unreachable — skipping AI tags. {ai.last_error}")
             break
         for email in pending:
             names = matches.get(email["email_id"]) or []
@@ -2501,5 +2615,5 @@ def _apply_all_ai_tags(
                         store.set_email_hidden(email["email_id"], user_email, True, by_tag=True)
             if new_ids != existing_ids:
                 store.set_email_tags(email["email_id"], list(new_ids))
-    _cache_groq_model(groq)
+    _cache_ai_model(ai)
     return tagged
