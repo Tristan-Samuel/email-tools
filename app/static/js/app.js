@@ -82,6 +82,13 @@ function addTagRule(containerId) {
 window.addRule = addTagRule;
 window.addTagRule = addTagRule;
 
+const ACTIVITY_PHASES = [
+    { key: "fetch", label: "Fetch" },
+    { key: "summarize", label: "Summarize" },
+    { key: "tag", label: "Tag" },
+    { key: "brief", label: "Brief" },
+];
+
 function initActivityPanel() {
     const panel = document.getElementById("activity-panel");
     if (!panel) return;
@@ -149,9 +156,44 @@ function initActivityPanel() {
         if (fillEl) fillEl.style.width = `${percent}%`;
         if (progressEl) progressEl.setAttribute("aria-valuenow", String(percent));
         if (countsEl) {
-            if (job && job.total_steps) countsEl.textContent = `${job.current_step} / ${job.total_steps}`;
-            else countsEl.textContent = "";
+            if (job && job.phases) {
+                const active = ACTIVITY_PHASES.find((phase) => {
+                    const entry = job.phases[phase.key] || {};
+                    const total = Number(entry.total || 0);
+                    const current = Number(entry.current || 0);
+                    return total > 0 && current < total;
+                });
+                if (active) {
+                    const entry = job.phases[active.key] || {};
+                    countsEl.textContent = `${entry.current || 0} / ${entry.total || 0} (${active.label})`;
+                } else if (job.total_steps) {
+                    countsEl.textContent = `${job.current_step} / ${job.total_steps}`;
+                } else {
+                    countsEl.textContent = `${percent}%`;
+                }
+            } else if (job && job.total_steps) {
+                countsEl.textContent = `${job.current_step} / ${job.total_steps}`;
+            } else {
+                countsEl.textContent = "";
+            }
         }
+        ACTIVITY_PHASES.forEach((phase) => {
+            const fill = document.querySelector(`[data-phase-fill="${phase.key}"]`);
+            const counts = document.querySelector(`[data-phase-counts="${phase.key}"]`);
+            const row = document.querySelector(`.activity-phase-row[data-phase="${phase.key}"]`);
+            const entry = job && job.phases ? job.phases[phase.key] || {} : {};
+            const total = Number(entry.total || 0);
+            const current = Number(entry.current || 0);
+            const phasePct = total > 0 ? Math.min(100, Math.round((current * 100) / total)) : 0;
+            if (fill) fill.style.width = `${phasePct}%`;
+            if (counts) {
+                counts.textContent = total > 0 ? `${current} / ${total}` : "";
+            }
+            if (row) {
+                row.classList.toggle("is-active", busy && total > 0 && current < total);
+                row.classList.toggle("is-done", total > 0 && current >= total);
+            }
+        });
         if (logEl && job && Array.isArray(job.log)) {
             logEl.innerHTML = job.log.map((line) => `<li>${escapeHtml(line)}</li>`).join("");
         }

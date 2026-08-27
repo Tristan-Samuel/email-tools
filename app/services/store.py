@@ -6,6 +6,26 @@ import uuid
 from pathlib import Path
 
 
+JOB_PHASE_WEIGHTS: dict[str, int] = {
+    "fetch": 50,
+    "summarize": 35,
+    "tag": 10,
+    "brief": 5,
+}
+
+
+def job_percent_from_phases(phases: dict) -> int:
+    """Weighted percent across fetch / summarize / tag / brief meters."""
+    total = 0.0
+    for phase, weight in JOB_PHASE_WEIGHTS.items():
+        entry = phases.get(phase) or {}
+        current = int(entry.get("current") or 0)
+        phase_total = int(entry.get("total") or 0)
+        if phase_total > 0:
+            total += weight * min(current, phase_total) / phase_total
+    return min(100, int(total))
+
+
 class EmailStore:
     def __init__(self, database_path: Path):
         self.database_path = Path(database_path)
@@ -312,6 +332,13 @@ class EmailStore:
             """
         )
 
+    def _migrate_v7(self, connection: sqlite3.Connection) -> None:
+        """Per-phase job progress for fetch / summarize / tag / brief meters."""
+        if "progress_json" not in self._table_columns(connection, "user_jobs"):
+            connection.execute(
+                "ALTER TABLE user_jobs ADD COLUMN progress_json TEXT NOT NULL DEFAULT '{}'"
+            )
+
     def initialize(self) -> None:
         with self._connect() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -335,9 +362,13 @@ class EmailStore:
                 self._migrate_v5(connection)
                 connection.execute("PRAGMA user_version = 5")
                 version = 5
-            if version < 6:
-                self._migrate_v6(connection)
-                connection.execute("PRAGMA user_version = 6")
+        if version < 6:
+            self._migrate_v6(connection)
+            connection.execute("PRAGMA user_version = 6")
+            version = 6
+        if version < 7:
+            self._migrate_v7(connection)
+            connection.execute("PRAGMA user_version = 7")
             try:
                 connection.execute("SELECT email_id FROM email_search LIMIT 0")
                 self.fts_enabled = True
@@ -1197,14 +1228,24 @@ class EmailStore:
             job["log"] = json.loads(job.pop("log_json") or "[]")
         except (TypeError, ValueError):
             job["log"] = []
-        total = int(job.get("total_steps") or 0)
-        current = int(job.get("current_step") or 0)
-        if total > 0:
-            job["percent"] = min(100, int(current * 100 / total))
-        elif job.get("status") == "done":
-            job["percent"] = 100
+        try:
+            phases = json.loads(job.pop("progress_json") or "{}")
+        except (TypeError, ValueError):
+            phases = {}
+        if not isinstance(phases, dict):
+            phases = {}
+        job["phases"] = phases
+        if phases:
+            job["percent"] = job_percent_from_phases(phases)
         else:
-            job["percent"] = 0
+            total = int(job.get("total_steps") or 0)
+            current = int(job.get("current_step") or 0)
+            if total > 0:
+                job["percent"] = min(100, int(current * 100 / total))
+            elif job.get("status") == "done":
+                job["percent"] = 100
+            else:
+                job["percent"] = 0
         return job
 
     def job_was_cancelled(self, job_id: str) -> bool:
@@ -1261,7 +1302,7 @@ class EmailStore:
         return job_id
 
     def update_job(self, job_id: str, **fields: object) -> None:
-        allowed = {"status", "label", "current_step", "total_steps", "message", "error"}
+        allowed = {"status", "label", "current_step", "total_steps", "message", "error", "progress_json"}
         assignments: list[str] = []
         values: list[object] = []
         for key, value in fields.items():
@@ -1280,6 +1321,52 @@ class EmailStore:
             ).fetchone()
             if row is None or row["status"] == "cancelled":
                 return
+            connection.execute(
+                f"UPDATE user_jobs SET {', '.join(assignments)} WHERE id = ?",
+                values,
+            )
+
+    def update_job_phase(
+        self,
+        job_id: str,
+        phase: str,
+        current: int,
+        total: int,
+        message: str | None = None,
+    ) -> None:
+        """Update one phase meter and recompute weighted job percent."""
+        if phase not in JOB_PHASE_WEIGHTS:
+            return
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT progress_json, status FROM user_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None or row["status"] == "cancelled":
+                return
+            try:
+                phases = json.loads(row["progress_json"] or "{}")
+            except (TypeError, ValueError):
+                phases = {}
+            if not isinstance(phases, dict):
+                phases = {}
+            phases[phase] = {"current": max(0, current), "total": max(0, total)}
+            percent = job_percent_from_phases(phases)
+            assignments = [
+                "progress_json = ?",
+                "current_step = ?",
+                "total_steps = ?",
+                "updated_at = CURRENT_TIMESTAMP",
+            ]
+            values: list[object] = [
+                json.dumps(phases),
+                percent,
+                100,
+            ]
+            if message is not None:
+                assignments.insert(0, "message = ?")
+                values.insert(0, message)
+            values.append(job_id)
             connection.execute(
                 f"UPDATE user_jobs SET {', '.join(assignments)} WHERE id = ?",
                 values,

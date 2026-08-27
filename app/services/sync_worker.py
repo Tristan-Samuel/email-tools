@@ -146,16 +146,24 @@ def _run_job_inner(
 
     store.update_job(job_id, status="running", message="Starting…")
     store.append_job_log(job_id, "Worker picked up this job.")
+    store.update_job_phase(job_id, "fetch", 0, 1, message="Starting…")
 
-    def report(message: str, current: int | None = None, total: int | None = None) -> None:
+    def report(
+        message: str,
+        current: int | None = None,
+        total: int | None = None,
+        phase: str | None = None,
+    ) -> None:
         check_cancelled(store)
         store.append_job_log(job_id, message)
-        fields: dict[str, object] = {}
-        if current is not None:
-            fields["current_step"] = current
-        if total is not None:
-            fields["total_steps"] = total
-        if fields:
+        if phase and current is not None and total is not None:
+            store.update_job_phase(job_id, phase, current, total, message=message)
+        else:
+            fields: dict[str, object] = {"message": message}
+            if current is not None:
+                fields["current_step"] = current
+            if total is not None:
+                fields["total_steps"] = total
             store.update_job(job_id, **fields)
 
     errors: list[str] = []
@@ -165,12 +173,12 @@ def _run_job_inner(
 
         if job_type == "tags":
             if tag_apply_fn:
-                report("Applying tags…")
-                tagged = tag_apply_fn(store, user_email)
-                report(f"Tagging finished — {tagged} assignment(s).")
+                report("Applying tags…", 0, 1, phase="tag")
+                tagged = tag_apply_fn(store, user_email, on_progress=report)
+                report(f"Tagging finished — {tagged} assignment(s).", 1, 1, phase="tag")
             else:
                 report("No tag-apply handler configured.")
-            store.update_job(job_id, status="done", current_step=1, total_steps=1, message="Tagging finished.")
+            store.update_job(job_id, status="done", current_step=100, total_steps=100, message="Tagging finished.")
             return
 
         if job_type in ("sync", "backfill"):
@@ -182,11 +190,7 @@ def _run_job_inner(
             total_imported = 0
             for index, account in enumerate(accounts, start=1):
                 check_cancelled(store)
-                report(
-                    f"Syncing {account['account_email']} ({index}/{len(accounts)})…",
-                    current=index - 1,
-                    total=max(len(accounts), 1),
-                )
+                report(f"Syncing {account['account_email']} ({index}/{len(accounts)})…")
                 try:
                     imported, err = sync_fn(
                         store,
@@ -208,24 +212,24 @@ def _run_job_inner(
                     msg = f"{account.get('account_email', 'account')}: {exc}"
                     errors.append(msg)
                     report(msg)
-            report(f"Mail fetch finished — {total_imported} message(s) saved.", current=len(accounts), total=max(len(accounts), 1))
+            report(f"Mail fetch finished — {total_imported} message(s) saved.", 1, 1, phase="fetch")
 
             if groq.enabled and analyze_fn:
-                report("Starting automatic AI analysis…")
+                report("Starting automatic AI analysis…", 0, 1, phase="summarize")
                 analyzed = analyze_fn(store, user_email, groq, report)
-                report(f"AI analysis finished — {analyzed} email(s) summarized.")
+                report(f"AI analysis finished — {analyzed} email(s) summarized.", 1, 1, phase="summarize")
             elif not groq.enabled:
                 report("No Groq key — mail is cached with quick local summaries. Add a key in Settings for a real AI brief.")
 
             if tag_apply_fn:
-                report("Applying tags…")
-                tagged = tag_apply_fn(store, user_email)
-                report(f"Tagging finished — {tagged} assignment(s).")
+                report("Applying tags…", 0, 1, phase="tag")
+                tagged = tag_apply_fn(store, user_email, on_progress=report)
+                report(f"Tagging finished — {tagged} assignment(s).", 1, 1, phase="tag")
 
             if digest_fn:
-                report("Refreshing inbox brief…")
+                report("Refreshing inbox brief…", 0, 1, phase="brief")
                 digest_fn(store, user_email, groq if groq.enabled else None)
-                report("Inbox brief updated.")
+                report("Inbox brief updated.", 1, 1, phase="brief")
 
         elif job_type == "reanalyze":
             if not groq.enabled:
@@ -238,16 +242,17 @@ def _run_job_inner(
                 report("Stopped — Groq API key missing.")
                 return
             if analyze_fn:
+                report("Starting AI analysis…", 0, 1, phase="summarize")
                 analyzed = analyze_fn(store, user_email, groq, report)
-                report(f"AI analysis finished — {analyzed} email(s) summarized.")
+                report(f"AI analysis finished — {analyzed} email(s) summarized.", 1, 1, phase="summarize")
             if tag_apply_fn:
-                report("Applying tags…")
-                tagged = tag_apply_fn(store, user_email)
-                report(f"Tagging finished — {tagged} assignment(s).")
+                report("Applying tags…", 0, 1, phase="tag")
+                tagged = tag_apply_fn(store, user_email, on_progress=report)
+                report(f"Tagging finished — {tagged} assignment(s).", 1, 1, phase="tag")
             if digest_fn:
-                report("Refreshing inbox brief…")
+                report("Refreshing inbox brief…", 0, 1, phase="brief")
                 digest_fn(store, user_email, groq)
-                report("Inbox brief updated.")
+                report("Inbox brief updated.", 1, 1, phase="brief")
         else:
             report(f"Unknown job type: {job_type}")
 

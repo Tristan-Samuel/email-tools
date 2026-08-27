@@ -126,6 +126,17 @@
                         {% endif %}
                     </span>
                 </div>
+                <div class="activity-phases" id="activity-phases">
+                    {% for key, label in (('fetch', 'Fetch'), ('summarize', 'Summarize'), ('tag', 'Tag'), ('brief', 'Brief')) %}
+                    <div class="activity-phase-row" data-phase="{{ key }}">
+                        <span class="activity-phase-label">{{ label }}</span>
+                        <div class="activity-phase-track">
+                            <div class="activity-phase-fill" data-phase-fill="{{ key }}"></div>
+                        </div>
+                        <span class="activity-phase-counts" data-phase-counts="{{ key }}"></span>
+                    </div>
+                    {% endfor %}
+                </div>
                 <div class="activity-actions">
                     <form action="{{ url_for('main.jobs_cancel') }}" method="post" id="activity-cancel-form"
                           {% if not activity_job or activity_job.status not in ('queued', 'running') %}hidden{% endif %}>

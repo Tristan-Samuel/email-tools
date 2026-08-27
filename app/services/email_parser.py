@@ -11,16 +11,73 @@ from pathlib import Path
 
 
 TAG_RE = re.compile(r"<[^>]+>")
-WHITESPACE_RE = re.compile(r"\s+")
+WHITESPACE_RE = re.compile(r"[ \t]+")
+MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
+A_HREF_RE = re.compile(
+    r"<a\s+[^>]*href\s*=\s*['\"]?(https?://[^'\">\s]+|mailto:[^'\">\s]+)['\"]?[^>]*>(.*?)</a>",
+    re.I | re.DOTALL,
+)
+SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.I | re.DOTALL)
+BLOCK_BREAK_RE = re.compile(r"</?(?:p|div|tr|li|h[1-6]|table|section|article|header|footer)[^>]*>", re.I)
+BR_RE = re.compile(r"<br\s*/?>", re.I)
+URL_HEAVY_RE = re.compile(r"(?:<)?https?://", re.I)
 
 
 def strip_html(value: str) -> str:
+    """Legacy naive HTML strip — prefer html_to_text for ingest."""
     no_tags = TAG_RE.sub(" ", value)
     return WHITESPACE_RE.sub(" ", html.unescape(no_tags)).strip()
 
 
+def html_to_text(value: str) -> str:
+    """Convert HTML to readable plain text with paragraph breaks and link labels."""
+    if not value:
+        return ""
+    text = SCRIPT_STYLE_RE.sub(" ", value)
+    text = A_HREF_RE.sub(lambda m: (m.group(2) or m.group(1) or "").strip(), text)
+    text = BR_RE.sub("\n", text)
+    text = BLOCK_BREAK_RE.sub("\n", text)
+    text = TAG_RE.sub(" ", text)
+    text = html.unescape(text)
+    return normalize_body_text(text)
+
+
 def normalize_text(value: str) -> str:
     return WHITESPACE_RE.sub(" ", value).strip()
+
+
+def normalize_body_text(value: str) -> str:
+    """Collapse horizontal whitespace but preserve paragraph breaks."""
+    if not value:
+        return ""
+    lines = [WHITESPACE_RE.sub(" ", line).strip() for line in value.replace("\r\n", "\n").split("\n")]
+    paragraphs: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if line:
+            current.append(line)
+        elif current:
+            paragraphs.append(" ".join(current))
+            current = []
+    if current:
+        paragraphs.append(" ".join(current))
+    joined = "\n\n".join(paragraphs)
+    return MULTI_NEWLINE_RE.sub("\n\n", joined).strip()
+
+
+def is_url_heavy_plaintext(text: str) -> bool:
+    """Return True when plaintext is mostly URL/nav chrome."""
+    if not text or len(text) < 80:
+        return False
+    sample = text[:2000]
+    url_hits = len(URL_HEAVY_RE.findall(sample))
+    if url_hits >= 4:
+        return True
+    non_space = len(sample.replace(" ", "").replace("\n", ""))
+    if non_space < 50:
+        return False
+    url_chars = sum(len(m.group(0)) for m in URL_HEAVY_RE.finditer(sample))
+    return url_chars / non_space > 0.35
 
 
 def parse_address_header(value: str | None) -> str:
@@ -41,8 +98,8 @@ def parse_address_header(value: str | None) -> str:
 
 
 def extract_body(message) -> str:
-    plain_parts = []
-    html_parts = []
+    plain_parts: list[str] = []
+    html_parts: list[str] = []
 
     if message.is_multipart():
         for part in message.walk():
@@ -52,23 +109,26 @@ def extract_body(message) -> str:
                 continue
 
             if content_type == "text/plain":
-                plain_parts.append(part.get_content())
+                plain_parts.append(str(part.get_content()))
             elif content_type == "text/html":
-                html_parts.append(part.get_content())
+                html_parts.append(str(part.get_content()))
     else:
         content_type = message.get_content_type()
         content = message.get_content()
         if content_type == "text/plain":
-            plain_parts.append(content)
+            plain_parts.append(str(content))
         elif content_type == "text/html":
-            html_parts.append(content)
+            html_parts.append(str(content))
 
-    if plain_parts:
-        return normalize_text(" ".join(str(part) for part in plain_parts))
+    plain_text = normalize_body_text("\n\n".join(plain_parts)) if plain_parts else ""
+    html_text = html_to_text(" ".join(html_parts)) if html_parts else ""
 
-    if html_parts:
-        return strip_html(" ".join(str(part) for part in html_parts))
-
+    if plain_text and html_parts and is_url_heavy_plaintext(plain_text):
+        return html_text or plain_text
+    if plain_text:
+        return plain_text
+    if html_text:
+        return html_text
     return ""
 
 

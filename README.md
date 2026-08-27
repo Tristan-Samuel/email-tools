@@ -7,8 +7,8 @@ Flask web application for reading and triaging your inbox through AI-generated s
 - **Verified signup** — new accounts require a 6-digit code sent to the email address so no one can claim an address they do not own.
 - **Account login** — sign in with your Inbox Tools account password. If you remove the account password, the next login requires your mailbox **App Password** from a connected IMAP account (no email-only access).
 - **Multiple accounts per user** — connect as many IMAP accounts as you like. Filter with account pills in the nav bar, or view everything together.
-- **Background sync with a live activity panel** — Sync All / per-account sync runs in a background queue. A progress bar and expandable log show fetch, save, and AI analysis. **Cancel** stops a stuck queued/running job so you can start another. Per account: choose **mail since** date, **max messages**, IMAP **folders**, and **Load older mail** when backfill remains.
-- Parse and cache every email in SQLite with full-text search (subject, sender, recipient, body, bullets, keywords, category).
+- **Background sync with a live activity panel** — Sync All / per-account sync runs in a background queue. Stacked phase meters (Fetch / Summarize / Tag / Brief) update as mail downloads and Groq runs — not a single frozen 0/1 bar. **Cancel** stops a stuck queued/running job so you can start another. Per account: choose **mail since** date, **max messages**, IMAP **folders**, and **Load older mail** when backfill remains.
+- Parse and cache every email in SQLite with full-text search (subject, sender, recipient, body, bullets, keywords, category). Marketing-style bodies are cleaned on ingest (HTML labels instead of URL dumps); cached mail linkifies `Label <url>` in the detail view.
 - Auto-sort messages into category signals (Urgent, Finance, Work, etc.) — **tags** are the user-facing filter taxonomy; categories appear as row chips. Apply tags from the inbox row or message detail (multiple tags per email).
 - **Automatic AI summaries** — sync downloads mail quickly with local summaries, then Groq analyzes in small batches. A 429 rate limit switches to another chat model (TPM is per-model) instead of stopping. Dashboard and Inbox have **Analyze now**; Settings still shows AI vs heuristic counts.
 - Cached Groq model discovery (no `/models` call on every summarize). Inbox brief is generated after analysis and cached (dashboard load does not wait on Groq).
@@ -100,7 +100,8 @@ app/
     crypto.py                 Fernet encryption for IMAP passwords and Groq keys
     email_parser.py           .eml / .mbox parsing and shared parse_message
     groq_client.py            Groq model discovery, 429 fallback, chat, draft reply, batch summarize
-    imap_service.py           IMAP connection, UID sync, email fetching
+    imap_service.py           IMAP connection, UID sync, batched BODY.PEEK[] fetch
+    llm_text.py               URL-stripped text compaction for Groq prompts
     mail.py                   Outbound SMTP for signup verification codes
     store.py                  SQLite persistence, FTS, migrations, job logs
     summary.py                Categorisation, summaries, digest, thread ids

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from app import create_app
 from app.services.groq_client import GroqClient
-from app.services.store import EmailStore
+from app.services.store import EmailStore, job_percent_from_phases
 from app.services.sync_worker import _run_job
 from app.services.summary import build_email_record
 
@@ -28,6 +28,24 @@ def test_store_jobs_and_kv_roundtrip() -> None:
 
         store.set_kv("me@example.com", "inbox_digest", json.dumps({"headline": "Hi", "bullets": ["a"]}))
         assert json.loads(store.get_kv("me@example.com", "inbox_digest"))["headline"] == "Hi"
+
+
+def test_job_phase_progress_and_percent() -> None:
+    phases = {
+        "fetch": {"current": 50, "total": 100},
+        "summarize": {"current": 0, "total": 10},
+    }
+    assert job_percent_from_phases(phases) == 25
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = EmailStore(Path(tmp) / "t.db")
+        store.initialize()
+        job_id = store.create_job("me@example.com", "sync", "Sync inbox")
+        store.update_job_phase(job_id, "fetch", 40, 200, message="Downloading…")
+        job = store.get_job(job_id, "me@example.com")
+        assert job is not None
+        assert job["phases"]["fetch"]["current"] == 40
+        assert job["percent"] == 10
 
 
 def test_list_unanalyzed_emails() -> None:

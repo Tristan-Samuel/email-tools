@@ -178,6 +178,45 @@ def test_signup_with_correct_code_creates_account(mock_code: MagicMock, mock_sen
     mock_send.assert_called()
 
 
+@patch("app.services.mail.send_email", return_value=(True, ""))
+def test_signup_sends_verification_email(mock_send: MagicMock) -> None:
+    app = create_app()
+    app.config.update(
+        TESTING=True,
+        WTF_CSRF_ENABLED=False,
+        SMTP_HOST="smtp.example.com",
+        SMTP_FROM="noreply@example.com",
+    )
+    email = f"smtp-signup-{uuid.uuid4().hex[:8]}@example.com"
+
+    with app.test_client() as client:
+        response = client.post("/signup", data={"action": "send_code", "email": email})
+        assert response.status_code == 200
+        assert b"Development mode" not in response.data
+
+    mock_send.assert_called_once()
+    to_addr, subject, body = mock_send.call_args.args
+    assert to_addr == email
+    assert "verification code" in subject.lower()
+    assert "verification code is:" in body.lower()
+
+
+def test_inbox_loads_when_logged_in() -> None:
+    app = create_app()
+    app.config.update(TESTING=True, WTF_CSRF_ENABLED=False)
+    store: EmailStore = app.extensions["email_store"]
+    email = f"inbox-{uuid.uuid4().hex[:8]}@example.com"
+    from werkzeug.security import generate_password_hash
+
+    store.set_app_password(email, generate_password_hash("secret12", method="pbkdf2:sha256"))
+
+    with app.test_client() as client:
+        client.post("/login", data={"email": email, "app_password": "secret12"})
+        response = client.get("/inbox")
+        assert response.status_code == 200
+        assert b"Inbox" in response.data
+
+
 @patch("app.routes._send_signup_code", return_value=(True, "", True))
 @patch("app.routes._generate_verification_code", return_value="482193")
 def test_signup_wrong_code_rejected(mock_code: MagicMock, mock_send: MagicMock) -> None:

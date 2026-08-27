@@ -81,6 +81,14 @@ FOOTER_JUNK_RE = re.compile(
     r"(Email me a question|Admissions|Tours|Unsubscribe|View in browser).*$",
     re.I,
 )
+LABEL_ANGLE_URL_RE = re.compile(r"([^<\n]+?)\s*<(https?://[^>\s]+)>", re.I)
+
+
+def compact_for_llm(text: str, limit: int = 800) -> str:
+    """Strip URLs and tracking noise before sending text to Groq."""
+    from .llm_text import compact_for_llm as _compact
+
+    return _compact(text, limit)
 
 
 def clean_summary_line(text: str, max_len: int = 220) -> str:

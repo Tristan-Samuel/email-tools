@@ -16,6 +16,7 @@ import re
 import socket
 import ssl
 import struct
+from collections.abc import Callable
 from datetime import date
 from email.parser import BytesParser
 from email import policy
@@ -51,7 +52,11 @@ _MX_IMAP_SUFFIXES: tuple[tuple[tuple[str, ...], str], ...] = (
 _DNS_SERVERS = ("8.8.8.8", "1.1.1.1")
 _PARSER = BytesParser(policy=policy.default)
 _FOLDER_LINE_RE = re.compile(r'"([^"]+)"\s*$')
+UID_META_RE = re.compile(rb"UID (\d+)")
+FETCH_CHUNK_SIZE = 25
 logger = logging.getLogger(__name__)
+
+ProgressFn = Callable[[int, int], None]
 
 
 def host_resolves(host: str) -> bool:
@@ -254,27 +259,56 @@ def _parse_raw_bytes(uid_bytes: bytes, raw_bytes: bytes) -> dict | None:
     return parsed
 
 
+def _parse_fetch_items(msg_data: list | None) -> list[tuple[int, bytes]]:
+    """Extract (uid, raw_bytes) pairs from a multi-message UID FETCH response."""
+    results: list[tuple[int, bytes]] = []
+    if not msg_data:
+        return results
+    for item in msg_data:
+        if not isinstance(item, tuple) or len(item) != 2:
+            continue
+        meta, payload = item
+        if not isinstance(payload, bytes) or len(payload) < 10:
+            continue
+        meta_b = meta if isinstance(meta, bytes) else str(meta).encode("ascii", "replace")
+        match = UID_META_RE.search(meta_b)
+        if not match:
+            continue
+        try:
+            uid_int = int(match.group(1))
+        except ValueError:
+            continue
+        results.append((uid_int, payload))
+    return results
+
+
 def _fetch_uid_batch(
     conn: imaplib.IMAP4_SSL,
     uid_ints: list[int],
     last_uid: int,
+    on_progress: ProgressFn | None = None,
 ) -> tuple[list[dict], int, list[int]]:
-    """Fetch and parse a list of UIDs; bump last_uid only on successful parses."""
+    """Fetch UIDs in batched BODY.PEEK[] requests; bump last_uid only on successful parses."""
     emails: list[dict] = []
     parsed_uids: list[int] = []
-    for uid_int in uid_ints:
-        uid_bytes = str(uid_int).encode()
-        typ2, msg_data = conn.uid("fetch", uid_bytes, "(RFC822)")
+    total = len(uid_ints)
+    for start in range(0, total, FETCH_CHUNK_SIZE):
+        chunk_uids = uid_ints[start : start + FETCH_CHUNK_SIZE]
+        uid_set = ",".join(str(uid_int) for uid_int in chunk_uids)
+        typ2, msg_data = conn.uid("fetch", uid_set.encode(), "(BODY.PEEK[])")
         if typ2 != "OK" or not msg_data:
+            if on_progress:
+                on_progress(min(start + len(chunk_uids), total), total)
             continue
-        for item in msg_data:
-            if isinstance(item, tuple) and len(item) == 2:
-                parsed = _parse_raw_bytes(uid_bytes, item[1])
-                if parsed:
-                    emails.append(parsed)
-                    parsed_uids.append(uid_int)
-                    last_uid = max(last_uid, uid_int)
-                break
+        for uid_int, raw_bytes in _parse_fetch_items(msg_data):
+            uid_bytes = str(uid_int).encode()
+            parsed = _parse_raw_bytes(uid_bytes, raw_bytes)
+            if parsed:
+                emails.append(parsed)
+                parsed_uids.append(uid_int)
+                last_uid = max(last_uid, uid_int)
+        if on_progress:
+            on_progress(min(start + len(chunk_uids), total), total)
     return emails, last_uid, parsed_uids
 
 
@@ -320,6 +354,7 @@ def fetch_emails(
     stored_uidvalidity: int = 0,
     since_date: date | None = None,
     backfill_only: bool = False,
+    on_progress: ProgressFn | None = None,
 ) -> tuple[list[dict], int, int, int]:
     """
     Fetch emails from IMAP server.
@@ -348,16 +383,21 @@ def fetch_emails(
                 return uid_list
             return [u for u in uid_list if u in date_uids]
 
+        def _fetch_with_progress(uid_list: list[int]) -> tuple[list[dict], int, list[int]]:
+            if not uid_list:
+                return [], last_uid, []
+            return _fetch_uid_batch(conn, uid_list, last_uid, on_progress=on_progress)
+
         if not backfill_only and since_uid > 0:
             new_uids = _filter_uids(_uids_for_search(conn, f"UID {since_uid + 1}:*"))
-            batch, last_uid, parsed = _fetch_uid_batch(conn, new_uids, last_uid)
+            batch, last_uid, parsed = _fetch_with_progress(new_uids)
             emails.extend(batch)
 
         if backfill_uid > 0:
             old_uids = _filter_uids(_uids_for_search(conn, f"UID 1:{backfill_uid}"))
             if old_uids:
                 chunk = old_uids[-limit:]
-                batch, last_uid, parsed = _fetch_uid_batch(conn, chunk, last_uid)
+                batch, last_uid, parsed = _fetch_with_progress(chunk)
                 emails.extend(batch)
                 if parsed:
                     backfill_uid = min(parsed) - 1
@@ -373,7 +413,7 @@ def fetch_emails(
                 return [], since_uid, 0, uidvalidity
 
             initial_uids = all_uids[-limit:]
-            batch, last_uid, parsed = _fetch_uid_batch(conn, initial_uids, last_uid)
+            batch, last_uid, parsed = _fetch_with_progress(initial_uids)
             emails.extend(batch)
             if parsed:
                 min_parsed = min(parsed)

@@ -3,12 +3,16 @@
 {% block title %}Dashboard | Inbox Tools{% endblock %}
 
 {% block content %}
-<main class="dashboard">
+<main class="page-main" data-reload-on-job="1">
     <div class="dashboard-top">
         <section class="panel reveal dashboard-brief-panel">
             <p class="eyebrow">Inbox brief</p>
             <p class="panel-hint" style="margin-bottom:8px;font-size:.8rem">
-                {% if digest.ai_generated %}AI summary{% else %}Heuristic summary{% endif %}
+                {% if digest.ai_generated %}
+                    AI summary of your recent mail
+                {% else %}
+                    Quick local scan — not a full AI brief yet
+                {% endif %}
             </p>
             <h1 style="font-size:1.5rem;margin-bottom:12px">{{ digest.headline }}</h1>
             <ul class="bullet-list">
@@ -16,6 +20,19 @@
                 <li>{{ bullet|sanitize_bullet }}</li>
                 {% endfor %}
             </ul>
+            {% if groq_available and ai_pending > 0 %}
+            <form action="{{ url_for('main.analyze_now') }}" method="post" style="margin-top:14px">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-teal">Analyze {{ ai_pending }} emails with AI</button>
+            </form>
+            <p class="panel-hint" style="margin-top:8px">
+                {{ ai_analyzed }} already have AI summaries. Sync downloads mail first; analysis runs automatically afterward.
+            </p>
+            {% elif not groq_available %}
+            <p class="panel-hint" style="margin-top:12px">
+                Add a Groq API key in <a href="{{ url_for('main.settings') }}">Settings</a> to generate a real inbox brief.
+            </p>
+            {% endif %}
         </section>
 
         <aside class="dashboard-sidebar">
@@ -27,6 +44,20 @@
                         <div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin-bottom:.5rem">
                             <span style="font-size:.88rem;font-weight:600">{{ acct.account_email }}</span>
                         </div>
+                        {% if acct.needs_reauth %}
+                        <p class="panel-hint" style="color:var(--accent);margin-bottom:.5rem">
+                            Saved password can't be read. Update the App Password below — you don't need to delete this account.
+                        </p>
+                        <form action="{{ url_for('main.accounts_update_password', account_id=acct.id) }}" method="post" class="sync-form-row" style="margin-bottom:.5rem">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <label>
+                                App Password
+                                <input type="password" name="password" required placeholder="Mailbox App Password" autocomplete="new-password">
+                            </label>
+                            <button type="submit" class="btn btn-primary" style="font-size:.8rem;padding:.35rem .75rem">Save &amp; sync</button>
+                        </form>
+                        {% endif %}
+                        <p class="panel-hint" style="margin-bottom:.4rem">Sync downloads new mail. AI summaries start automatically after.</p>
                         <form action="{{ url_for('main.accounts_sync', account_id=acct.id) }}" method="post" class="sync-form-row">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <label>
@@ -84,6 +115,9 @@
                 <span class="unread-subject">{{ email.subject }}</span>
                 <span class="unread-date">{{ email.received_at|datetimeformat }}</span>
             </a>
+            {% if email.bullet_summary %}
+            <p class="unread-summary">{{ email.bullet_summary[0]|sanitize_bullet }}</p>
+            {% endif %}
             {% endfor %}
         </div>
     </section>

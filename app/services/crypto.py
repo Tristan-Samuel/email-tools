@@ -39,3 +39,18 @@ def decrypt(ciphertext: str, secret_key: str, purpose: str = "imap") -> str:
         return _make_fernet(secret_key, purpose).decrypt(ciphertext.encode()).decode()
     except Exception:
         return ""
+
+
+def decrypt_with_fallback(ciphertext: str, keys: list[str], purpose: str = "imap") -> tuple[str, str]:
+    """Try each key until one decrypts. Return (plaintext, key_used); both empty on failure."""
+    if not ciphertext:
+        return "", ""
+    seen: set[str] = set()
+    for key in keys:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        plain = decrypt(ciphertext, key, purpose)
+        if plain:
+            return plain, key
+    return "", ""

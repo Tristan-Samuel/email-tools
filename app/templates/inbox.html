@@ -3,7 +3,7 @@
 {% block title %}Inbox | Inbox Tools{% endblock %}
 
 {% block content %}
-<main class="page-main">
+<main class="page-main" data-reload-on-job="1">
     <div class="inbox-toolbar">
         <div class="inbox-toolbar-left">
             <h1 class="inbox-title">Inbox</h1>
@@ -93,6 +93,18 @@
             </div>
 
             {% if imap_accounts %}
+            <form action="{{ url_for('main.accounts_sync_all') }}" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-teal" style="padding:5px 12px;font-size:.82rem">Sync</button>
+            </form>
+            {% endif %}
+            {% if groq_available and ai_pending > 0 %}
+            <form action="{{ url_for('main.analyze_now') }}" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-teal" style="padding:5px 12px;font-size:.82rem">Analyze {{ ai_pending }}</button>
+            </form>
+            {% endif %}
+            {% if imap_accounts %}
             <div class="inbox-account-tabs">
                 <a href="{{ url_for('main.inbox') }}{% if selected_category %}?category={{ selected_category }}{% endif %}"
                    class="inbox-tab {% if not source_account %}inbox-tab--active{% endif %}">All</a>
@@ -155,7 +167,13 @@
                         {% set tc = thread_counts.get(email.thread_id, 0) %}
                         {% if tc > 1 %}<span class="thread-badge" title="{{ tc }} in thread">{{ tc }}</span>{% endif %}
                     </div>
-                    <div class="inbox-row-preview">{{ email.preview or 'No preview available.' }}</div>
+                    <div class="inbox-row-preview">
+                        {% if email.bullet_summary %}
+                            {{ email.bullet_summary[0]|sanitize_bullet }}
+                        {% else %}
+                            {{ email.preview or 'No preview available.' }}
+                        {% endif %}
+                    </div>
                     {% set row_tags = email_tags_map.get(email.email_id, []) %}
                     {% if row_tags %}
                     <div class="inbox-row-tags">

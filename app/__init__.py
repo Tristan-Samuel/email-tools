@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as _dt
 import html as _html
 import os
+import re
 import secrets
 from pathlib import Path
 
@@ -80,7 +81,7 @@ def create_app() -> Flask:
         SMTP_PASSWORD=os.environ.get("SMTP_PASSWORD", ""),
         SMTP_FROM=os.environ.get("SMTP_FROM", "").strip(),
         SMTP_USE_TLS=os.environ.get("SMTP_USE_TLS", "true").lower() in ("1", "true", "yes"),
-        STATIC_VERSION="22",
+        STATIC_VERSION="23",
     )
 
     app.config["UPLOAD_FOLDER"].mkdir(parents=True, exist_ok=True)
@@ -164,6 +165,28 @@ def create_app() -> Flask:
 
         return Markup(sanitize_bullet_text(value or ""))
 
+    def _linkify_body_paragraph(para: str) -> str:
+        """Escape paragraph text and turn Label <url> into short links."""
+        label_url = re.compile(r"([^<\n]+?)\s*<(https?://[^>\s]+)>", re.I)
+
+        def _replace(match: re.Match[str]) -> str:
+            label = match.group(1).strip()
+            url = match.group(2).strip()
+            safe_url = _html.escape(url, quote=True)
+            safe_label = _html.escape(label or url[:48])
+            return f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer">{safe_label}</a>'
+
+        parts: list[str] = []
+        last = 0
+        for match in label_url.finditer(para):
+            if match.start() > last:
+                parts.append(_html.escape(para[last:match.start()]))
+            parts.append(_replace(match))
+            last = match.end()
+        if last < len(para):
+            parts.append(_html.escape(para[last:]))
+        return "".join(parts).replace("\n", "<br>")
+
     @app.template_filter("format_email_body")
     def format_email_body(body: str | None) -> Markup:
         """Render plain-text email body as safe HTML paragraphs with blockquote support."""
@@ -179,7 +202,7 @@ def create_app() -> Flask:
                 inner = _html.escape("\n".join(line.lstrip("> ") for line in non_empty))
                 result.append(f'<blockquote class="email-quote">{inner}</blockquote>')
             else:
-                content = _html.escape(para).replace("\n", "<br>")
+                content = _linkify_body_paragraph(para)
                 result.append(f"<p>{content}</p>")
         return Markup("\n".join(result) or "<p><em>No body content.</em></p>")
 

@@ -9,6 +9,8 @@ from collections.abc import Callable
 
 import requests
 
+from .llm_text import compact_for_llm
+
 # Groq retired llama-3.3-70b-versatile (free/dev) on 2026-08-16.
 # Prefer smaller chat models first: on-demand TPM is per-model, so a 429 on
 # gpt-oss-120b still leaves gpt-oss-20b / Qwen with a fresh bucket. 20b also
@@ -30,8 +32,10 @@ _RETIRED_CHAT_MODELS = {
 }
 _BATCH_BODY_CHARS = 800
 _SINGLE_BODY_CHARS = 4000
-_TAG_BODY_CHARS = 1200
+_TAG_BODY_CHARS = 800
+_TAG_SUMMARY_CHARS = 500
 _JSON_MAX_TOKENS = 800
+_MAX_SUMMARY_BATCH = 8
 
 
 def _parse_json_content(content: str | dict) -> dict:
@@ -42,6 +46,20 @@ def _parse_json_content(content: str | dict) -> dict:
     if fence:
         text = fence.group(1).strip()
     return json.loads(text)
+
+
+def _parse_tag_verdict(value: object) -> str:
+    """Normalize yes / no / unsure from model output."""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    lowered = str(value or "").strip().lower()
+    if lowered in ("yes", "true", "match", "1"):
+        return "yes"
+    if lowered in ("no", "false", "0"):
+        return "no"
+    if lowered in ("unsure", "unknown", "maybe"):
+        return "unsure"
+    return "unsure"
 
 
 def _parse_bool(value: object) -> bool:
@@ -348,7 +366,7 @@ class GroqClient:
         if not self.enabled:
             return None
 
-        clipped_body = body[:_SINGLE_BODY_CHARS]
+        clipped_body = compact_for_llm(body, _SINGLE_BODY_CHARS)
         prompt = (
             "Summarize this email as concise bullet points for fast triage. "
             "Return JSON only with key \"bullets\" as an array of up to 4 strings. "
@@ -422,6 +440,7 @@ class GroqClient:
             return False
 
         instruction = ai_instruction or f"Does this email relate to or belong in the '{tag_name}' tag/category?"
+        compact_body = compact_for_llm(body, _TAG_BODY_CHARS)
         parsed, _err = self._complete(
             [
                 {"role": "system", "content": "You produce strict JSON with a single boolean field 'match'."},
@@ -432,7 +451,7 @@ class GroqClient:
                         f"Question: {instruction}\n\n"
                         f"Sender: {sender or 'Unknown'}\n"
                         f"Subject: {subject}\n"
-                        f"Body (first {_TAG_BODY_CHARS} chars):\n{body[:_TAG_BODY_CHARS]}\n\n"
+                        f"Body:\n{compact_body}\n\n"
                         "Respond with JSON: {\"match\": true} or {\"match\": false}"
                     ),
                 },
@@ -444,76 +463,169 @@ class GroqClient:
             return False
         return _parse_bool(parsed.get("match", False))
 
-    def classify_emails_for_tags(self, emails: list[dict], tags: list[dict]) -> dict[str, list[str]]:
-        """Return {email_id: [tag_name, ...]} for Groq-matched tags in this chunk."""
-        if not self.enabled or not emails or not tags:
-            return {}
+    def _email_summary_for_tag(self, email: dict) -> str:
+        bullets = email.get("bullet_summary") or []
+        summary = " ".join(str(b) for b in bullets if b) or (email.get("preview") or "")
+        return compact_for_llm(summary, _TAG_SUMMARY_CHARS)
 
+    def _tag_instruction_lines(self, tags: list[dict]) -> tuple[list[str], dict[str, str], set[str]]:
         tag_lines: list[str] = []
-        allowed = {str(tag.get("name") or "").strip() for tag in tags if str(tag.get("name") or "").strip()}
-        allowed_lower = {name.lower(): name for name in allowed}
+        allowed_lower: dict[str, str] = {}
+        allowed: set[str] = set()
         for tag in tags:
             name = str(tag.get("name") or "").strip()
             if not name:
                 continue
+            allowed.add(name)
+            allowed_lower[name.lower()] = name
             instruction = (tag.get("ai_instruction") or "").strip() or f"relates to {name}"
             tag_lines.append(f"- {name}: {instruction}")
+        return tag_lines, allowed_lower, allowed
+
+    def classify_emails_for_tags(self, emails: list[dict], tags: list[dict]) -> dict[str, list[str]]:
+        """Two-pass tagging: summary first, compact body only when unsure."""
+        if not self.enabled or not emails or not tags:
+            return {}
+
+        tag_lines, allowed_lower, allowed = self._tag_instruction_lines(tags)
         if not tag_lines:
             return {}
 
-        blocks: list[str] = []
+        pass1_blocks: list[str] = []
         for email in emails:
-            bullets = email.get("bullet_summary") or []
-            summary = " ".join(str(b) for b in bullets if b) or (email.get("preview") or email.get("body") or "")
-            blocks.append(
+            pass1_blocks.append(
                 f"ID: {email['email_id']}\n"
                 f"From: {email.get('sender') or 'Unknown'}\n"
                 f"Subject: {email.get('subject') or '(no subject)'}\n"
-                f"Summary: {str(summary)[:500]}"
+                f"Summary: {self._email_summary_for_tag(email)}"
             )
-        prompt = (
-            "Assign zero or more of the given tags to each email. "
-            "Only use the exact tag names listed. "
-            'Return JSON: {"items": [{"id": "...", "tags": ["Tag Name"]}]}.'
+        pass1_prompt = (
+            "For each email, classify every tag as yes, no, or unsure. "
+            "Use unsure when the summary is not enough to decide. "
+            'Return JSON: {"items": [{"id": "...", "tags": {"Tag Name": "yes|no|unsure"}}]}. '
+            "Use exact tag names from the list."
         )
-        parsed, _err = self._complete(
+        parsed1, _err = self._complete(
             [
                 {"role": "system", "content": "You produce strict JSON."},
                 {
                     "role": "user",
                     "content": (
-                        f"{prompt}\n\nTags:\n"
+                        f"{pass1_prompt}\n\nTags:\n"
                         + "\n".join(tag_lines)
                         + "\n\nEmails:\n\n"
-                        + "\n\n---\n\n".join(blocks)
+                        + "\n\n---\n\n".join(pass1_blocks)
                     ),
                 },
             ],
             temperature=0.1,
             timeout=30,
         )
-        if not isinstance(parsed, dict):
-            return {}
-        entries = parsed.get("items") or []
         by_id: dict[str, list[str]] = {}
-        if not isinstance(entries, list):
-            return {}
-        for entry in entries:
-            if not isinstance(entry, dict):
+        unsure_emails: list[dict] = []
+        unsure_tags_by_id: dict[str, list[str]] = {}
+        email_by_id = {e["email_id"]: e for e in emails}
+        if isinstance(parsed1, dict):
+            entries = parsed1.get("items") or []
+            if isinstance(entries, list):
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    eid = str(entry.get("id") or entry.get("email_id") or "")
+                    raw_tags = entry.get("tags") or {}
+                    if not eid:
+                        continue
+                    matched: list[str] = []
+                    unsure_names: list[str] = []
+                    if isinstance(raw_tags, dict):
+                        for raw_name, verdict in raw_tags.items():
+                            canonical = allowed_lower.get(str(raw_name).strip().lower())
+                            if not canonical:
+                                continue
+                            decision = _parse_tag_verdict(verdict)
+                            if decision == "yes":
+                                matched.append(canonical)
+                            elif decision == "unsure":
+                                unsure_names.append(canonical)
+                    elif isinstance(raw_tags, list):
+                        for raw in raw_tags:
+                            canonical = allowed_lower.get(str(raw).strip().lower())
+                            if canonical:
+                                matched.append(canonical)
+                    if matched:
+                        by_id[eid] = matched
+                    if unsure_names:
+                        email_row = email_by_id.get(eid)
+                        if email_row:
+                            unsure_emails.append(email_row)
+                        unsure_tags_by_id[eid] = unsure_names
+
+        if not unsure_emails:
+            return by_id
+
+        unsure_tag_lines = [
+            line for line in tag_lines
+            if any(
+                line.startswith(f"- {name}:")
+                for names in unsure_tags_by_id.values()
+                for name in names
+            )
+        ]
+        pass2_blocks: list[str] = []
+        for email in unsure_emails:
+            eid = email["email_id"]
+            tag_names = unsure_tags_by_id.get(eid) or []
+            if not tag_names:
                 continue
-            eid = str(entry.get("id") or entry.get("email_id") or "")
-            raw_tags = entry.get("tags") or []
-            if not eid or not isinstance(raw_tags, list):
-                continue
-            matched: list[str] = []
-            seen: set[str] = set()
-            for raw in raw_tags:
-                canonical = allowed_lower.get(str(raw).strip().lower())
-                if canonical and canonical not in seen:
-                    seen.add(canonical)
-                    matched.append(canonical)
-            if matched:
-                by_id[eid] = matched
+            body = compact_for_llm(email.get("body") or "", _TAG_BODY_CHARS)
+            pass2_blocks.append(
+                f"ID: {eid}\n"
+                f"From: {email.get('sender') or 'Unknown'}\n"
+                f"Subject: {email.get('subject') or '(no subject)'}\n"
+                f"Unsure tags: {', '.join(tag_names)}\n"
+                f"Body:\n{body}"
+            )
+        if not pass2_blocks:
+            return by_id
+
+        pass2_prompt = (
+            "These emails were unsure on pass 1. Read the compact body and assign only the listed unsure tags. "
+            "Return JSON: {\"items\": [{\"id\": \"...\", \"tags\": [\"Tag Name\"]}]}. "
+            "Only include tags that clearly match."
+        )
+        parsed2, _err2 = self._complete(
+            [
+                {"role": "system", "content": "You produce strict JSON."},
+                {
+                    "role": "user",
+                    "content": (
+                        f"{pass2_prompt}\n\nTags:\n"
+                        + "\n".join(unsure_tag_lines)
+                        + "\n\nEmails:\n\n"
+                        + "\n\n---\n\n".join(pass2_blocks)
+                    ),
+                },
+            ],
+            temperature=0.1,
+            timeout=30,
+        )
+        if isinstance(parsed2, dict):
+            entries2 = parsed2.get("items") or []
+            if isinstance(entries2, list):
+                for entry in entries2:
+                    if not isinstance(entry, dict):
+                        continue
+                    eid = str(entry.get("id") or entry.get("email_id") or "")
+                    raw_tags = entry.get("tags") or []
+                    if not eid or not isinstance(raw_tags, list):
+                        continue
+                    existing = set(by_id.get(eid) or [])
+                    for raw in raw_tags:
+                        canonical = allowed_lower.get(str(raw).strip().lower())
+                        if canonical:
+                            existing.add(canonical)
+                    if existing:
+                        by_id[eid] = sorted(existing)
         return by_id
 
     def identify_action_items(self, emails: list[dict], today: str = "") -> tuple[list[dict], str | None]:
@@ -568,7 +680,7 @@ class GroqClient:
         if not self.enabled:
             return None
 
-        clipped_body = body[:8000]
+        clipped_body = compact_for_llm(body, 8000)
         context = f"Reason it needs a reply: {reason}\n" if reason else ""
         parsed, _err = self._complete(
             [
@@ -641,15 +753,15 @@ class GroqClient:
             return {"headline": headline, "bullets": cleaned[:6]}
         return None
 
-    def summarize_emails_batch(self, emails: list[dict], batch_size: int = 3) -> dict[str, list[str]]:
+    def summarize_emails_batch(self, emails: list[dict], batch_size: int = 8) -> dict[str, list[str]]:
         """Return {email_id: bullets} for emails Groq summarized in this batch."""
         if not self.enabled or not emails:
             return {}
 
-        chunk = emails[: max(1, min(batch_size, 3))]
+        chunk = emails[: max(1, min(batch_size, _MAX_SUMMARY_BATCH))]
         blocks: list[str] = []
         for email in chunk:
-            body = (email.get("body") or "")[:_BATCH_BODY_CHARS]
+            body = compact_for_llm(email.get("body") or "", _BATCH_BODY_CHARS)
             blocks.append(
                 f"ID: {email['email_id']}\n"
                 f"From: {email.get('sender') or 'Unknown'}\n"

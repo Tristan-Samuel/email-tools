@@ -48,6 +48,23 @@
                 </div>
             </div>
 
+            {% if acct.needs_reauth %}
+            <p class="panel-hint" style="color:var(--accent);margin:0">
+                Saved App Password can't be read (the encryption key likely changed).
+                Paste a new App Password — you do not need to delete this account.
+            </p>
+            {% endif %}
+            <form action="{{ url_for('main.accounts_update_password', account_id=acct.id) }}" method="post" class="sync-form-row">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <label>
+                    Update App Password
+                    <input type="password" name="password" {% if acct.needs_reauth %}required{% endif %}
+                           placeholder="Mailbox App Password" autocomplete="new-password">
+                </label>
+                <button type="submit" class="btn {% if acct.needs_reauth %}btn-primary{% else %}btn-ghost{% endif %}"
+                        style="font-size:.8rem;padding:.35rem .75rem">Save password</button>
+            </form>
+
             <form action="{{ url_for('main.accounts_sync', account_id=acct.id) }}" method="post">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <div class="sync-form-row">

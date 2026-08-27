@@ -5,22 +5,58 @@ from unittest.mock import MagicMock, patch
 from app.services import imap_service
 
 
-def _mock_conn(uid_search_line: bytes, fetch_ok: bool = True) -> MagicMock:
-    conn = MagicMock()
-    conn.uid.side_effect = lambda cmd, *args: (
-        ("OK", [uid_search_line]) if cmd == "search" else _mock_fetch(fetch_ok)
+def _mock_fetch(ok: bool, uids: list[int] | None = None) -> tuple[str, list]:
+    if not ok:
+        return ("NO", [])
+    uid = uids[0] if uids else 1
+    meta = f"1 (UID {uid} BODY[] {{5}})".encode()
+    return (
+        "OK",
+        [(meta, b"From: a@b.com\r\nSubject: Hi\r\n\r\nBody")],
     )
+
+
+def _mock_conn(uid_search_line: bytes, fetch_ok: bool = True, fetch_uids: list[int] | None = None) -> MagicMock:
+    conn = MagicMock()
+    fetch_uids = fetch_uids or [1]
+
+    def uid_handler(cmd, *args):
+        if cmd == "search":
+            return ("OK", [uid_search_line])
+        uid_arg = args[0]
+        if isinstance(uid_arg, bytes) and "," in uid_arg.decode():
+            first_uid = int(uid_arg.decode().split(",")[0])
+            return _mock_fetch(fetch_ok, [first_uid])
+        if isinstance(uid_arg, bytes):
+            try:
+                return _mock_fetch(fetch_ok, [int(uid_arg.decode())])
+            except ValueError:
+                return _mock_fetch(fetch_ok, fetch_uids)
+        return _mock_fetch(fetch_ok, fetch_uids)
+
+    conn.uid.side_effect = uid_handler
     conn.untagged_responses = {"UIDVALIDITY": [42]}
     return conn
 
 
-def _mock_fetch(ok: bool) -> tuple[str, list]:
-    if not ok:
-        return ("NO", [])
-    return (
-        "OK",
-        [(b"1", b"From: a@b.com\r\nSubject: Hi\r\n\r\nBody")],
+@patch("app.services.imap_service._connect")
+def test_fetch_uid_batch_uses_single_multi_uid_fetch(mock_connect: MagicMock) -> None:
+    conn = _mock_conn(b"101 102", fetch_uids=[101, 102])
+    mock_connect.return_value = conn
+
+    imap_service.fetch_emails(
+        host="imap.test",
+        port=993,
+        username="u@test.com",
+        password="pw",
+        since_uid=100,
     )
+
+    fetch_calls = [c for c in conn.uid.call_args_list if c.args and c.args[0] == "fetch"]
+    assert fetch_calls
+    uid_arg = fetch_calls[0].args[1]
+    assert isinstance(uid_arg, bytes)
+    assert "," in uid_arg.decode()
 
 
 @patch("app.services.imap_service._connect")

@@ -345,9 +345,23 @@ def sync_one_account(
     """Fetch and upsert one account. Heuristic summaries only — AI runs after sync."""
     del groq_client  # IMAP ingest stays fast; Groq runs in the analyze phase.
 
-    def log(message: str, current: int | None = None, total: int | None = None) -> None:
+    def log(
+        message: str,
+        current: int | None = None,
+        total: int | None = None,
+        phase: str | None = None,
+    ) -> None:
         if on_progress:
-            on_progress(message, current, total)
+            on_progress(message, current, total, phase)
+
+    def fetch_progress(current: int, total: int) -> None:
+        safe_total = max(total, 1)
+        log(
+            f"Downloaded {current}/{safe_total} message(s)…",
+            current=current,
+            total=safe_total,
+            phase="fetch",
+        )
 
     password, decrypt_err = _imap_password_for_account(store, account)
     if decrypt_err:
@@ -368,7 +382,7 @@ def sync_one_account(
 
     log(f"Connecting to {account['imap_host']} as {account['account_email']}…")
     for folder in folders:
-        log(f"Fetching {folder} (since {since_date or 'cursor'}, max {sync_max})…")
+        log(f"Fetching {folder} (since {since_date or 'cursor'}, max {sync_max})…", phase="fetch")
         folder_state = store.get_folder_sync(account["id"], folder)
         since_uid = (folder_state or {}).get("last_uid", account.get("last_uid") or 0)
         backfill_uid = (folder_state or {}).get("backfill_uid", account.get("backfill_uid") or 0)
@@ -386,6 +400,7 @@ def sync_one_account(
             limit=sync_max,
             since_date=since_date,
             backfill_only=backfill_only,
+            on_progress=fetch_progress,
         )
         log(f"{folder}: downloaded {len(emails_raw)} message(s).")
         records = [
@@ -434,17 +449,18 @@ def analyze_pending_emails(
 
     total = len(emails)
     model_name = groq.select_max_context_model()
-    on_progress(f"Using Groq model {model_name}…", 0, total)
+    on_progress(f"Using Groq model {model_name}…", 0, total, phase="summarize")
     _cache_groq_model(groq)
     analyzed = 0
-    batch_size = 3
+    batch_size = 8
     for start in range(0, total, batch_size):
         check_cancelled(store)
         chunk = emails[start : start + batch_size]
         on_progress(
             f"AI summarizing {start + 1}–{min(start + batch_size, total)} of {total}…",
-            start,
+            min(start + batch_size, total),
             total,
+            phase="summarize",
         )
         results = groq.summarize_emails_batch(chunk, batch_size=batch_size)
         if groq.last_model_used and groq.last_model_used != model_name:
@@ -481,7 +497,7 @@ def analyze_pending_emails(
     if analyzed == 0 and groq.last_error:
         on_progress(f"No emails could be summarized. {groq.last_error}")
     else:
-        on_progress(f"Summarized {analyzed} of {total}.", total, total)
+        on_progress(f"Summarized {analyzed} of {total}.", total, total, phase="summarize")
     return analyzed
 
 
@@ -2042,13 +2058,17 @@ def _apply_tag_after_save(
             flash("AI tagging started — watch the activity panel.", "success")
 
 
-def _apply_all_tags(store, user_email: str) -> int:
+def _apply_all_tags(store, user_email: str, on_progress: Callable[..., None] | None = None) -> int:
     updated = store.apply_all_manual_tags(user_email)
-    updated += _apply_all_ai_tags(store, user_email)
+    updated += _apply_all_ai_tags(store, user_email, on_progress=on_progress)
     return updated
 
 
-def _apply_all_ai_tags(store, user_email: str) -> int:
+def _apply_all_ai_tags(
+    store,
+    user_email: str,
+    on_progress: Callable[..., None] | None = None,
+) -> int:
     groq = get_groq_client(user_email)
     groq.cancel_check = lambda: current_job_is_cancelled(store)
     if not groq.enabled:
@@ -2061,8 +2081,16 @@ def _apply_all_ai_tags(store, user_email: str) -> int:
     tagged = 0
     tag_by_name = {str(t["name"]).strip().lower(): t for t in tags if str(t.get("name") or "").strip()}
     chunk_size = 8
-    for start in range(0, len(emails), chunk_size):
+    total = len(emails)
+    for start in range(0, total, chunk_size):
         check_cancelled(store)
+        if on_progress:
+            on_progress(
+                f"Tagging {start + 1}–{min(start + chunk_size, total)} of {total}…",
+                min(start + chunk_size, total),
+                total,
+                phase="tag",
+            )
         chunk = emails[start : start + chunk_size]
         pending: list[dict] = []
         existing_map: dict[str, set[int]] = {}
