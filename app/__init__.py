@@ -11,6 +11,7 @@ from flask_wtf.csrf import CSRFProtect
 from markupsafe import Markup
 
 from .routes import register_routes
+from .services.groq_client import DEFAULT_CHAT_MODEL, resolve_chat_model
 from .services.store import EmailStore
 
 csrf = CSRFProtect()
@@ -42,11 +43,29 @@ def _credential_encryption_key(secret_key: str) -> str:
     return dedicated or secret_key
 
 
+def _load_env_file(path: Path) -> None:
+    """Fill os.environ from `.env` without overriding vars already set."""
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        os.environ[key] = value.strip().strip("'").strip('"')
+
+
 def create_app() -> Flask:
     app = Flask(__name__, instance_relative_config=True)
     Path(app.instance_path).mkdir(parents=True, exist_ok=True)
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        _load_env_file(Path(__file__).resolve().parent.parent / ".env")
 
     secret_key = _load_secret_key(Path(app.instance_path))
+    groq_model = resolve_chat_model(os.environ.get("GROQ_DEFAULT_MODEL", DEFAULT_CHAT_MODEL))
     app.config.from_mapping(
         SECRET_KEY=secret_key,
         CREDENTIAL_ENCRYPTION_KEY=_credential_encryption_key(secret_key),
@@ -54,14 +73,14 @@ def create_app() -> Flask:
         UPLOAD_FOLDER=Path(app.instance_path) / "uploads",
         MAX_CONTENT_LENGTH=50 * 1024 * 1024,
         GROQ_API_KEY=os.environ.get("GROQ_API_KEY", ""),
-        GROQ_DEFAULT_MODEL=os.environ.get("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile"),
+        GROQ_DEFAULT_MODEL=groq_model,
         SMTP_HOST=os.environ.get("SMTP_HOST", "").strip(),
         SMTP_PORT=int(os.environ.get("SMTP_PORT", "587")),
         SMTP_USERNAME=os.environ.get("SMTP_USERNAME", "").strip(),
         SMTP_PASSWORD=os.environ.get("SMTP_PASSWORD", ""),
         SMTP_FROM=os.environ.get("SMTP_FROM", "").strip(),
         SMTP_USE_TLS=os.environ.get("SMTP_USE_TLS", "true").lower() in ("1", "true", "yes"),
-        STATIC_VERSION="20",
+        STATIC_VERSION="22",
     )
 
     app.config["UPLOAD_FOLDER"].mkdir(parents=True, exist_ok=True)
@@ -87,12 +106,32 @@ def create_app() -> Flask:
                 pass
         source_account = request.args.get("source_account") if request else None
         query = request.args.get("query", "") if request else ""
+        activity_job = None
+        ai_pending = 0
+        ai_analyzed = 0
+        groq_available = False
+        if user_email:
+            try:
+                activity_job = store.get_latest_job(user_email)
+                ai_analyzed, ai_pending = store.count_ai_stats(user_email)
+            except Exception:
+                pass
+            try:
+                from .routes import get_groq_client
+
+                groq_available = get_groq_client(user_email).enabled
+            except Exception:
+                groq_available = bool(app.config.get("GROQ_API_KEY"))
         return {
             "current_user_email": user_email,
             "active_accounts": active_accounts,
             "source_account": source_account,
             "query": query,
             "static_version": app.config.get("STATIC_VERSION", "1"),
+            "activity_job": activity_job,
+            "ai_pending": ai_pending,
+            "ai_analyzed": ai_analyzed,
+            "groq_available": groq_available,
         }
 
     @app.template_filter("datetimeformat")

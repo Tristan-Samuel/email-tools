@@ -88,6 +88,72 @@
             {% endif %}
         {% endwith %}
 
+        {% if current_user_email %}
+        <section id="activity-panel" class="activity-panel" data-poll="{{ url_for('main.api_jobs') }}"
+                 {% if not activity_job and not ai_pending %}hidden{% endif %}>
+            <div class="activity-bar">
+                <div class="activity-copy">
+                    <p class="activity-label" id="activity-label">
+                        {% if activity_job %}
+                            {{ activity_job.label or activity_job.job_type }}
+                        {% elif ai_pending and groq_available %}
+                            {{ ai_pending }} emails still need AI summaries
+                        {% elif ai_pending %}
+                            {{ ai_pending }} emails have local summaries only
+                        {% else %}
+                            Ready
+                        {% endif %}
+                    </p>
+                    <p class="activity-message" id="activity-message">
+                        {% if activity_job %}
+                            {{ activity_job.message }}
+                        {% elif groq_available and ai_pending %}
+                            Sync downloads mail quickly. AI summaries run automatically after sync, or click Analyze now.
+                        {% elif not groq_available %}
+                            Add a Groq API key in Settings for a real inbox brief.
+                        {% endif %}
+                    </p>
+                </div>
+                <div class="activity-meter">
+                    <div class="activity-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+                         aria-valuenow="{{ activity_job.percent if activity_job else 0 }}" id="activity-progress">
+                        <div class="activity-progress-fill" id="activity-progress-fill"
+                             style="width: {{ activity_job.percent if activity_job else 0 }}%"></div>
+                    </div>
+                    <span class="activity-counts" id="activity-counts">
+                        {% if activity_job and activity_job.total_steps %}
+                            {{ activity_job.current_step }} / {{ activity_job.total_steps }}
+                        {% endif %}
+                    </span>
+                </div>
+                <div class="activity-actions">
+                    <form action="{{ url_for('main.jobs_cancel') }}" method="post" id="activity-cancel-form"
+                          {% if not activity_job or activity_job.status not in ('queued', 'running') %}hidden{% endif %}>
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-ghost" id="activity-cancel-btn">Cancel</button>
+                    </form>
+                    {% if groq_available %}
+                    <form action="{{ url_for('main.analyze_now') }}" method="post" id="activity-analyze-form">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-teal" id="activity-analyze-btn"
+                                {% if activity_job and activity_job.status in ('queued', 'running') %}disabled{% endif %}>
+                            Analyze now
+                        </button>
+                    </form>
+                    {% endif %}
+                    <button type="button" class="btn btn-ghost" id="activity-log-toggle" aria-expanded="false">Log</button>
+                </div>
+            </div>
+            <ol class="activity-log" id="activity-log" hidden>
+                {% if activity_job and activity_job.log %}
+                    {% for line in activity_job.log %}
+                    <li>{{ line }}</li>
+                    {% endfor %}
+                {% endif %}
+            </ol>
+        </section>
+        {% endif %}
+
         <div id="main-content">
             {% block content %}{% endblock %}
         </div>

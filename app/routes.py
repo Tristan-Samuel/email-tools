@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import json
 import logging
 import os
 import secrets
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import quote
 
@@ -15,9 +17,15 @@ from werkzeug.utils import secure_filename
 
 from .services import crypto, imap_service, mail
 from .services.email_parser import parse_email_upload
-from .services.groq_client import GroqClient
+from .services.groq_client import (
+    DEFAULT_CHAT_MODEL,
+    GroqClient,
+    is_fatal_groq_auth_error,
+    is_rate_limit_error,
+)
 from .services.summary import build_digest, build_email_record, build_important_items
 from .services import sync_worker
+from .services.sync_worker import JobCancelled, check_cancelled, current_job_is_cancelled
 
 logger = logging.getLogger(__name__)
 
@@ -199,13 +207,15 @@ def get_groq_client(user_email: str = "") -> GroqClient:
         try:
             stored = get_store().get_setting(email, "groq_api_key")
             if stored:
-                user_api_key = crypto.decrypt(stored, get_credential_key(), purpose="groq")
+                user_api_key, _ = crypto.decrypt_with_fallback(
+                    stored, _credential_keys(), purpose="groq"
+                )
         except Exception:
             pass
     api_key = user_api_key or current_app.config.get("GROQ_API_KEY", "")
     client = GroqClient(
         api_key=api_key,
-        default_model=current_app.config.get("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile"),
+        default_model=current_app.config.get("GROQ_DEFAULT_MODEL", DEFAULT_CHAT_MODEL),
     )
     if api_key:
         cache_key = _groq_model_cache_key(api_key)
@@ -253,11 +263,71 @@ def _parse_since_date(since_str: str | None) -> datetime.date | None:
         return None
 
 
+def _credential_keys() -> list[str]:
+    """Current and legacy secrets so IMAP passwords survive a key change."""
+    keys: list[str] = []
+    primary = get_credential_key()
+    if primary:
+        keys.append(primary)
+    secret = current_app.config.get("SECRET_KEY") or ""
+    if secret and secret not in keys:
+        keys.append(secret)
+    key_file = Path(current_app.instance_path) / "secret_key"
+    if key_file.is_file():
+        try:
+            file_key = key_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            file_key = ""
+        if file_key and file_key not in keys:
+            keys.append(file_key)
+    return keys
+
+
+def _imap_password_for_account(store, account: dict) -> tuple[str, str | None]:
+    """Return (plaintext_password, error). Re-encrypts if a fallback key worked."""
+    ciphertext = account.get("encrypted_password") or ""
+    plaintext, used_key = crypto.decrypt_with_fallback(
+        ciphertext, _credential_keys(), purpose="imap"
+    )
+    if not plaintext:
+        return "", (
+            f"{account['account_email']}: could not decrypt the saved App Password. "
+            "Update it on Accounts — you do not need to delete the mailbox."
+        )
+    primary = get_credential_key()
+    if used_key and used_key != primary:
+        store.update_imap_password(
+            account["id"],
+            account.get("user_email") or "",
+            crypto.encrypt(plaintext, primary, purpose="imap"),
+        )
+    return plaintext, None
+
+
+def _queue_job(
+    user_email: str,
+    job_type: str,
+    label: str,
+    account_ids: list[int] | None = None,
+) -> tuple[str | None, str]:
+    """Enqueue a background job. Return (job_id, error_if_blocked)."""
+    store = get_store()
+    active = store.get_active_job(user_email)
+    if active:
+        return None, "A job is already running — watch the activity panel."
+    job_id = store.create_job(user_email, job_type, label)
+    store.append_job_log(job_id, f"Queued: {label}")
+    sync_worker.enqueue_job(job_id, job_type, user_email, account_ids)
+    return job_id, ""
+
+
 def _enrich_imap_accounts(store, accounts: list[dict]) -> list[dict]:
     enriched: list[dict] = []
     for acct in accounts:
         row = dict(acct)
         row["has_older_mail"] = store.account_has_older_mail(acct["id"])
+        _, decrypt_err = _imap_password_for_account(store, acct)
+        row["needs_reauth"] = bool(decrypt_err)
         enriched.append(row)
     return enriched
 
@@ -270,11 +340,18 @@ def sync_one_account(
     limit: int | None = None,
     since_date: datetime.date | None = None,
     backfill_only: bool = False,
+    on_progress: Callable[..., None] | None = None,
 ) -> tuple[int, str | None]:
-    """Fetch, build records, upsert, and update IMAP checkpoints for one account."""
-    password = crypto.decrypt(account["encrypted_password"], get_credential_key(), purpose="imap")
-    if not password:
-        return 0, f"{account['account_email']}: could not decrypt credentials — re-add this account"
+    """Fetch and upsert one account. Heuristic summaries only — AI runs after sync."""
+    del groq_client  # IMAP ingest stays fast; Groq runs in the analyze phase.
+
+    def log(message: str, current: int | None = None, total: int | None = None) -> None:
+        if on_progress:
+            on_progress(message, current, total)
+
+    password, decrypt_err = _imap_password_for_account(store, account)
+    if decrypt_err:
+        return 0, decrypt_err
 
     sync_max = _parse_sync_max(limit or account.get("sync_max_count"))
     since_str = account.get("sync_since_date")
@@ -289,7 +366,9 @@ def sync_one_account(
     inbox_backfill = account.get("backfill_uid") or 0
     inbox_uidvalidity = account.get("uidvalidity") or 0
 
+    log(f"Connecting to {account['imap_host']} as {account['account_email']}…")
     for folder in folders:
+        log(f"Fetching {folder} (since {since_date or 'cursor'}, max {sync_max})…")
         folder_state = store.get_folder_sync(account["id"], folder)
         since_uid = (folder_state or {}).get("last_uid", account.get("last_uid") or 0)
         backfill_uid = (folder_state or {}).get("backfill_uid", account.get("backfill_uid") or 0)
@@ -308,13 +387,14 @@ def sync_one_account(
             since_date=since_date,
             backfill_only=backfill_only,
         )
+        log(f"{folder}: downloaded {len(emails_raw)} message(s).")
         records = [
             build_email_record(
                 msg,
                 source_name=account["account_email"],
                 user_email=user_email,
                 source_account=account["account_email"],
-                groq_client=groq_client,
+                groq_client=None,
             )
             for msg in emails_raw
         ]
@@ -324,6 +404,7 @@ def sync_one_account(
             inbox_last_uid = last_uid
             inbox_backfill = new_backfill
             inbox_uidvalidity = uidvalidity
+        log(f"{folder}: saved {len(records)}.")
 
     store.update_imap_last_sync(
         account["id"],
@@ -332,8 +413,90 @@ def sync_one_account(
         uidvalidity=inbox_uidvalidity,
     )
     _invalidate_needs_reply_cache()
-    _cache_groq_model(groq_client)
     return total_imported, None
+
+
+def analyze_pending_emails(
+    store,
+    user_email: str,
+    groq: GroqClient,
+    on_progress: Callable[..., None],
+    limit: int = 400,
+) -> int:
+    """Write Groq summaries for unanalyzed mail. Return how many succeeded."""
+    emails = store.list_unanalyzed_emails(user_email, limit)
+    if not emails:
+        on_progress("All cached emails already have AI summaries.")
+        return 0
+    if not groq.enabled:
+        on_progress("Groq is not configured — skipped AI analysis.")
+        return 0
+
+    total = len(emails)
+    model_name = groq.select_max_context_model()
+    on_progress(f"Using Groq model {model_name}…", 0, total)
+    _cache_groq_model(groq)
+    analyzed = 0
+    batch_size = 3
+    for start in range(0, total, batch_size):
+        check_cancelled(store)
+        chunk = emails[start : start + batch_size]
+        on_progress(
+            f"AI summarizing {start + 1}–{min(start + batch_size, total)} of {total}…",
+            start,
+            total,
+        )
+        results = groq.summarize_emails_batch(chunk, batch_size=batch_size)
+        if groq.last_model_used and groq.last_model_used != model_name:
+            model_name = groq.last_model_used
+            on_progress(f"Switched to Groq model {model_name}…")
+        if not results and groq.last_error:
+            on_progress(f"Groq error: {groq.last_error}")
+            if is_fatal_groq_auth_error(groq.last_error):
+                on_progress("Stopping analysis — Groq rejected this API key.")
+                return analyzed
+            if is_rate_limit_error(groq.last_error):
+                on_progress("Rate limited — switching Groq model and retrying smaller requests.")
+            if groq.last_error == "Cancelled.":
+                raise JobCancelled()
+        for email in chunk:
+            bullets = results.get(email["email_id"])
+            if not bullets:
+                bullets = groq.summarize_email(
+                    sender=email.get("sender") or "",
+                    subject=email.get("subject") or "",
+                    body=email.get("body") or "",
+                )
+                if groq.last_model_used and groq.last_model_used != model_name:
+                    model_name = groq.last_model_used
+                    on_progress(f"Switched to Groq model {model_name}…")
+            if bullets:
+                store.update_email_summary(email["email_id"], user_email, bullets)
+                analyzed += 1
+            elif groq.last_error and is_fatal_groq_auth_error(groq.last_error):
+                on_progress(f"Groq error: {groq.last_error}")
+                on_progress("Stopping analysis — Groq rejected this API key.")
+                return analyzed
+        _cache_groq_model(groq)
+    if analyzed == 0 and groq.last_error:
+        on_progress(f"No emails could be summarized. {groq.last_error}")
+    else:
+        on_progress(f"Summarized {analyzed} of {total}.", total, total)
+    return analyzed
+
+
+def refresh_cached_digest(store, user_email: str, groq: GroqClient | None) -> None:
+    """Store an inbox brief so the dashboard does not wait on Groq."""
+    emails = store.list_emails(limit=40, user_email=user_email)
+    accounts = store.list_imap_accounts(user_email)
+    digest = build_digest(
+        emails,
+        has_imap_accounts=bool(accounts),
+        groq_client=groq,
+    )
+    store.set_kv(user_email, "inbox_digest", json.dumps(digest))
+    if groq is not None and groq.enabled:
+        _cache_groq_model(groq)
 
 
 @bp.route("/login", methods=["GET", "POST"])
@@ -558,14 +721,25 @@ def dashboard():
     urgent_emails = [e for e in urgent_emails if e["priority_score"] >= 75]
     cached_emails = store.list_emails(limit=50, user_email=user_email, source_account=source_account)
     groq = get_groq_client(user_email)
-    digest = build_digest(
-        cached_emails,
-        has_imap_accounts=bool(imap_accounts),
-        groq_client=groq,
-    )
-    if groq.enabled:
-        _cache_groq_model(groq)
+    digest = None
+    cached_digest = store.get_kv(user_email, "inbox_digest")
+    if cached_digest:
+        try:
+            parsed = json.loads(cached_digest)
+            if isinstance(parsed, dict) and parsed.get("headline"):
+                digest = parsed
+        except (TypeError, ValueError):
+            digest = None
+    if digest is None:
+        digest = build_digest(
+            cached_emails,
+            has_imap_accounts=bool(imap_accounts),
+            groq_client=None,
+        )
     important_emails = build_important_items(cached_emails)
+    ai_analyzed, ai_pending = store.count_ai_stats(user_email)
+    if groq.enabled and ai_pending > 0 and store.get_active_job(user_email) is None:
+        _queue_job(user_email, "reanalyze", f"Analyze {ai_pending} email(s) with AI")
 
     return render_template(
         "dashboard.html",
@@ -579,6 +753,9 @@ def dashboard():
         important_emails=important_emails,
         default_sync_since=_default_sync_since(),
         default_sync_max=200,
+        groq_available=groq.enabled,
+        ai_analyzed=ai_analyzed,
+        ai_pending=ai_pending,
     )
 
 
@@ -864,6 +1041,8 @@ def accounts():
         row = dict(acct)
         row["folder_sync"] = store.list_folder_sync(acct["id"])
         row["has_older_mail"] = store.account_has_older_mail(acct["id"])
+        _, decrypt_err = _imap_password_for_account(store, acct)
+        row["needs_reauth"] = bool(decrypt_err)
         enriched.append(row)
     return render_template(
         "accounts.html",
@@ -921,16 +1100,21 @@ def accounts_add():
             store.ensure_folder_sync_rows(account_id, ["INBOX"])
 
         try:
-            groq_client = get_groq_client(user_email)
-            account = store.get_imap_account(account_id, user_email)
-            if account:
-                imported, sync_err = sync_one_account(store, account, user_email, groq_client, limit=200)
-                if sync_err:
-                    flash(f"Account connected. Initial sync issue: {sync_err}", "error")
-                else:
-                    flash(f"Account {account_email} connected — {imported} recent email(s) loaded.", "success")
+            job_id, queue_err = _queue_job(
+                user_email,
+                "sync",
+                f"Initial sync {account_email}",
+                account_ids=[account_id],
+            )
+            if queue_err:
+                flash(f"Account {account_email} connected. {queue_err}", "success")
+            else:
+                flash(
+                    f"Account {account_email} connected. Fetching recent mail in the background — watch the activity panel.",
+                    "success",
+                )
         except Exception as exc:
-            flash(f"Account connected. Initial sync failed: {exc}", "error")
+            flash(f"Account connected. Could not start sync: {exc}", "error")
 
         return redirect(url_for("main.accounts"))
 
@@ -964,9 +1148,16 @@ def accounts_sync_all():
         flash("No accounts to sync.", "error")
         return redirect(url_for("main.accounts"))
 
-    sync_worker.enqueue_sync(g.current_user_email)
-    flash(f"Sync queued for {len(accounts)} account(s). Refresh Inbox in a moment.", "success")
-    return redirect(url_for("main.accounts"))
+    job_id, queue_err = _queue_job(
+        g.current_user_email,
+        "sync",
+        f"Sync {len(accounts)} account(s)",
+    )
+    if queue_err:
+        flash(queue_err, "error")
+    else:
+        flash("Sync started — watch the activity panel for progress.", "success")
+    return redirect(request.referrer or url_for("main.accounts"))
 
 
 @bp.post("/accounts/sync/<int:account_id>")
@@ -994,8 +1185,19 @@ def accounts_sync(account_id: int):
         for row in store.list_folder_sync(account_id):
             store.set_folder_enabled(account_id, row["folder"], row["folder"] in folder_names)
 
-    sync_worker.enqueue_sync(user_email, account_ids=[account_id])
-    flash(f"Sync queued for {account['account_email']} (since {since}, max {sync_max}).", "success")
+    job_id, queue_err = _queue_job(
+        user_email,
+        "sync",
+        f"Sync {account['account_email']}",
+        account_ids=[account_id],
+    )
+    if queue_err:
+        flash(queue_err, "error")
+    else:
+        flash(
+            f"Sync started for {account['account_email']}. Mail appears first, then AI summaries run automatically.",
+            "success",
+        )
     return redirect(request.referrer or url_for("main.accounts"))
 
 
@@ -1023,24 +1225,16 @@ def accounts_load_older(account_id: int):
         flash("No older mail pending for this account.", "error")
         return redirect(request.referrer or url_for("main.accounts"))
 
-    groq_client = get_groq_client(user_email)
-    imported, sync_err = sync_one_account(
-        store,
-        account,
+    job_id, queue_err = _queue_job(
         user_email,
-        groq_client,
-        limit=sync_max,
-        since_date=_parse_since_date(since),
-        backfill_only=True,
+        "backfill",
+        f"Load older mail for {account['account_email']}",
+        account_ids=[account_id],
     )
-    if sync_err:
-        flash(sync_err, "error")
+    if queue_err:
+        flash(queue_err, "error")
     else:
-        still_more = store.account_has_older_mail(account_id)
-        msg = f"Loaded {imported} older message(s)."
-        if still_more:
-            msg += " More older mail remains — click Load older again."
-        flash(msg, "success")
+        flash("Loading older mail in the background — watch the activity panel.", "success")
     return redirect(request.referrer or url_for("main.dashboard"))
 
 
@@ -1143,7 +1337,6 @@ def search_page():
         date_to=date_to or "",
         tags=tags,
         selected_tag=tag_filter,
-        selected_tag_ids=[],
     )
 
 
@@ -1251,7 +1444,6 @@ def inbox():
         query=query,
         tags=tags,
         selected_tag=tag_filter,
-        selected_tag_ids=tag_ids_raw,
         date_from=date_from or "",
         date_to=date_to or "",
         hidden_count=hidden_count,
@@ -1271,6 +1463,8 @@ def inbox():
         bulk_undo_ids=session.pop("bulk_undo_ids", None),
         email_tags_map=email_tags_map,
         all_tags=tags,
+        groq_available=get_groq_client(user_email).enabled,
+        ai_pending=store.count_ai_stats(user_email)[1],
     )
 
 
@@ -1319,8 +1513,16 @@ def settings():
             if not groq.enabled:
                 flash("Add a Groq API key to re-analyze emails.", "error")
             else:
-                sync_worker.enqueue_sync(user_email, job_type="reanalyze")
-                flash("Re-analysis queued for unanalyzed emails.", "success")
+                pending = store.count_ai_stats(user_email)[1]
+                job_id, queue_err = _queue_job(
+                    user_email,
+                    "reanalyze",
+                    f"Analyze {pending} email(s) with AI",
+                )
+                if queue_err:
+                    flash(queue_err, "error")
+                else:
+                    flash("AI analysis started — watch the activity panel.", "success")
             return redirect(url_for("main.settings"))
 
         groq_key = (request.form.get("groq_api_key") or "").strip()
@@ -1333,7 +1535,7 @@ def settings():
         return redirect(url_for("main.settings"))
 
     has_groq_key = bool(store.get_setting(user_email, "groq_api_key"))
-    active_model = current_app.config.get("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile")
+    active_model = current_app.config.get("GROQ_DEFAULT_MODEL", DEFAULT_CHAT_MODEL)
     has_app_password = bool(store.get_app_password_hash(user_email))
     ai_analyzed, ai_pending = store.count_ai_stats(user_email)
     return render_template(
@@ -1354,6 +1556,123 @@ def api_senders():
         return auth
     senders = get_store().get_senders(g.current_user_email)
     return jsonify(senders)
+
+
+@bp.get("/api/jobs")
+def api_jobs():
+    auth = require_login_api()
+    if auth is not None:
+        return auth
+    store = get_store()
+    user_email = g.current_user_email
+    groq = get_groq_client(user_email)
+    analyzed, pending = store.count_ai_stats(user_email)
+    return jsonify(
+        {
+            "active": store.get_active_job(user_email),
+            "latest": store.get_latest_job(user_email),
+            "jobs": store.list_jobs(user_email, 5),
+            "ai": {
+                "analyzed": analyzed,
+                "pending": pending,
+                "groq_enabled": groq.enabled,
+            },
+        }
+    )
+
+
+@bp.post("/jobs/cancel")
+def jobs_cancel():
+    wants_json = "application/json" in (request.headers.get("Accept") or "")
+    if wants_json:
+        auth = require_login_api()
+        if auth is not None:
+            return auth
+        cancelled = get_store().cancel_active_jobs(g.current_user_email)
+        return jsonify({"ok": True, "cancelled": len(cancelled)})
+
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    cancelled = get_store().cancel_active_jobs(g.current_user_email)
+    if cancelled:
+        flash("Job cancelled. You can start a new sync or analysis.", "success")
+    else:
+        flash("No running job to cancel.", "error")
+    return redirect(request.referrer or url_for("main.inbox"))
+
+
+@bp.post("/analyze")
+def analyze_now():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    user_email = g.current_user_email
+    groq = get_groq_client(user_email)
+    if not groq.enabled:
+        flash("Add a Groq API key in Settings to generate AI summaries.", "error")
+        return redirect(url_for("main.settings"))
+
+    pending = store.count_ai_stats(user_email)[1]
+    if pending <= 0:
+        flash("All cached emails already have AI summaries.", "success")
+        return redirect(request.referrer or url_for("main.dashboard"))
+
+    job_id, queue_err = _queue_job(
+        user_email,
+        "reanalyze",
+        f"Analyze {pending} email(s) with AI",
+    )
+    if queue_err:
+        flash(queue_err, "error")
+    else:
+        flash("AI analysis started — watch the activity panel for progress.", "success")
+    return redirect(request.referrer or url_for("main.dashboard"))
+
+
+@bp.post("/accounts/<int:account_id>/password")
+def accounts_update_password(account_id: int):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    user_email = g.current_user_email
+    account = store.get_imap_account(account_id, user_email)
+    if account is None:
+        flash("Account not found.", "error")
+        return redirect(url_for("main.accounts"))
+
+    password = (request.form.get("password") or "").strip()
+    if not password:
+        flash("Enter the mailbox App Password.", "error")
+        return redirect(url_for("main.accounts"))
+
+    ok, err = imap_service.test_connection(
+        account["imap_host"],
+        account["imap_port"],
+        account["account_email"],
+        password,
+    )
+    if not ok:
+        flash(f"Could not connect: {err}", "error")
+        return redirect(url_for("main.accounts"))
+
+    encrypted = crypto.encrypt(password, get_credential_key(), purpose="imap")
+    store.update_imap_password(account_id, user_email, encrypted)
+    job_id, queue_err = _queue_job(
+        user_email,
+        "sync",
+        f"Sync {account['account_email']}",
+        account_ids=[account_id],
+    )
+    if queue_err:
+        flash(f"App Password saved. {queue_err}", "success")
+    else:
+        flash("App Password saved. Sync started — watch the activity panel.", "success")
+    return redirect(url_for("main.accounts"))
 
 
 @bp.get("/api/recipients")
@@ -1519,14 +1838,16 @@ def tags():
             flash("Tag name is required.", "error")
         else:
             tag_id = store.save_tag(user_email, name, color, use_ai, ai_instruction, hide_matching)
-            fields = request.form.getlist("rule_field")
-            operators = request.form.getlist("rule_operator")
-            values = request.form.getlist("rule_value")
-            store.clear_tag_rules(tag_id)
-            for field, operator, value in zip(fields, operators, values):
-                if field and operator and value.strip():
-                    store.save_tag_rule(tag_id, field, operator, value.strip())
-            flash(f"Tag '{name}' saved.", "success")
+            saved_rules = _save_tag_rules_from_form(store, tag_id)
+            _apply_tag_after_save(
+                store,
+                user_email,
+                tag_id,
+                name,
+                use_ai=use_ai,
+                hide_matching=hide_matching,
+                saved_rules=saved_rules,
+            )
         return redirect(url_for("main.tags"))
 
     user_tags = store.list_tags(user_email)
@@ -1557,28 +1878,15 @@ def tags_edit(tag_id: int):
             elif not tag["use_ai"]:
                 flash("Enable AI for this tag before applying.", "error")
             else:
-                emails = store.list_emails(user_email=user_email, limit=200, exclude_hidden=False)
-                tagged = 0
-                for email in emails:
-                    existing_ids = {t["id"] for t in store.get_email_tags(email["email_id"])}
-                    if tag_id in existing_ids:
-                        continue
-                    match = groq.classify_email_for_tag(
-                        tag_name=tag["name"],
-                        ai_instruction=tag["ai_instruction"],
-                        sender=email.get("sender", ""),
-                        subject=email.get("subject", ""),
-                        body=email.get("body", ""),
-                    )
-                    if match:
-                        store.set_email_tags(
-                            email["email_id"],
-                            list(existing_ids | {tag_id}),
-                        )
-                        tagged += 1
-                        if tag["hide_matching"]:
-                            store.set_email_hidden(email["email_id"], user_email, True, by_tag=True)
-                flash(f"AI tagging complete — {tagged} email(s) tagged as '{tag['name']}'.", "success")
+                job_id, queue_err = _queue_job(
+                    user_email,
+                    "tags",
+                    f"AI tagging '{tag['name']}'",
+                )
+                if queue_err:
+                    flash(queue_err, "error")
+                else:
+                    flash(f"AI tagging started for '{tag['name']}' — watch the activity panel.", "success")
             return redirect(url_for("main.tags_edit", tag_id=tag_id))
 
         if action == "apply_manual":
@@ -1596,14 +1904,16 @@ def tags_edit(tag_id: int):
             flash("Tag name is required.", "error")
         else:
             store.update_tag(tag_id, user_email, name, color, use_ai, ai_instruction, hide_matching)
-            fields = request.form.getlist("rule_field")
-            operators = request.form.getlist("rule_operator")
-            values = request.form.getlist("rule_value")
-            store.clear_tag_rules(tag_id)
-            for field, operator, value in zip(fields, operators, values):
-                if field and operator and value.strip():
-                    store.save_tag_rule(tag_id, field, operator, value.strip())
-            flash(f"Tag '{name}' updated.", "success")
+            saved_rules = _save_tag_rules_from_form(store, tag_id)
+            _apply_tag_after_save(
+                store,
+                user_email,
+                tag_id,
+                name,
+                use_ai=use_ai,
+                hide_matching=hide_matching,
+                saved_rules=saved_rules,
+            )
             return redirect(url_for("main.tags"))
 
     groq_available = get_groq_client().enabled
@@ -1652,8 +1962,15 @@ def tags_apply_ai(tag_id: int):
         flash("Add a Groq API key in Settings to use AI tagging.", "error")
         return redirect(url_for("main.tags"))
 
-    sync_worker.enqueue_sync(user_email, job_type="tags")
-    flash(f"AI tagging queued for '{tag['name']}'. Check back in a moment.", "success")
+    job_id, queue_err = _queue_job(
+        user_email,
+        "tags",
+        f"AI tagging '{tag['name']}'",
+    )
+    if queue_err:
+        flash(queue_err, "error")
+    else:
+        flash(f"AI tagging started for '{tag['name']}' — watch the activity panel.", "success")
     return redirect(url_for("main.tags"))
 
 
@@ -1662,8 +1979,11 @@ def tags_apply_ai_background():
     login_redirect = require_login()
     if login_redirect is not None:
         return login_redirect
-    sync_worker.enqueue_sync(g.current_user_email, job_type="tags")
-    flash("AI tag apply queued. Check back in a moment.", "success")
+    job_id, queue_err = _queue_job(g.current_user_email, "tags", "Apply AI tags")
+    if queue_err:
+        flash(queue_err, "error")
+    else:
+        flash("AI tagging started — watch the activity panel.", "success")
     return redirect(url_for("main.tags"))
 
 
@@ -1671,34 +1991,102 @@ def register_routes(app):
     app.register_blueprint(bp)
     from .services.sync_worker import start_sync_worker
 
-    start_sync_worker(app, sync_one_account, get_groq_client, tag_apply_fn=_apply_all_ai_tags)
+    start_sync_worker(
+        app,
+        sync_one_account,
+        get_groq_client,
+        tag_apply_fn=_apply_all_tags,
+        analyze_fn=analyze_pending_emails,
+        digest_fn=refresh_cached_digest,
+    )
+
+
+def _save_tag_rules_from_form(store, tag_id: int) -> int:
+    fields = request.form.getlist("rule_field")
+    operators = request.form.getlist("rule_operator")
+    values = request.form.getlist("rule_value")
+    store.clear_tag_rules(tag_id)
+    saved = 0
+    for field, operator, value in zip(fields, operators, values):
+        if field and operator and value.strip():
+            store.save_tag_rule(tag_id, field, operator, value.strip())
+            saved += 1
+    return saved
+
+
+def _apply_tag_after_save(
+    store,
+    user_email: str,
+    tag_id: int,
+    name: str,
+    *,
+    use_ai: bool,
+    hide_matching: bool,
+    saved_rules: int,
+) -> None:
+    if hide_matching and not use_ai and saved_rules == 0:
+        store.seed_tag_name_rules(tag_id, name)
+        flash(
+            f"Hide matching is on, so emails whose subject or body contains '{name}' will be tagged and hidden.",
+            "success",
+        )
+    applied = store.apply_all_manual_tags(user_email)
+    flash(f"Tag '{name}' saved.", "success")
+    if applied:
+        flash(f"Applied matching rules — {applied} tag change(s).", "success")
+    if use_ai:
+        _, queue_err = _queue_job(user_email, "tags", f"AI tagging '{name}'")
+        if queue_err:
+            flash(f"{queue_err} Click Apply AI after the current job finishes.", "error")
+        else:
+            flash("AI tagging started — watch the activity panel.", "success")
+
+
+def _apply_all_tags(store, user_email: str) -> int:
+    updated = store.apply_all_manual_tags(user_email)
+    updated += _apply_all_ai_tags(store, user_email)
+    return updated
 
 
 def _apply_all_ai_tags(store, user_email: str) -> int:
     groq = get_groq_client(user_email)
+    groq.cancel_check = lambda: current_job_is_cancelled(store)
     if not groq.enabled:
         return 0
     tags = [t for t in store.list_tags(user_email) if t["use_ai"]]
     if not tags:
         return 0
+    # ponytail: AI tagging only considers the 200 most recent emails.
     emails = store.list_emails(user_email=user_email, limit=200, exclude_hidden=False)
     tagged = 0
-    for email in emails:
-        existing_ids = {t["id"] for t in store.get_email_tags(email["email_id"])}
-        for tag in tags:
-            if tag["id"] in existing_ids:
-                continue
-            if groq.classify_email_for_tag(
-                tag_name=tag["name"],
-                ai_instruction=tag["ai_instruction"],
-                sender=email.get("sender", ""),
-                subject=email.get("subject", ""),
-                body=email.get("body", ""),
-            ):
-                store.set_email_tags(email["email_id"], list(existing_ids | {tag["id"]}))
-                existing_ids.add(tag["id"])
+    tag_by_name = {str(t["name"]).strip().lower(): t for t in tags if str(t.get("name") or "").strip()}
+    chunk_size = 8
+    for start in range(0, len(emails), chunk_size):
+        check_cancelled(store)
+        chunk = emails[start : start + chunk_size]
+        pending: list[dict] = []
+        existing_map: dict[str, set[int]] = {}
+        for email in chunk:
+            existing_ids = {t["id"] for t in store.get_email_tags(email["email_id"])}
+            existing_map[email["email_id"]] = existing_ids
+            if any(tag["id"] not in existing_ids for tag in tags):
+                pending.append(email)
+        if not pending:
+            continue
+        matches = groq.classify_emails_for_tags(pending, tags)
+        for email in pending:
+            names = matches.get(email["email_id"]) or []
+            existing_ids = existing_map[email["email_id"]]
+            new_ids = set(existing_ids)
+            for name in names:
+                tag = tag_by_name.get(str(name).strip().lower())
+                if tag is None or tag["id"] in new_ids:
+                    continue
+                new_ids.add(tag["id"])
                 tagged += 1
                 if tag["hide_matching"]:
                     store.set_email_hidden(email["email_id"], user_email, True, by_tag=True)
+            if new_ids != existing_ids:
+                store.set_email_tags(email["email_id"], list(new_ids))
     _cache_groq_model(groq)
     return tagged

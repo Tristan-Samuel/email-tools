@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from pathlib import Path
 
 
@@ -276,6 +277,41 @@ class EmailStore:
                 (row["id"], row["last_uid"], row["backfill_uid"], row["uidvalidity"]),
             )
 
+    def _migrate_v6(self, connection: sqlite3.Connection) -> None:
+        """Background job status/logs and generic per-user key-value cache."""
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_jobs (
+                id TEXT PRIMARY KEY,
+                user_email TEXT NOT NULL,
+                job_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                current_step INTEGER NOT NULL DEFAULT 0,
+                total_steps INTEGER NOT NULL DEFAULT 0,
+                message TEXT NOT NULL DEFAULT '',
+                log_json TEXT NOT NULL DEFAULT '[]',
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_jobs_user ON user_jobs(user_email, created_at DESC)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_kv (
+                user_email TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL DEFAULT '',
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_email, key)
+            )
+            """
+        )
+
     def initialize(self) -> None:
         with self._connect() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -298,6 +334,10 @@ class EmailStore:
             if version < 5:
                 self._migrate_v5(connection)
                 connection.execute("PRAGMA user_version = 5")
+                version = 5
+            if version < 6:
+                self._migrate_v6(connection)
+                connection.execute("PRAGMA user_version = 6")
             try:
                 connection.execute("SELECT email_id FROM email_search LIMIT 0")
                 self.fts_enabled = True
@@ -905,6 +945,18 @@ class EmailStore:
                 (account_id, user_email),
             )
 
+    def update_imap_password(self, account_id: int, user_email: str, encrypted_password: str) -> bool:
+        """Replace stored IMAP ciphertext. Return True if a row was updated."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE imap_accounts SET encrypted_password = ?
+                WHERE id = ? AND user_email = ?
+                """,
+                (encrypted_password, account_id, user_email),
+            )
+            return cursor.rowcount > 0
+
     def update_imap_sync_prefs(
         self,
         account_id: int,
@@ -1026,6 +1078,20 @@ class EmailStore:
             ).fetchall()
         return [row["email_id"] for row in rows]
 
+    def list_unanalyzed_emails(self, user_email: str, limit: int = 40) -> list[dict]:
+        """Recent emails that still need a Groq summary."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM emails
+                WHERE user_email = ? AND ai_analyzed = 0
+                ORDER BY received_at DESC
+                LIMIT ?
+                """,
+                (user_email, limit),
+            ).fetchall()
+        return [self._deserialize_row(row) for row in rows if row]
+
     def get_email_tags_batch(self, email_ids: list[str]) -> dict[str, list[dict]]:
         if not email_ids:
             return {}
@@ -1101,6 +1167,196 @@ class EmailStore:
                 ).fetchone()
             return row["groq_api_key"] if row else ""
         return ""
+
+    def set_kv(self, user_email: str, key: str, value: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_kv (user_email, key, value, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_email, key) DO UPDATE SET
+                    value=excluded.value,
+                    updated_at=excluded.updated_at
+                """,
+                (user_email, key, value),
+            )
+
+    def get_kv(self, user_email: str, key: str) -> str:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM user_kv WHERE user_email = ? AND key = ?",
+                (user_email, key),
+            ).fetchone()
+        return row["value"] if row else ""
+
+    def _job_from_row(self, row: sqlite3.Row | None) -> dict | None:
+        if row is None:
+            return None
+        job = dict(row)
+        try:
+            job["log"] = json.loads(job.pop("log_json") or "[]")
+        except (TypeError, ValueError):
+            job["log"] = []
+        total = int(job.get("total_steps") or 0)
+        current = int(job.get("current_step") or 0)
+        if total > 0:
+            job["percent"] = min(100, int(current * 100 / total))
+        elif job.get("status") == "done":
+            job["percent"] = 100
+        else:
+            job["percent"] = 0
+        return job
+
+    def job_was_cancelled(self, job_id: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT status FROM user_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+        return bool(row) and row["status"] == "cancelled"
+
+    def cancel_active_jobs(self, user_email: str) -> list[str]:
+        """Mark queued/running jobs cancelled. Return cancelled job ids."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, log_json FROM user_jobs
+                WHERE user_email = ? AND status IN ('queued', 'running')
+                """,
+                (user_email,),
+            ).fetchall()
+            ids: list[str] = []
+            for row in rows:
+                try:
+                    log = json.loads(row["log_json"] or "[]")
+                except (TypeError, ValueError):
+                    log = []
+                if not isinstance(log, list):
+                    log = []
+                log.append("Cancelled by user.")
+                log = log[-40:]
+                connection.execute(
+                    """
+                    UPDATE user_jobs
+                    SET status = 'cancelled', message = ?, error = '', log_json = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND status IN ('queued', 'running')
+                    """,
+                    ("Cancelled.", json.dumps(log), row["id"]),
+                )
+                ids.append(row["id"])
+        return ids
+
+    def create_job(self, user_email: str, job_type: str, label: str) -> str:
+        """Insert a queued job and return its id."""
+        job_id = uuid.uuid4().hex
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_jobs (id, user_email, job_type, status, label, log_json)
+                VALUES (?, ?, ?, 'queued', ?, '[]')
+                """,
+                (job_id, user_email, job_type, label),
+            )
+        return job_id
+
+    def update_job(self, job_id: str, **fields: object) -> None:
+        allowed = {"status", "label", "current_step", "total_steps", "message", "error"}
+        assignments: list[str] = []
+        values: list[object] = []
+        for key, value in fields.items():
+            if key not in allowed or value is None:
+                continue
+            assignments.append(f"{key} = ?")
+            values.append(value)
+        if not assignments:
+            return
+        assignments.append("updated_at = CURRENT_TIMESTAMP")
+        values.append(job_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT status FROM user_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None or row["status"] == "cancelled":
+                return
+            connection.execute(
+                f"UPDATE user_jobs SET {', '.join(assignments)} WHERE id = ?",
+                values,
+            )
+
+    def append_job_log(self, job_id: str, line: str, *, limit: int = 40) -> None:
+        """Append a log line and set the job's current message to that line."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT log_json, status FROM user_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None or row["status"] == "cancelled":
+                return
+            try:
+                log = json.loads(row["log_json"] or "[]")
+            except (TypeError, ValueError):
+                log = []
+            if not isinstance(log, list):
+                log = []
+            log.append(line)
+            log = log[-limit:]
+            connection.execute(
+                """
+                UPDATE user_jobs
+                SET log_json = ?, message = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status != 'cancelled'
+                """,
+                (json.dumps(log), line, job_id),
+            )
+
+    def get_job(self, job_id: str, user_email: str) -> dict | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM user_jobs WHERE id = ? AND user_email = ?",
+                (job_id, user_email),
+            ).fetchone()
+        return self._job_from_row(row)
+
+    def get_active_job(self, user_email: str) -> dict | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM user_jobs
+                WHERE user_email = ? AND status IN ('queued', 'running')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (user_email,),
+            ).fetchone()
+        return self._job_from_row(row)
+
+    def get_latest_job(self, user_email: str) -> dict | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM user_jobs
+                WHERE user_email = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (user_email,),
+            ).fetchone()
+        return self._job_from_row(row)
+
+    def list_jobs(self, user_email: str, limit: int = 5) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM user_jobs
+                WHERE user_email = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (user_email, limit),
+            ).fetchall()
+        return [job for row in rows if (job := self._job_from_row(row))]
 
     # ------------------------------------------------------------------
     # App-level account password (separate from Gmail/IMAP credentials)
@@ -1367,6 +1623,14 @@ class EmailStore:
             tag["rules"] = [dict(r) for r in rules]
         return tag
 
+    def seed_tag_name_rules(self, tag_id: int, name: str) -> None:
+        """Subject/body contains rules so Hide matching works without a custom filter."""
+        phrase = name.strip()
+        if not phrase:
+            return
+        self.save_tag_rule(tag_id, "subject", "contains", phrase)
+        self.save_tag_rule(tag_id, "body", "contains", phrase)
+
     def save_tag_rule(self, tag_id: int, field: str, operator: str, value: str) -> int:
         with self._connect() as connection:
             cursor = connection.execute(
@@ -1430,6 +1694,15 @@ class EmailStore:
 
     def apply_all_manual_tags(self, user_email: str) -> int:
         tags = self.list_tags(user_email)
+        for tag in tags:
+            if tag["hide_matching"] and not tag["use_ai"] and not tag["rules"]:
+                phrase = str(tag.get("name") or "").strip()
+                if phrase:
+                    self.seed_tag_name_rules(tag["id"], phrase)
+                    tag["rules"] = [
+                        {"field": "subject", "operator": "contains", "value": phrase},
+                        {"field": "body", "operator": "contains", "value": phrase},
+                    ]
         manual_tags = [t for t in tags if not t["use_ai"] or t["rules"]]
         if not manual_tags:
             return 0

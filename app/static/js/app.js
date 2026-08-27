@@ -81,3 +81,134 @@ function addTagRule(containerId) {
 
 window.addRule = addTagRule;
 window.addTagRule = addTagRule;
+
+function initActivityPanel() {
+    const panel = document.getElementById("activity-panel");
+    if (!panel) return;
+    const url = panel.dataset.poll;
+    const labelEl = document.getElementById("activity-label");
+    const messageEl = document.getElementById("activity-message");
+    const fillEl = document.getElementById("activity-progress-fill");
+    const progressEl = document.getElementById("activity-progress");
+    const countsEl = document.getElementById("activity-counts");
+    const logEl = document.getElementById("activity-log");
+    const toggle = document.getElementById("activity-log-toggle");
+    const analyzeBtn = document.getElementById("activity-analyze-btn");
+    const cancelForm = document.getElementById("activity-cancel-form");
+    const cancelBtn = document.getElementById("activity-cancel-btn");
+    let lastActiveId = null;
+    let lastStatus = "";
+
+    if (toggle && logEl) {
+        toggle.addEventListener("click", () => {
+            const open = logEl.hasAttribute("hidden");
+            if (open) logEl.removeAttribute("hidden");
+            else logEl.setAttribute("hidden", "");
+            toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        });
+    }
+
+    const render = (data) => {
+        const active = data.active || null;
+        const latest = data.latest || null;
+        const job = active || latest;
+        const ai = data.ai || {};
+        const pending = ai.pending || 0;
+        const groqEnabled = !!ai.groq_enabled;
+        const busy = !!(active && (active.status === "queued" || active.status === "running"));
+
+        if (!job && pending <= 0) {
+            panel.hidden = true;
+            return;
+        }
+        panel.hidden = false;
+        panel.classList.toggle("is-running", busy);
+        panel.classList.toggle("is-error", !!(job && job.status === "error"));
+
+        if (labelEl) {
+            if (busy) labelEl.textContent = job.label || job.job_type || "Working…";
+            else if (job && job.status === "cancelled") labelEl.textContent = job.label || "Cancelled";
+            else if (job && job.status === "error") labelEl.textContent = job.label || "Job failed";
+            else if (job && job.status === "done") labelEl.textContent = job.label || "Last job finished";
+            else if (pending && groqEnabled) labelEl.textContent = `${pending} emails still need AI summaries`;
+            else if (pending) labelEl.textContent = `${pending} emails have local summaries only`;
+            else labelEl.textContent = "Ready";
+        }
+        if (messageEl) {
+            if (job && job.error && job.status === "error") messageEl.textContent = job.error;
+            else if (job && job.message) messageEl.textContent = job.message;
+            else if (groqEnabled && pending) {
+                messageEl.textContent = "Sync downloads mail quickly. AI summaries run automatically after sync, or click Analyze now.";
+            } else if (!groqEnabled) {
+                messageEl.textContent = "Add a Groq API key in Settings for a real inbox brief.";
+            } else {
+                messageEl.textContent = "";
+            }
+        }
+        const percent = job ? job.percent || 0 : 0;
+        if (fillEl) fillEl.style.width = `${percent}%`;
+        if (progressEl) progressEl.setAttribute("aria-valuenow", String(percent));
+        if (countsEl) {
+            if (job && job.total_steps) countsEl.textContent = `${job.current_step} / ${job.total_steps}`;
+            else countsEl.textContent = "";
+        }
+        if (logEl && job && Array.isArray(job.log)) {
+            logEl.innerHTML = job.log.map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+        }
+        if (analyzeBtn) analyzeBtn.disabled = busy || !groqEnabled || pending <= 0;
+        if (cancelForm) cancelForm.hidden = !busy;
+        if (cancelBtn) cancelBtn.disabled = !busy;
+
+        if (
+            lastStatus === "running" &&
+            !busy &&
+            latest &&
+            latest.status === "done" &&
+            lastActiveId &&
+            latest.id === lastActiveId &&
+            document.querySelector("[data-reload-on-job]")
+        ) {
+            window.location.reload();
+        }
+        lastActiveId = active ? active.id : lastActiveId;
+        lastStatus = active ? active.status : (latest ? latest.status : "");
+    };
+
+    if (cancelForm) {
+        cancelForm.addEventListener("submit", (event) => {
+            event.preventDefault();
+            if (cancelBtn) cancelBtn.disabled = true;
+            fetch(cancelForm.action, {
+                method: "POST",
+                body: new FormData(cancelForm),
+                headers: { Accept: "application/json" },
+            })
+                .then((r) => (r.ok ? r.json() : null))
+                .then(() => tick())
+                .catch(() => {
+                    cancelForm.submit();
+                });
+        });
+    }
+
+    const tick = () => {
+        fetch(url, { headers: { Accept: "application/json" } })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => {
+                if (data) render(data);
+            })
+            .catch(() => {});
+    };
+    tick();
+    setInterval(tick, 2000);
+}
+
+function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+}
+
+initActivityPanel();
