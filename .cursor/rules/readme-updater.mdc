@@ -1,0 +1,61 @@
+---
+description: "Keep README.md in sync when the Flask app's features, env, or layout change."
+globs: "{app.py,app/**/*.py,app/templates/**/*.html,app/static/**/*,requirements.txt,.env.example,README.md}"
+alwaysApply: true
+---
+
+# README & Documentation Policy
+
+`README.md` is the user-facing guide and the codebase map for this Flask app. After creating, renaming, deleting, or meaningfully changing a module, route, env var, or user-visible feature, update `README.md` in the same turn before finishing.
+
+Do not invent new top-level sections. Fit changes into the existing headings. Do not add Getting Started, Changelog, or Recent Updates.
+
+## When You Must Update
+
+Update README when any of these happen:
+- New / renamed / deleted Python module under `app/` (or `app.py`)
+- New page, route, or user-visible capability (inbox, tags, sync, search, Groq, etc.)
+- Changed login, IMAP connect, or multi-account flow
+- New or renamed environment variable
+- Changed run command, Python deps, or Groq fallback behavior
+
+Skip README for typos, private refactors with no behavior/API change, CSS-only polish, or graphify-out updates.
+
+## Section Map
+
+| Change type | Update these README sections |
+|---|---|
+| User-visible capability (sync, tags, search, digest, hide, respond-now) | **Features** |
+| venv, `pip install`, `flask --app app run`, debug host/port | **Run Locally** |
+| Per-user vs server Groq key, heuristic fallback, model discovery | **Adding a Groq API Key** |
+| IMAP login, App Passwords, host auto-fill, adding accounts | **Connecting Your Inbox** |
+| New/renamed/removed env var | **Environment Variables** |
+| New/renamed/deleted file or folder | **Project Structure** |
+
+Refresh the Features bullets so they match what the app actually does (IMAP multi-account, SQLite + FTS, categories, Groq-or-heuristic summaries, digest, search, `.eml`/`.mbox` import, tags, hidden mail, Respond Now). Do not leave the tree describing only login/dashboard/upload if those other pages exist.
+
+## Project Structure entries
+
+Keep the tree one-line role comments:
+
+```
+app/routes.py                   All HTTP routes (login, inbox, dashboard, search, accounts, tags, settings)
+app/services/store.py           SQLite persistence, FTS, accounts, tags, settings
+```
+
+If a file moves, move its README line; do not leave a stale duplicate.
+
+## Writing Rules
+
+- Document behavior and contracts, not commit history.
+- Use exact file and env names with backticks (`GROQ_API_KEY`, `EmailStore`).
+- One sentence per tree line; put detail in Features or the matching how-to section.
+- Preserve heading depth and tone of adjacent sections.
+
+## Done Checklist
+
+- Features bullets still true
+- Project Structure tree line added/updated/removed
+- Environment Variables table updated if an env var changed
+- Connecting Your Inbox / Groq sections updated if those flows changed
+- Run Locally still matches `requirements.txt` and the actual start command

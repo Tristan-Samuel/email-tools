@@ -136,8 +136,8 @@ def create_app() -> Flask:
                 continue
             lines = para.split("\n")
             non_empty = [line for line in lines if line.strip()]
-            if non_empty and all(line.lstrip().startswith(">") for line in lines):
-                inner = _html.escape("\n".join(line.lstrip("> ") for line in lines))
+            if non_empty and all(line.lstrip().startswith(">") for line in non_empty):
+                inner = _html.escape("\n".join(line.lstrip("> ") for line in non_empty))
                 result.append(f'<blockquote class="email-quote">{inner}</blockquote>')
             else:
                 content = _html.escape(para).replace("\n", "<br>")

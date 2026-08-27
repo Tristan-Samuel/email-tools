@@ -1,0 +1,35 @@
+---
+description: "Python/Flask documentation, type hints, and architecture conventions for email-tools."
+globs: "**/*.py"
+alwaysApply: true
+---
+
+# Python & Flask Conventions
+
+This is a Flask inbox-triage app (`email-tools`), not a Unity/C# game. Match the style already in `app/`.
+
+## Architecture
+
+- App factory: `create_app()` in `app/__init__.py`. Entry point is `app.py`.
+- All HTTP lives on Blueprint `main` in `app/routes.py`. Do not add a second routes module unless asked.
+- Persistence only through `EmailStore` (`app.extensions["email_store"]` / `get_store()`). Do not open SQLite from routes.
+- IMAP I/O only in `app/services/imap_service.py`. Parsing `.eml`/`.mbox` only in `email_parser.py`.
+- Summaries and categories in `summary.py`. Groq HTTP in `groq_client.py`. Password ciphertext in `crypto.py`.
+- Protected routes start with `require_login()`. Scope every store call with `user_email=g.current_user_email`.
+- IMAP passwords: `crypto.encrypt(...)` before save; never log, flash, or template-render the plaintext.
+- Groq is optional. If no per-user or `GROQ_API_KEY`, fall back to `summary.summarize_email` heuristics. Do not require a key to import or list mail.
+- Templates extend `base.html`. Keep Jinja light; bump `STATIC_VERSION` in `create_app` when CSS/JS changes.
+
+## Docstrings & Comments
+
+- Module docstring on each service file stating the domain it owns (see `crypto.py`, `imap_service.py`).
+- One-line docstring on public functions that return a contract (`"Return (ok, error_message)."`). Skip restating the name.
+- Comments explain **why**, not what: `# Fetch the 50 most recent emails immediately so the dashboard isn't empty.`
+- Mark a known ceiling with `ponytail:` (see ponytail rule). Do not add XML/`<summary>` comments.
+
+## Types & Safety
+
+- `from __future__ import annotations` at the top of every Python file.
+- Type-hint public functions and methods. Prefer `str | None`, `list[dict]`, `tuple[bool, str]`.
+- Decrypt/IMAP/Groq failures return a safe empty/fallback value; do not raise through the request unless the user must see it (`flash` + redirect).
+- Clamp/validate at trust boundaries: form emails, IMAP port, upload types, tag ids. Empty string on decrypt failure is intentional.

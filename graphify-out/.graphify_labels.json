@@ -1,0 +1,18 @@
+{
+  "0": "EmailStore",
+  "1": "Email Intelligence Studio",
+  "2": "routes.py",
+  "3": "summary.py",
+  "4": "imap_service.py",
+  "5": "Shipped (P0–P4 core)",
+  "6": "crypto.py",
+  "7": "_issue_verification_code",
+  "8": "create_app",
+  "9": "Ponytail",
+  "10": "app.js",
+  "11": "FLASK_SECRET_KEY",
+  "12": "requests",
+  "13": "test_imap_sync.py",
+  "14": "conftest.py",
+  "15": "mail.py"
+}

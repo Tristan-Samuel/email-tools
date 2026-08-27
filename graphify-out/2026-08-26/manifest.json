@@ -1,0 +1,182 @@
+{
+  "app.py": {
+    "mtime": 1787747877.3279028,
+    "ast_hash": "4af32791ebb5c19fea7629ae618be243",
+    "semantic_hash": "4af32791ebb5c19fea7629ae618be243"
+  },
+  "app/__init__.py": {
+    "mtime": 1787769468.926524,
+    "ast_hash": "c3628c96ba5abdd9ede271f794443b6e",
+    "semantic_hash": ""
+  },
+  "app/routes.py": {
+    "mtime": 1787771805.6923895,
+    "ast_hash": "46bc4729096f3868a81756952cc291db",
+    "semantic_hash": ""
+  },
+  "app/services/crypto.py": {
+    "mtime": 1787761537.797145,
+    "ast_hash": "c7211110f07b1255382c69066a891209",
+    "semantic_hash": ""
+  },
+  "app/services/email_parser.py": {
+    "mtime": 1787763498.8331244,
+    "ast_hash": "3fdd8de410deeb71cdbd1f282702fa2c",
+    "semantic_hash": ""
+  },
+  "app/services/groq_client.py": {
+    "mtime": 1787763884.040661,
+    "ast_hash": "d66be08bf80c636c599c8cde7d25a066",
+    "semantic_hash": ""
+  },
+  "app/services/imap_service.py": {
+    "mtime": 1787771787.9244323,
+    "ast_hash": "4e42d9d8261b84ee23d7888ce9f86481",
+    "semantic_hash": ""
+  },
+  "app/services/store.py": {
+    "mtime": 1787769466.8898458,
+    "ast_hash": "343ecfa3ecdb2f0b0c4abc90f6e868e3",
+    "semantic_hash": ""
+  },
+  "app/services/summary.py": {
+    "mtime": 1787763507.5286062,
+    "ast_hash": "8d0bd298726d82dd9c28beb66261e17a",
+    "semantic_hash": ""
+  },
+  "app/static/js/app.js": {
+    "mtime": 1787761791.6917386,
+    "ast_hash": "f4f5fbac5ee09e5f10417eff280c9c68",
+    "semantic_hash": ""
+  },
+  ".cursor/rules/ponytail.md": {
+    "mtime": 1787758720.3840158,
+    "ast_hash": "a9210bf67debd9b64be1a442d9caf0f8",
+    "semantic_hash": "a9210bf67debd9b64be1a442d9caf0f8"
+  },
+  "README.md": {
+    "mtime": 1787771811.6886861,
+    "ast_hash": "3ca5db51bb9c3231bcfb5dc30753731d",
+    "semantic_hash": ""
+  },
+  "app/templates/accounts.html": {
+    "mtime": 1787771807.3557696,
+    "ast_hash": "f98300dc3ca60146e76bf898a2f8f834",
+    "semantic_hash": ""
+  },
+  "app/templates/base.html": {
+    "mtime": 1787763786.0920608,
+    "ast_hash": "36970c2e1080982f6f47799ff2444f52",
+    "semantic_hash": ""
+  },
+  "app/templates/dashboard.html": {
+    "mtime": 1787761810.601688,
+    "ast_hash": "92667ed011d295c2b416ef97a0172e30",
+    "semantic_hash": ""
+  },
+  "app/templates/email_detail.html": {
+    "mtime": 1787764020.8697042,
+    "ast_hash": "33b8f90ab021b5103b52c3a37844f4e7",
+    "semantic_hash": ""
+  },
+  "app/templates/hidden.html": {
+    "mtime": 1787763787.3227022,
+    "ast_hash": "5ddc299d2f192a40259b95ee977bb159",
+    "semantic_hash": ""
+  },
+  "app/templates/inbox.html": {
+    "mtime": 1787764004.0189338,
+    "ast_hash": "1d074591c328d3af6ee0b0b0c2fa792f",
+    "semantic_hash": ""
+  },
+  "app/templates/login.html": {
+    "mtime": 1787769524.135943,
+    "ast_hash": "cf8297025d30047b7126a2591070e951",
+    "semantic_hash": ""
+  },
+  "app/templates/respond_now.html": {
+    "mtime": 1787763774.284796,
+    "ast_hash": "0a62f030e937eb1dd4ecbeb8f07ce0c5",
+    "semantic_hash": ""
+  },
+  "app/templates/search.html": {
+    "mtime": 1787763786.6274,
+    "ast_hash": "2e599462e69360ecc4548623382e8dcb",
+    "semantic_hash": ""
+  },
+  "app/templates/settings.html": {
+    "mtime": 1787763701.3695636,
+    "ast_hash": "61fe81045b206a13f36124eb8757f272",
+    "semantic_hash": ""
+  },
+  "app/templates/tags.html": {
+    "mtime": 1787764024.902083,
+    "ast_hash": "2004eba39773fbe2b289e7fcd34d7d80",
+    "semantic_hash": ""
+  },
+  "app/templates/tags_edit.html": {
+    "mtime": 1787764024.9021003,
+    "ast_hash": "5794d1478a12320eb7fae33c4a235315",
+    "semantic_hash": ""
+  },
+  "requirements.txt": {
+    "mtime": 1787761420.0507724,
+    "ast_hash": "e99a800e831b5e78e3d648be37df800a",
+    "semantic_hash": ""
+  },
+  "tests/test_auth.py": {
+    "mtime": 1787771917.810053,
+    "ast_hash": "209abb5eeadd403422ea6dee1a699acf",
+    "semantic_hash": ""
+  },
+  "tests/test_record.py": {
+    "mtime": 1787764128.7012234,
+    "ast_hash": "e181497e33df24c113fb2ef4d1692be8",
+    "semantic_hash": ""
+  },
+  "tests/test_store_init.py": {
+    "mtime": 1787763905.3499365,
+    "ast_hash": "2103e03efc6ce972a0d7c4abfe6225ea",
+    "semantic_hash": ""
+  },
+  "IMPLEMENTATIONS.md": {
+    "mtime": 1787769606.5559096,
+    "ast_hash": "ba0ec168233317dc2966ebf86f70282e",
+    "semantic_hash": ""
+  },
+  "app/services/sync_worker.py": {
+    "mtime": 1787763885.3649576,
+    "ast_hash": "f50428be9c1eed5e27280d4df43b7411",
+    "semantic_hash": ""
+  },
+  "tests/test_imap_sync.py": {
+    "mtime": 1787771841.89966,
+    "ast_hash": "877f337ac6d8711c30afb79ee67b7fe4",
+    "semantic_hash": ""
+  },
+  "conftest.py": {
+    "mtime": 1787763972.6562645,
+    "ast_hash": "19d869a481f9a7006ec714e3f66fe2eb",
+    "semantic_hash": ""
+  },
+  "app/services/mail.py": {
+    "mtime": 1787769457.9735777,
+    "ast_hash": "b6961e7c795e1921fde9d6913d806478",
+    "semantic_hash": ""
+  },
+  "app/templates/_app_password_help.html": {
+    "mtime": 1787771811.4897127,
+    "ast_hash": "ac654b93d8299030621dc10eb4670200",
+    "semantic_hash": ""
+  },
+  "app/templates/help.html": {
+    "mtime": 1787769544.404799,
+    "ast_hash": "5e91311f92993f747aded46bc28603a8",
+    "semantic_hash": ""
+  },
+  "app/templates/signup.html": {
+    "mtime": 1787769531.4758463,
+    "ast_hash": "5be1c82b3292dc9d2fc8bfc59333dc48",
+    "semantic_hash": ""
+  }
+}
