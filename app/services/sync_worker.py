@@ -146,7 +146,8 @@ def _run_job_inner(
 
     store.update_job(job_id, status="running", message="Starting…")
     store.append_job_log(job_id, "Worker picked up this job.")
-    store.update_job_phase(job_id, "fetch", 0, 1, message="Starting…")
+    if job_type in ("sync", "backfill"):
+        store.update_job_phase(job_id, "fetch", 0, 1, message="Starting…")
 
     def report(
         message: str,

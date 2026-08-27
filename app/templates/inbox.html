@@ -155,19 +155,19 @@
             <a class="inbox-row {% if not email.is_read %}inbox-row--unread{% endif %} {% if email.priority_score >= 80 %}inbox-row--urgent{% endif %} {% if selected_email and selected_email.email_id == email.email_id %}inbox-row--selected{% endif %}"
                href="{% if split_pane %}{{ url_for('main.inbox', email_id=email.email_id, pane='1', offset=offset, limit=limit, source_account=source_account, tag_id=selected_tag, unread=1 if only_unread else None, no_lists=1 if exclude_mailing_list else None, sort=sort if sort != 'date_desc' else None, query=query or None) }}{% else %}{{ url_for('main.email_detail', email_id=email.email_id) }}{% endif %}"
                style="flex:1">
-                <div class="inbox-row-avatar">{{ (email.sender or '?')[0].upper() }}</div>
-                <div class="inbox-row-body">
-                    <div class="inbox-row-top">
-                        <span class="inbox-row-sender">{{ email.sender or 'Unknown sender' }}</span>
+                <div class="inbox-row-avatar">{{ (email.sender|sender_name or '?')[0].upper() }}</div>
+                <div class="inbox-row-body inbox-row-fields" data-order="{{ inbox_row_order }}">
+                    <div class="inbox-row-top inbox-field inbox-field--sender">
+                        <span class="inbox-row-sender" title="{{ email.sender or 'Unknown sender' }}">{{ email.sender|sender_name }}</span>
                         <span class="inbox-row-date">{{ email.received_at|datetimeformat }}</span>
                     </div>
-                    <div class="inbox-row-subject">
+                    <div class="inbox-row-subject inbox-field inbox-field--subject">
                         {% if not email.is_read %}<span class="inbox-unread-dot" aria-hidden="true">● </span>{% endif %}
                         {{ email.subject }}
                         {% set tc = thread_counts.get(email.thread_id, 0) %}
                         {% if tc > 1 %}<span class="thread-badge" title="{{ tc }} in thread">{{ tc }}</span>{% endif %}
                     </div>
-                    <div class="inbox-row-preview">
+                    <div class="inbox-row-preview inbox-field inbox-field--summary">
                         {% if email.bullet_summary %}
                             {{ email.bullet_summary[0]|sanitize_bullet }}
                         {% else %}

@@ -339,6 +339,20 @@ class EmailStore:
                 "ALTER TABLE user_jobs ADD COLUMN progress_json TEXT NOT NULL DEFAULT '{}'"
             )
 
+    def _migrate_v8(self, connection: sqlite3.Connection) -> None:
+        """AI tag verdict cache so Groq does not re-scan every sync."""
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_tag_scans (
+                email_id TEXT NOT NULL,
+                tag_id INTEGER NOT NULL,
+                verdict TEXT NOT NULL,
+                scanned_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (email_id, tag_id)
+            )
+            """
+        )
+
     def initialize(self) -> None:
         with self._connect() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -369,6 +383,11 @@ class EmailStore:
         if version < 7:
             self._migrate_v7(connection)
             connection.execute("PRAGMA user_version = 7")
+            version = 7
+        if version < 8:
+            self._migrate_v8(connection)
+            connection.execute("PRAGMA user_version = 8")
+            version = 8
             try:
                 connection.execute("SELECT email_id FROM email_search LIMIT 0")
                 self.fts_enabled = True
@@ -1717,6 +1736,131 @@ class EmailStore:
             return
         self.save_tag_rule(tag_id, "subject", "contains", phrase)
         self.save_tag_rule(tag_id, "body", "contains", phrase)
+
+    DEFAULT_TAG_DEFS: list[dict] = [
+        {
+            "name": "School",
+            "color": "#4a7c59",
+            "hide_matching": False,
+            "use_ai": False,
+            "synonyms": [
+                ("sender", "contains", "admissions"),
+                ("sender", "contains", "university"),
+                ("sender", "contains", "college"),
+                ("sender", "contains", ".edu"),
+                ("subject", "contains", "admissions"),
+                ("body", "contains", "campus"),
+                ("body", "contains", "enroll"),
+                ("body", "contains", "university"),
+                ("body", "contains", "college"),
+            ],
+        },
+        {
+            "name": "Marketing",
+            "color": "#c66150",
+            "hide_matching": True,
+            "use_ai": False,
+            "synonyms": [
+                ("sender", "contains", "unsubscribe"),
+                ("sender", "contains", "promo"),
+                ("sender", "contains", "marketing"),
+                ("subject", "contains", "unsubscribe"),
+                ("subject", "contains", "promo"),
+                ("subject", "contains", "discount"),
+                ("subject", "contains", "sale"),
+                ("body", "contains", "unsubscribe"),
+                ("body", "contains", "campaign"),
+                ("body", "contains", "offer"),
+            ],
+        },
+        {
+            "name": "Newsletters",
+            "color": "#6b7280",
+            "hide_matching": True,
+            "use_ai": False,
+            "synonyms": [
+                ("sender", "contains", "newsletter"),
+                ("sender", "contains", "digest"),
+                ("subject", "contains", "newsletter"),
+                ("subject", "contains", "digest"),
+                ("body", "contains", "newsletter"),
+                ("body", "contains", "weekly digest"),
+            ],
+        },
+    ]
+
+    def seed_default_tag_rules(self, tag_id: int, synonyms: list[tuple[str, str, str]]) -> None:
+        for field, operator, value in synonyms:
+            self.save_tag_rule(tag_id, field, operator, value)
+
+    def ensure_default_tags(self, user_email: str) -> None:
+        """Create School / Marketing / Newsletters with synonym rules when missing."""
+        existing = {t["name"].lower(): t for t in self.list_tags(user_email)}
+        needs_apply = False
+        for spec in self.DEFAULT_TAG_DEFS:
+            name = spec["name"]
+            tag = existing.get(name.lower())
+            if tag is None:
+                tag_id = self.save_tag(
+                    user_email,
+                    name,
+                    spec["color"],
+                    spec["use_ai"],
+                    "",
+                    spec["hide_matching"],
+                )
+                self.seed_default_tag_rules(tag_id, spec["synonyms"])
+                needs_apply = True
+            else:
+                rule_keys = {
+                    f"{r['field']}:{r['value'].lower()}"
+                    for r in tag.get("rules", [])
+                }
+                missing = [
+                    syn
+                    for syn in spec["synonyms"]
+                    if f"{syn[0]}:{syn[2].lower()}" not in rule_keys
+                ]
+                if missing:
+                    self.seed_default_tag_rules(tag["id"], missing)
+                    needs_apply = True
+        if needs_apply:
+            self.apply_all_manual_tags(user_email)
+
+    def save_tag_scan(self, email_id: str, tag_id: int, verdict: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO email_tag_scans (email_id, tag_id, verdict, scanned_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(email_id, tag_id) DO UPDATE SET
+                    verdict=excluded.verdict,
+                    scanned_at=excluded.scanned_at
+                """,
+                (email_id, tag_id, verdict),
+            )
+
+    def get_tag_scans_for_email(self, email_id: str) -> dict[int, str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT tag_id, verdict FROM email_tag_scans WHERE email_id = ?",
+                (email_id,),
+            ).fetchall()
+        return {int(row["tag_id"]): str(row["verdict"]) for row in rows}
+
+    def clear_tag_scans_for_tag(self, tag_id: int) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM email_tag_scans WHERE tag_id = ?", (tag_id,))
+
+    def clear_all_tag_scans(self, user_email: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM email_tag_scans
+                WHERE email_id IN (SELECT email_id FROM emails WHERE user_email = ?)
+                """,
+                (user_email,),
+            )
 
     def save_tag_rule(self, tag_id: int, field: str, operator: str, value: str) -> int:
         with self._connect() as connection:

@@ -26,6 +26,26 @@
     </section>
 
     <section class="panel settings-panel">
+        <h2 class="panel-title">Inbox rows</h2>
+        <p class="panel-hint">Choose which line appears first in the inbox list. Sender shows the display name; hover for the full address.</p>
+        <form action="{{ url_for('main.settings') }}" method="post" class="settings-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="save_inbox_row_order">
+            <label class="form-label">
+                Primary field
+                <select name="inbox_row_order" class="form-input">
+                    <option value="summary" {% if inbox_row_order == 'summary' %}selected{% endif %}>Summary first</option>
+                    <option value="subject" {% if inbox_row_order == 'subject' %}selected{% endif %}>Subject first</option>
+                    <option value="sender" {% if inbox_row_order == 'sender' %}selected{% endif %}>Sender first</option>
+                </select>
+            </label>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Save row order</button>
+            </div>
+        </form>
+    </section>
+
+    <section class="panel settings-panel">
         <h2 class="panel-title">Account Password</h2>
         <p class="panel-hint">
             Protect your email-tools login. Without a password, the next sign-in requires

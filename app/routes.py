@@ -21,6 +21,7 @@ from .services.groq_client import (
     DEFAULT_CHAT_MODEL,
     GroqClient,
     is_fatal_groq_auth_error,
+    is_groq_unreachable,
     is_rate_limit_error,
 )
 from .services.summary import build_digest, build_email_record, build_important_items
@@ -176,13 +177,49 @@ def _verify_signup_code(store, user_email: str, code: str) -> tuple[bool, str]:
     return True, ""
 
 
+_NEEDS_REPLY_KV = "needs_reply_cache_v1"
+_INBOX_ROW_ORDER_KEY = "inbox_row_order"
+_VALID_INBOX_ROW_ORDERS = ("summary", "subject", "sender")
+
+
+def _needs_reply_fingerprint(emails: list[dict]) -> str:
+    ids = sorted(str(e.get("email_id") or "") for e in emails)
+    return hashlib.sha256("|".join(ids).encode("utf-8")).hexdigest()
+
+
+def _load_needs_reply_cache(store, user_email: str) -> dict:
+    raw = store.get_kv(user_email, _NEEDS_REPLY_KV)
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _save_needs_reply_cache(store, user_email: str, data: dict) -> None:
+    store.set_kv(user_email, _NEEDS_REPLY_KV, json.dumps(data))
+
+
+def _inbox_row_order(store, user_email: str) -> str:
+    order = (store.get_kv(user_email, _INBOX_ROW_ORDER_KEY) or "summary").strip().lower()
+    if order not in _VALID_INBOX_ROW_ORDERS:
+        return "summary"
+    return order
+
+
 def _mailto_draft(email: dict, draft: str) -> str:
     sender = email.get("sender") or ""
     subject = email.get("subject") or ""
     return f"mailto:{quote(sender)}?subject={quote('Re: ' + subject)}&body={quote(draft)}"
 
 
-def _invalidate_needs_reply_cache() -> None:
+def _invalidate_needs_reply_cache(store=None, user_email: str = "") -> None:
+    if store and user_email:
+        cache = _load_needs_reply_cache(store, user_email)
+        cache.pop("fingerprint", None)
+        _save_needs_reply_cache(store, user_email, cache)
     if has_request_context():
         session.pop("needs_reply_cache", None)
 
@@ -427,7 +464,8 @@ def sync_one_account(
         backfill_uid=inbox_backfill,
         uidvalidity=inbox_uidvalidity,
     )
-    _invalidate_needs_reply_cache()
+    if total_imported > 0:
+        _invalidate_needs_reply_cache(store, user_email)
     return total_imported, None
 
 
@@ -470,6 +508,9 @@ def analyze_pending_emails(
             on_progress(f"Groq error: {groq.last_error}")
             if is_fatal_groq_auth_error(groq.last_error):
                 on_progress("Stopping analysis — Groq rejected this API key.")
+                return analyzed
+            if is_groq_unreachable(groq.last_error):
+                on_progress("Stopping analysis — Groq is unreachable (network/DNS).")
                 return analyzed
             if is_rate_limit_error(groq.last_error):
                 on_progress("Rate limited — switching Groq model and retrying smaller requests.")
@@ -538,6 +579,7 @@ def login():
                 return render_template("login.html", needs_app_password=True, prefill_email=user_email)
             session["user_email"] = user_email
             flash("Logged in successfully.", "success")
+            store.ensure_default_tags(user_email)
             return redirect(url_for("main.inbox"))
 
         imap_accounts = store.list_imap_accounts(user_email)
@@ -1390,6 +1432,8 @@ def inbox():
         return login_redirect
 
     store = get_store()
+    user_email = g.current_user_email
+    store.ensure_default_tags(user_email)
     source_account = request.args.get("source_account") or None
     query = request.args.get("query", "").strip()
     category = request.args.get("category") or None
@@ -1407,7 +1451,6 @@ def inbox():
     offset_raw = request.args.get("offset", "0")
     offset = int(offset_raw) if offset_raw.isdigit() and int(offset_raw) >= 0 else 0
     selected_email_id = request.args.get("email_id") or None
-    user_email = g.current_user_email
 
     common_kwargs = dict(
         user_email=user_email,
@@ -1481,6 +1524,7 @@ def inbox():
         all_tags=tags,
         groq_available=get_groq_client(user_email).enabled,
         ai_pending=store.count_ai_stats(user_email)[1],
+        inbox_row_order=_inbox_row_order(store, user_email),
     )
 
 
@@ -1492,9 +1536,18 @@ def settings():
 
     store = get_store()
     user_email = g.current_user_email
+    store.ensure_default_tags(user_email)
 
     if request.method == "POST":
         action = request.form.get("action", "save_groq")
+
+        if action == "save_inbox_row_order":
+            order = (request.form.get("inbox_row_order") or "summary").strip().lower()
+            if order not in _VALID_INBOX_ROW_ORDERS:
+                order = "summary"
+            store.set_kv(user_email, _INBOX_ROW_ORDER_KEY, order)
+            flash("Inbox row order saved.", "success")
+            return redirect(url_for("main.settings"))
 
         if action == "set_app_password":
             new_pw = (request.form.get("new_app_password") or "").strip()
@@ -1562,6 +1615,7 @@ def settings():
         ai_analyzed=ai_analyzed,
         ai_pending=ai_pending,
         groq_available=get_groq_client(user_email).enabled,
+        inbox_row_order=_inbox_row_order(store, user_email),
     )
 
 
@@ -1726,29 +1780,42 @@ def respond_now():
     store = get_store()
     user_email = g.current_user_email
     today = datetime.date.today().isoformat()
-    cache = session.get("needs_reply_cache")
     groq_error = False
+    network_error = False
     recent = store.list_emails(user_email=user_email, limit=50)
     recent_count = len(recent)
-    dismissed = set(session.get("needs_reply_dismissed", []))
-    snoozed = session.get("needs_reply_snoozed", {})
+    fingerprint = _needs_reply_fingerprint(recent)
+    kv_cache = _load_needs_reply_cache(store, user_email)
+    dismissed = set(kv_cache.get("dismissed", []))
+    snoozed = kv_cache.get("snoozed", {}) or {}
 
-    if cache and cache.get("date") == today and cache.get("user") == user_email:
-        action_items = cache.get("items", [])
-        recent_count = cache.get("total", recent_count)
+    if kv_cache.get("fingerprint") == fingerprint and kv_cache.get("items"):
+        action_items = kv_cache.get("items", [])
+        recent_count = kv_cache.get("total", recent_count)
     else:
         action_items, err = groq.identify_action_items(recent, today=today)
         if err:
-            action_items = []
-            groq_error = True
+            if is_groq_unreachable(err) and kv_cache.get("items"):
+                action_items = kv_cache.get("items", [])
+                dismissed = set(kv_cache.get("dismissed", []))
+                snoozed = kv_cache.get("snoozed", {}) or {}
+                network_error = True
+            else:
+                action_items = []
+                groq_error = True
         else:
             _cache_groq_model(groq)
-            session["needs_reply_cache"] = {
-                "date": today,
-                "user": user_email,
-                "items": action_items,
-                "total": recent_count,
-            }
+            _save_needs_reply_cache(
+                store,
+                user_email,
+                {
+                    "fingerprint": fingerprint,
+                    "items": action_items,
+                    "total": recent_count,
+                    "dismissed": list(dismissed),
+                    "snoozed": snoozed,
+                },
+            )
 
     email_map = {e["email_id"]: e for e in recent}
     results = []
@@ -1767,6 +1834,7 @@ def respond_now():
         results=results,
         total=recent_count,
         groq_error=groq_error,
+        network_error=network_error,
     )
 
 
@@ -1775,9 +1843,13 @@ def needs_reply_dismiss(email_id: str):
     login_redirect = require_login()
     if login_redirect is not None:
         return login_redirect
-    dismissed = set(session.get("needs_reply_dismissed", []))
+    store = get_store()
+    user_email = g.current_user_email
+    cache = _load_needs_reply_cache(store, user_email)
+    dismissed = set(cache.get("dismissed", []))
     dismissed.add(email_id)
-    session["needs_reply_dismissed"] = list(dismissed)
+    cache["dismissed"] = list(dismissed)
+    _save_needs_reply_cache(store, user_email, cache)
     flash("Removed from Needs Reply.", "success")
     return redirect(url_for("main.respond_now"))
 
@@ -1790,9 +1862,13 @@ def needs_reply_snooze(email_id: str):
     days_raw = request.form.get("days", "3")
     days = int(days_raw) if days_raw.isdigit() and 1 <= int(days_raw) <= 30 else 3
     until = (datetime.date.today() + datetime.timedelta(days=days)).isoformat()
-    snoozed = dict(session.get("needs_reply_snoozed", {}))
+    store = get_store()
+    user_email = g.current_user_email
+    cache = _load_needs_reply_cache(store, user_email)
+    snoozed = dict(cache.get("snoozed", {}) or {})
     snoozed[email_id] = until
-    session["needs_reply_snoozed"] = snoozed
+    cache["snoozed"] = snoozed
+    _save_needs_reply_cache(store, user_email, cache)
     flash(f"Snoozed for {days} day(s).", "success")
     return redirect(url_for("main.respond_now"))
 
@@ -1973,6 +2049,7 @@ def tags_apply_ai(tag_id: int):
         flash("This tag does not use AI classification.", "error")
         return redirect(url_for("main.tags"))
 
+    store.clear_tag_scans_for_tag(tag_id)
     groq = get_groq_client()
     if not groq.enabled:
         flash("Add a Groq API key in Settings to use AI tagging.", "error")
@@ -1995,6 +2072,8 @@ def tags_apply_ai_background():
     login_redirect = require_login()
     if login_redirect is not None:
         return login_redirect
+    store = get_store()
+    store.clear_all_tag_scans(g.current_user_email)
     job_id, queue_err = _queue_job(g.current_user_email, "tags", "Apply AI tags")
     if queue_err:
         flash(queue_err, "error")
@@ -2079,7 +2158,6 @@ def _apply_all_ai_tags(
     # ponytail: AI tagging only considers the 200 most recent emails.
     emails = store.list_emails(user_email=user_email, limit=200, exclude_hidden=False)
     tagged = 0
-    tag_by_name = {str(t["name"]).strip().lower(): t for t in tags if str(t.get("name") or "").strip()}
     chunk_size = 8
     total = len(emails)
     for start in range(0, total, chunk_size):
@@ -2094,26 +2172,40 @@ def _apply_all_ai_tags(
         chunk = emails[start : start + chunk_size]
         pending: list[dict] = []
         existing_map: dict[str, set[int]] = {}
+        unscanned_map: dict[str, list[dict]] = {}
         for email in chunk:
             existing_ids = {t["id"] for t in store.get_email_tags(email["email_id"])}
             existing_map[email["email_id"]] = existing_ids
-            if any(tag["id"] not in existing_ids for tag in tags):
+            scans = store.get_tag_scans_for_email(email["email_id"])
+            unscanned = [
+                tag
+                for tag in tags
+                if tag["id"] not in existing_ids and scans.get(tag["id"]) is None
+            ]
+            if unscanned:
                 pending.append(email)
+                unscanned_map[email["email_id"]] = unscanned
         if not pending:
             continue
         matches = groq.classify_emails_for_tags(pending, tags)
+        if groq.last_error and is_groq_unreachable(groq.last_error):
+            if on_progress:
+                on_progress(f"Groq unreachable — skipping AI tags. {groq.last_error}")
+            break
         for email in pending:
             names = matches.get(email["email_id"]) or []
             existing_ids = existing_map[email["email_id"]]
             new_ids = set(existing_ids)
-            for name in names:
-                tag = tag_by_name.get(str(name).strip().lower())
-                if tag is None or tag["id"] in new_ids:
-                    continue
-                new_ids.add(tag["id"])
-                tagged += 1
-                if tag["hide_matching"]:
-                    store.set_email_hidden(email["email_id"], user_email, True, by_tag=True)
+            matched_lower = {str(n).strip().lower() for n in names}
+            for tag in unscanned_map.get(email["email_id"], tags):
+                canonical = str(tag["name"]).strip().lower()
+                verdict = "yes" if canonical in matched_lower else "no"
+                store.save_tag_scan(email["email_id"], tag["id"], verdict)
+                if verdict == "yes" and tag["id"] not in new_ids:
+                    new_ids.add(tag["id"])
+                    tagged += 1
+                    if tag["hide_matching"]:
+                        store.set_email_hidden(email["email_id"], user_email, True, by_tag=True)
             if new_ids != existing_ids:
                 store.set_email_tags(email["email_id"], list(new_ids))
     _cache_groq_model(groq)

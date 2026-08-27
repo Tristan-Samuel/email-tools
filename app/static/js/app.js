@@ -88,6 +88,18 @@ const ACTIVITY_PHASES = [
     { key: "tag", label: "Tag" },
     { key: "brief", label: "Brief" },
 ];
+const ACTIVITY_DISMISS_KEY = "activityDismissedJobId";
+
+function findIncompletePhase(phases, busy) {
+    if (!phases || !busy) return null;
+    for (const phase of ACTIVITY_PHASES) {
+        const entry = phases[phase.key] || {};
+        const total = Number(entry.total || 0);
+        const current = Number(entry.current || 0);
+        if (total > 0 && current < total) return phase;
+    }
+    return null;
+}
 
 function initActivityPanel() {
     const panel = document.getElementById("activity-panel");
@@ -103,6 +115,9 @@ function initActivityPanel() {
     const analyzeBtn = document.getElementById("activity-analyze-btn");
     const cancelForm = document.getElementById("activity-cancel-form");
     const cancelBtn = document.getElementById("activity-cancel-btn");
+    const dismissBtn = document.getElementById("activity-dismiss-btn");
+    const phasesEl = document.getElementById("activity-phases");
+    const meterEl = document.getElementById("activity-meter");
     let lastActiveId = null;
     let lastStatus = "";
 
@@ -115,73 +130,91 @@ function initActivityPanel() {
         });
     }
 
+    const hidePanel = () => {
+        panel.hidden = true;
+        panel.classList.remove("is-running", "is-error", "activity-panel--idle");
+    };
+
     const render = (data) => {
         const active = data.active || null;
         const latest = data.latest || null;
-        const job = active || latest;
         const ai = data.ai || {};
         const pending = ai.pending || 0;
         const groqEnabled = !!ai.groq_enabled;
         const busy = !!(active && (active.status === "queued" || active.status === "running"));
+        const dismissedId = sessionStorage.getItem(ACTIVITY_DISMISS_KEY) || "";
+        const job = busy ? active : null;
 
-        if (!job && pending <= 0) {
-            panel.hidden = true;
+        if (!busy && latest && (latest.status === "cancelled" || latest.status === "done")) {
+            sessionStorage.setItem(ACTIVITY_DISMISS_KEY, String(latest.id));
+        }
+
+        const shouldHide =
+            !busy &&
+            (!latest || dismissedId === String(latest.id) || latest.status === "cancelled") &&
+            pending <= 0;
+
+        if (shouldHide) {
+            hidePanel();
             return;
         }
+
         panel.hidden = false;
         panel.classList.toggle("is-running", busy);
-        panel.classList.toggle("is-error", !!(job && job.status === "error"));
+        panel.classList.toggle("is-error", !!(latest && latest.status === "error" && !busy));
+        panel.classList.toggle("activity-panel--idle", !busy && pending > 0);
+
+        const displayJob = job || latest;
+
+        if (phasesEl) phasesEl.hidden = !busy;
+        if (meterEl) meterEl.hidden = !busy;
+        if (toggle) toggle.hidden = !busy;
+        if (logEl && !busy) logEl.setAttribute("hidden", "");
 
         if (labelEl) {
-            if (busy) labelEl.textContent = job.label || job.job_type || "Working…";
-            else if (job && job.status === "cancelled") labelEl.textContent = job.label || "Cancelled";
-            else if (job && job.status === "error") labelEl.textContent = job.label || "Job failed";
-            else if (job && job.status === "done") labelEl.textContent = job.label || "Last job finished";
+            if (busy) labelEl.textContent = displayJob.label || displayJob.job_type || "Working…";
+            else if (latest && latest.status === "error") labelEl.textContent = latest.label || "Job failed";
             else if (pending && groqEnabled) labelEl.textContent = `${pending} emails still need AI summaries`;
             else if (pending) labelEl.textContent = `${pending} emails have local summaries only`;
-            else labelEl.textContent = "Ready";
+            else labelEl.textContent = displayJob?.label || "Ready";
         }
         if (messageEl) {
-            if (job && job.error && job.status === "error") messageEl.textContent = job.error;
-            else if (job && job.message) messageEl.textContent = job.message;
+            if (busy && displayJob?.message) messageEl.textContent = displayJob.message;
+            else if (latest && latest.error && latest.status === "error") messageEl.textContent = latest.error;
             else if (groqEnabled && pending) {
-                messageEl.textContent = "Sync downloads mail quickly. AI summaries run automatically after sync, or click Analyze now.";
+                messageEl.textContent =
+                    "Sync downloads mail quickly. AI summaries run automatically after sync, or click Analyze now.";
             } else if (!groqEnabled) {
                 messageEl.textContent = "Add a Groq API key in Settings for a real inbox brief.";
             } else {
                 messageEl.textContent = "";
             }
         }
-        const percent = job ? job.percent || 0 : 0;
+
+        const percent = displayJob ? displayJob.percent || 0 : 0;
         if (fillEl) fillEl.style.width = `${percent}%`;
         if (progressEl) progressEl.setAttribute("aria-valuenow", String(percent));
         if (countsEl) {
-            if (job && job.phases) {
-                const active = ACTIVITY_PHASES.find((phase) => {
-                    const entry = job.phases[phase.key] || {};
-                    const total = Number(entry.total || 0);
-                    const current = Number(entry.current || 0);
-                    return total > 0 && current < total;
-                });
-                if (active) {
-                    const entry = job.phases[active.key] || {};
-                    countsEl.textContent = `${entry.current || 0} / ${entry.total || 0} (${active.label})`;
-                } else if (job.total_steps) {
-                    countsEl.textContent = `${job.current_step} / ${job.total_steps}`;
+            if (busy && displayJob?.phases) {
+                const phase = findIncompletePhase(displayJob.phases, true);
+                if (phase) {
+                    const entry = displayJob.phases[phase.key] || {};
+                    countsEl.textContent = `${entry.current || 0} / ${entry.total || 0} (${phase.label})`;
+                } else if (displayJob.total_steps) {
+                    countsEl.textContent = `${displayJob.current_step} / ${displayJob.total_steps}`;
                 } else {
                     countsEl.textContent = `${percent}%`;
                 }
-            } else if (job && job.total_steps) {
-                countsEl.textContent = `${job.current_step} / ${job.total_steps}`;
             } else {
                 countsEl.textContent = "";
             }
         }
+
         ACTIVITY_PHASES.forEach((phase) => {
             const fill = document.querySelector(`[data-phase-fill="${phase.key}"]`);
             const counts = document.querySelector(`[data-phase-counts="${phase.key}"]`);
             const row = document.querySelector(`.activity-phase-row[data-phase="${phase.key}"]`);
-            const entry = job && job.phases ? job.phases[phase.key] || {} : {};
+            const entry = displayJob && displayJob.phases ? displayJob.phases[phase.key] || {} : {};
             const total = Number(entry.total || 0);
             const current = Number(entry.current || 0);
             const phasePct = total > 0 ? Math.min(100, Math.round((current * 100) / total)) : 0;
@@ -194,12 +227,14 @@ function initActivityPanel() {
                 row.classList.toggle("is-done", total > 0 && current >= total);
             }
         });
-        if (logEl && job && Array.isArray(job.log)) {
-            logEl.innerHTML = job.log.map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+
+        if (logEl && displayJob && Array.isArray(displayJob.log)) {
+            logEl.innerHTML = displayJob.log.map((line) => `<li>${escapeHtml(line)}</li>`).join("");
         }
         if (analyzeBtn) analyzeBtn.disabled = busy || !groqEnabled || pending <= 0;
         if (cancelForm) cancelForm.hidden = !busy;
         if (cancelBtn) cancelBtn.disabled = !busy;
+        if (dismissBtn) dismissBtn.hidden = busy;
 
         if (
             lastStatus === "running" &&
@@ -213,12 +248,25 @@ function initActivityPanel() {
             window.location.reload();
         }
         lastActiveId = active ? active.id : lastActiveId;
-        lastStatus = active ? active.status : (latest ? latest.status : "");
+        lastStatus = active ? active.status : latest ? latest.status : "";
     };
+
+    if (dismissBtn) {
+        dismissBtn.addEventListener("click", () => {
+            const latestId = sessionStorage.getItem(ACTIVITY_DISMISS_KEY);
+            if (!latestId && panel.dataset.latestJobId) {
+                sessionStorage.setItem(ACTIVITY_DISMISS_KEY, panel.dataset.latestJobId);
+            } else if (!latestId) {
+                sessionStorage.setItem(ACTIVITY_DISMISS_KEY, "dismissed");
+            }
+            hidePanel();
+        });
+    }
 
     if (cancelForm) {
         cancelForm.addEventListener("submit", (event) => {
             event.preventDefault();
+            if (lastActiveId) sessionStorage.setItem(ACTIVITY_DISMISS_KEY, String(lastActiveId));
             if (cancelBtn) cancelBtn.disabled = true;
             fetch(cancelForm.action, {
                 method: "POST",
@@ -226,7 +274,10 @@ function initActivityPanel() {
                 headers: { Accept: "application/json" },
             })
                 .then((r) => (r.ok ? r.json() : null))
-                .then(() => tick())
+                .then(() => {
+                    hidePanel();
+                    tick();
+                })
                 .catch(() => {
                     cancelForm.submit();
                 });

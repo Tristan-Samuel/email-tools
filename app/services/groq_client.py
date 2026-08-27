@@ -113,6 +113,32 @@ def is_fatal_groq_auth_error(message: str) -> bool:
     )
 
 
+def is_groq_unreachable(message: str) -> bool:
+    """DNS, connection, and timeout failures should not retry every model."""
+    lowered = (message or "").lower()
+    return any(
+        token in lowered
+        for token in (
+            "nameresolutionerror",
+            "failed to resolve",
+            "connectionerror",
+            "connection refused",
+            "timed out",
+            "timeout",
+            "nodename nor servname",
+            "network is unreachable",
+            "max retries exceeded",
+        )
+    )
+
+
+_SUMMARY_TRIAGE_HINT = (
+    "Name the organization and whether a reply is required. "
+    "Do not paraphrase marketing CTAs or brochure copy. "
+    "For unsolicited admissions or promo mail, say so in one line and note any real deadline."
+)
+
+
 def _parse_retry_after(value: str | None) -> float:
     try:
         return max(0.5, min(float(value or ""), 20.0))
@@ -321,6 +347,11 @@ class GroqClient:
                     )
                 except requests.RequestException as exc:
                     last_err = str(exc)
+                    if is_groq_unreachable(last_err):
+                        self.last_error = (
+                            "Can't reach Groq (network or DNS). Local summaries are still available."
+                        )
+                        return None, self.last_error
                     continue
 
                 if response.status_code == 429:
@@ -370,7 +401,7 @@ class GroqClient:
         prompt = (
             "Summarize this email as concise bullet points for fast triage. "
             "Return JSON only with key \"bullets\" as an array of up to 4 strings. "
-            "Prioritize action items, deadlines, risks, and decisions."
+            f"{_SUMMARY_TRIAGE_HINT}"
         )
         parsed, _err = self._complete(
             [
@@ -661,7 +692,7 @@ class GroqClient:
                     "content": f"{today_line}Emails:\n\n{context}\n\nWhich of these emails require a response or action now?",
                 },
             ],
-            temperature=0.3,
+            temperature=0.1,
             timeout=40,
         )
         if not isinstance(parsed, dict):
@@ -720,6 +751,7 @@ class GroqClient:
             bullets = e.get("bullet_summary") or []
             summary = " ".join(bullets) if bullets else (e.get("preview") or "")
             context_parts.append(
+                f"ID: {e['email_id']}\n"
                 f"Subject: {e.get('subject', '?')}\n"
                 f"From: {e.get('sender', '?')}\n"
                 f"Priority: {e.get('priority_score', 0)}\n"
@@ -732,7 +764,8 @@ class GroqClient:
                     "role": "system",
                     "content": (
                         "You write inbox briefs for email triage. Return JSON with "
-                        "\"headline\" (one short sentence) and \"bullets\" (array of up to 6 strings). "
+                        "\"headline\" (one short sentence) and \"bullets\" "
+                        "(array of up to 6 objects with \"text\" and \"id\" — email ID from context). "
                         "Prioritize deadlines, action items, and urgent mail. No raw URLs in angle brackets."
                     ),
                 },
@@ -741,16 +774,25 @@ class GroqClient:
                     "content": f"Summarize this inbox for the user:\n\n{context}",
                 },
             ],
-            temperature=0.3,
+            temperature=0.2,
             timeout=35,
         )
         if not isinstance(parsed, dict):
             return None
         headline = str(parsed.get("headline", "")).strip()
-        bullets = parsed.get("bullets", [])
-        cleaned = [str(b).strip() for b in bullets if str(b).strip()]
-        if headline and cleaned:
-            return {"headline": headline, "bullets": cleaned[:6]}
+        raw_bullets = parsed.get("bullets", [])
+        cleaned_bullets: list[dict[str, str]] = []
+        if isinstance(raw_bullets, list):
+            for item in raw_bullets:
+                if isinstance(item, dict):
+                    text = str(item.get("text") or item.get("bullet") or "").strip()
+                    eid = str(item.get("id") or item.get("email_id") or "").strip()
+                    if text:
+                        cleaned_bullets.append({"text": text, "email_id": eid})
+                elif isinstance(item, str) and item.strip():
+                    cleaned_bullets.append({"text": item.strip(), "email_id": ""})
+        if headline and cleaned_bullets:
+            return {"headline": headline, "bullets": cleaned_bullets[:6]}
         return None
 
     def summarize_emails_batch(self, emails: list[dict], batch_size: int = 8) -> dict[str, list[str]]:
@@ -771,7 +813,8 @@ class GroqClient:
         prompt = (
             "Summarize each email as concise triage bullets. "
             "Return JSON only: {\"items\": [{\"id\": \"...\", \"bullets\": [\"...\", \"...\"]}]}. "
-            "Up to 3 bullets per email. Prioritize actions, deadlines, and decisions. "
+            "Up to 3 bullets per email. "
+            f"{_SUMMARY_TRIAGE_HINT} "
             "Use the given ID values exactly."
         )
         parsed, _err = self._complete(

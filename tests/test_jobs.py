@@ -286,3 +286,84 @@ def test_hide_matching_tag_applies_name_rules() -> None:
         assert email["is_hidden"] == 1
         names = [t["name"] for t in store.get_email_tags(record["email_id"])]
         assert "college admissions" in names
+
+
+def test_default_school_tag_matches_admissions_sender() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = EmailStore(Path(tmp) / "t.db")
+        store.initialize()
+        for sender in (
+            "Rose-Hulman Admissions <admissions@rose-hulman.edu>",
+            "Clarkson University <admissions@clarkson.edu>",
+        ):
+            message = {
+                "email_id": f"raw-{hash(sender)}",
+                "message_id": f"<{sender}>",
+                "subject": "Explore our programs",
+                "sender": sender,
+                "recipient": "me@example.com",
+                "cc": "",
+                "received_at": "2026-01-01T12:00:00",
+                "body": "Apply now to begin your journey.",
+                "is_mailing_list": 1,
+            }
+            record = build_email_record(
+                message, "me@example.com", "me@example.com", source_account="me@example.com"
+            )
+            store.bulk_upsert([record])
+        store.ensure_default_tags("me@example.com")
+        emails = store.list_emails(user_email="me@example.com")
+        assert len(emails) == 2
+        for email in emails:
+            names = [t["name"] for t in store.get_email_tags(email["email_id"])]
+            assert "School" in names
+
+
+def test_tag_scan_skips_repeat_groq() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = EmailStore(Path(tmp) / "t.db")
+        store.initialize()
+        store.save_tag("me@example.com", "Work", "#2d8f85", True, "work related", False)
+        message = {
+            "email_id": "raw-work",
+            "message_id": "<w@b>",
+            "subject": "Project update",
+            "sender": "boss@company.com",
+            "recipient": "me@example.com",
+            "cc": "",
+            "received_at": "2026-01-01T12:00:00",
+            "body": "Please review the roadmap.",
+            "is_mailing_list": 0,
+        }
+        record = build_email_record(message, "me@example.com", "me@example.com", source_account="me@example.com")
+        store.bulk_upsert([record])
+        store.save_tag_scan(record["email_id"], store.list_tags("me@example.com")[0]["id"], "no")
+        scans = store.get_tag_scans_for_email(record["email_id"])
+        assert scans
+
+
+def test_groq_unreachable_detection() -> None:
+    from app.services.groq_client import is_groq_unreachable
+
+    assert is_groq_unreachable("HTTPSConnectionPool: Failed to resolve 'api.groq.com'")
+    assert not is_groq_unreachable("HTTP 401: invalid api key")
+
+
+def test_build_digest_bullet_objects() -> None:
+    from app.services.summary import build_digest
+
+    emails = [
+        {
+            "email_id": "e1",
+            "subject": "Hello",
+            "sender": "a@b.com",
+            "bullet_summary": ["Needs reply by Friday"],
+            "preview": "preview",
+            "priority_score": 50,
+            "category": "Work",
+        }
+    ]
+    digest = build_digest(emails, has_imap_accounts=False)
+    linked = [b for b in digest["bullets"] if b.get("email_id") == "e1"]
+    assert linked
+    assert "Friday" in linked[0]["text"]

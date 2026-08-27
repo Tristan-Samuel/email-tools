@@ -17,7 +17,20 @@
             <h1 style="font-size:1.5rem;margin-bottom:12px">{{ digest.headline }}</h1>
             <ul class="bullet-list">
                 {% for bullet in digest.bullets %}
-                <li>{{ bullet|sanitize_bullet }}</li>
+                {% if bullet is mapping %}
+                {% set bullet_text = bullet.get('text', '') %}
+                {% set bullet_id = bullet.get('email_id', '') %}
+                {% else %}
+                {% set bullet_text = bullet %}
+                {% set bullet_id = '' %}
+                {% endif %}
+                <li>
+                    {% if bullet_id %}
+                    <a href="{{ url_for('main.email_detail', email_id=bullet_id) }}">{{ bullet_text|sanitize_bullet }}</a>
+                    {% else %}
+                    {{ bullet_text|sanitize_bullet }}
+                    {% endif %}
+                </li>
                 {% endfor %}
             </ul>
             {% if groq_available and ai_pending > 0 %}

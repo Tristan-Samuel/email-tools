@@ -8,8 +8,10 @@
         <div>
             <h1 class="page-title">Needs Reply</h1>
             <p class="page-subtitle">
-                {% if groq_error %}
-                Could not run AI triage — check your Groq key in Settings.
+                {% if network_error %}
+                Could not reach Groq — showing your last saved list. Check your network connection.
+                {% elif groq_error %}
+                Could not run AI triage — check your Groq key or network in Settings.
                 {% elif draft_reply %}
                 Draft reply ready to copy or send.
                 {% elif results %}
@@ -40,7 +42,7 @@
     {% elif groq_error %}
     <div class="empty-state" role="alert">
         <h3>AI triage failed</h3>
-        <p>Verify your Groq API key in <a href="{{ url_for('main.settings') }}">Settings</a> and try again later.</p>
+        <p>Verify your Groq API key and network in <a href="{{ url_for('main.settings') }}">Settings</a> and try again later.</p>
     </div>
     {% elif results %}
     <div class="respond-list">

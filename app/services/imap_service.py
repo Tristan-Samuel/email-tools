@@ -292,6 +292,8 @@ def _fetch_uid_batch(
     emails: list[dict] = []
     parsed_uids: list[int] = []
     total = len(uid_ints)
+    if on_progress:
+        on_progress(0, total)
     for start in range(0, total, FETCH_CHUNK_SIZE):
         chunk_uids = uid_ints[start : start + FETCH_CHUNK_SIZE]
         uid_set = ",".join(str(uid_int) for uid_int in chunk_uids)
@@ -385,6 +387,8 @@ def fetch_emails(
 
         def _fetch_with_progress(uid_list: list[int]) -> tuple[list[dict], int, list[int]]:
             if not uid_list:
+                if on_progress:
+                    on_progress(1, 1)
                 return [], last_uid, []
             return _fetch_uid_batch(conn, uid_list, last_uid, on_progress=on_progress)
 

@@ -81,7 +81,7 @@ def create_app() -> Flask:
         SMTP_PASSWORD=os.environ.get("SMTP_PASSWORD", ""),
         SMTP_FROM=os.environ.get("SMTP_FROM", "").strip(),
         SMTP_USE_TLS=os.environ.get("SMTP_USE_TLS", "true").lower() in ("1", "true", "yes"),
-        STATIC_VERSION="23",
+        STATIC_VERSION="24",
     )
 
     app.config["UPLOAD_FOLDER"].mkdir(parents=True, exist_ok=True)
@@ -164,6 +164,14 @@ def create_app() -> Flask:
         from .services.summary import sanitize_bullet_text
 
         return Markup(sanitize_bullet_text(value or ""))
+
+    @app.template_filter("sender_name")
+    def sender_name_filter(value: str | None) -> str:
+        raw = (value or "Unknown sender").strip()
+        if "<" in raw:
+            name = raw.split("<")[0].strip()
+            return name or raw
+        return raw
 
     def _linkify_body_paragraph(para: str) -> str:
         """Escape paragraph text and turn Label <url> into short links."""

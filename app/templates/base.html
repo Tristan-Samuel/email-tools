@@ -90,6 +90,7 @@
 
         {% if current_user_email %}
         <section id="activity-panel" class="activity-panel" data-poll="{{ url_for('main.api_jobs') }}"
+                 data-latest-job-id="{{ activity_job.id if activity_job else '' }}"
                  {% if not activity_job and not ai_pending %}hidden{% endif %}>
             <div class="activity-bar">
                 <div class="activity-copy">
@@ -114,7 +115,7 @@
                         {% endif %}
                     </p>
                 </div>
-                <div class="activity-meter">
+                <div class="activity-meter" id="activity-meter">
                     <div class="activity-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100"
                          aria-valuenow="{{ activity_job.percent if activity_job else 0 }}" id="activity-progress">
                         <div class="activity-progress-fill" id="activity-progress-fill"
@@ -153,6 +154,7 @@
                     </form>
                     {% endif %}
                     <button type="button" class="btn btn-ghost" id="activity-log-toggle" aria-expanded="false">Log</button>
+                    <button type="button" class="btn btn-ghost" id="activity-dismiss-btn" title="Dismiss">✕</button>
                 </div>
             </div>
             <ol class="activity-log" id="activity-log" hidden>

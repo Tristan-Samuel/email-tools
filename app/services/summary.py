@@ -332,14 +332,14 @@ def build_digest(
         if has_imap_accounts:
             return {
                 "headline": "Your inbox is connected.",
-                "bullets": ["Sync to load messages, or browse Inbox when mail arrives."],
+                "bullets": [{"text": "Sync to load messages, or browse Inbox when mail arrives.", "email_id": ""}],
                 "ai_generated": False,
             }
         return {
             "headline": "Connect your inbox to get started.",
             "bullets": [
-                "Add an IMAP account under Accounts to fetch and summarize your mail.",
-                "Optional: import .eml or .mbox files from the Dashboard.",
+                {"text": "Add an IMAP account under Accounts to fetch and summarize your mail.", "email_id": ""},
+                {"text": "Optional: import .eml or .mbox files from the Dashboard.", "email_id": ""},
             ],
             "ai_generated": False,
         }
@@ -347,9 +347,20 @@ def build_digest(
     if groq_client is not None and groq_client.enabled:
         groq_digest = groq_client.build_inbox_digest(emails)
         if groq_digest:
+            bullets_out: list[dict[str, str]] = []
+            for item in groq_digest.get("bullets", []):
+                if isinstance(item, dict):
+                    text = clean_summary_line(str(item.get("text") or ""))
+                    eid = str(item.get("email_id") or "").strip()
+                    if text:
+                        bullets_out.append({"text": text, "email_id": eid})
+                elif isinstance(item, str):
+                    text = clean_summary_line(item)
+                    if text:
+                        bullets_out.append({"text": text, "email_id": ""})
             return {
                 "headline": groq_digest.get("headline", "Inbox brief"),
-                "bullets": [clean_summary_line(b) for b in groq_digest.get("bullets", [])][:6],
+                "bullets": bullets_out[:6],
                 "ai_generated": True,
             }
 
@@ -357,17 +368,31 @@ def build_digest(
     urgent = [email for email in emails if email["priority_score"] >= 80]
     senders = Counter(email["sender"] or "Unknown sender" for email in emails)
 
-    bullets = [
-        f"{len(urgent)} messages look urgent or deadline-driven.",
-        f"The busiest category is {categories.most_common(1)[0][0]} with {categories.most_common(1)[0][1]} emails.",
-        f"Most frequent sender: {senders.most_common(1)[0][0].split('<')[0].strip()}.",
+    bullets: list[dict[str, str]] = [
+        {"text": f"{len(urgent)} messages look urgent or deadline-driven.", "email_id": ""},
+        {
+            "text": (
+                f"The busiest category is {categories.most_common(1)[0][0]} "
+                f"with {categories.most_common(1)[0][1]} emails."
+            ),
+            "email_id": "",
+        },
+        {
+            "text": f"Most frequent sender: {senders.most_common(1)[0][0].split('<')[0].strip()}.",
+            "email_id": "",
+        },
     ]
 
     for email in emails[:3]:
         raw = email["bullet_summary"][0] if email["bullet_summary"] else email["preview"]
         summary_line = clean_summary_line(raw)
         if summary_line:
-            bullets.append(f"{email['subject']}: {summary_line}")
+            bullets.append(
+                {
+                    "text": f"{email['subject']}: {summary_line}",
+                    "email_id": email["email_id"],
+                }
+            )
 
     return {
         "headline": "Inbox brief from your cached summaries.",
