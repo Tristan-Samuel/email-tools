@@ -6,6 +6,8 @@ import sqlite3
 import uuid
 from pathlib import Path
 
+from .llm_text import sanitize_action_title
+
 
 JOB_PHASE_WEIGHTS: dict[str, int] = {
     "fetch": 50,
@@ -2983,7 +2985,7 @@ class EmailStore:
         with self._connect() as connection:
             for item in items:
                 eid = str(item.get("email_id") or "").strip()
-                title = str(item.get("title") or item.get("reason") or "").strip()
+                title = sanitize_action_title(str(item.get("title") or item.get("reason") or ""))
                 if not eid or not title:
                     continue
                 due = str(item.get("due_at") or item.get("due_date") or "")[:10] or None
@@ -3014,7 +3016,9 @@ class EmailStore:
                 (user_email,),
             ).fetchall()
             for row in rows:
-                items.append(dict(row))
+                item = dict(row)
+                item["title"] = sanitize_action_title(item.get("title") or "")
+                items.append(item)
 
         school_tag = next(
             (t for t in self.list_tags(user_email) if (t.get("name") or "").lower() == "school"),
@@ -3037,7 +3041,9 @@ class EmailStore:
                             {
                                 "id": None,
                                 "email_id": eid,
-                                "title": email.get("line_summary") or email.get("subject") or "Assignment",
+                                "title": sanitize_action_title(
+                                    email.get("line_summary") or email.get("subject") or "Assignment"
+                                ),
                                 "due_at": email.get("due_at"),
                                 "status": "open",
                                 "source": "email",

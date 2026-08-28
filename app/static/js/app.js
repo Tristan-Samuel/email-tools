@@ -306,66 +306,6 @@ function escapeHtml(value) {
 
 initActivityPanel();
 
-function initHeaderSearch() {
-    const form = document.getElementById("header-search-form");
-    const input = document.getElementById("nav-search");
-    const inner = document.getElementById("searchbar-inner");
-    const aiFlag = document.getElementById("nav-search-ai-flag");
-    const toggle = document.getElementById("search-mode-toggle");
-    const hint = document.getElementById("searchbar-hint");
-    const chips = document.getElementById("search-ai-chips");
-    if (!form || !input || !inner || !aiFlag) return;
-
-    const storageKey = "searchMode";
-    let aiMode = localStorage.getItem(storageKey) === "ai";
-
-    const applyMode = () => {
-        inner.classList.toggle("searchbar-inner--ai", aiMode);
-        aiFlag.value = aiMode ? "1" : "0";
-        input.placeholder = aiMode
-            ? input.dataset.placeholderAi || "Ask a question or run an action…"
-            : input.dataset.placeholderKeyword || "Search…";
-        if (toggle) {
-            toggle.setAttribute("aria-pressed", aiMode ? "true" : "false");
-            toggle.textContent = aiMode ? "Keywords" : "AI";
-        }
-        if (hint) {
-            hint.textContent = aiMode
-                ? "Tab for keyword search · AI finds mail and runs actions"
-                : "Tab to ask AI · search and actions";
-        }
-        if (chips) chips.hidden = !aiMode;
-        localStorage.setItem(storageKey, aiMode ? "ai" : "keyword");
-    };
-
-    const flipMode = () => {
-        aiMode = !aiMode;
-        applyMode();
-    };
-
-    if (toggle) toggle.addEventListener("click", flipMode);
-    input.addEventListener("keydown", (e) => {
-        if (e.key === "Tab" && !e.shiftKey) {
-            e.preventDefault();
-            flipMode();
-        } else if (e.key === "Tab" && e.shiftKey) {
-            e.preventDefault();
-            flipMode();
-        }
-    });
-
-    document.querySelectorAll(".search-ai-chip").forEach((chip) => {
-        chip.addEventListener("click", () => {
-            aiMode = true;
-            applyMode();
-            input.value = chip.dataset.aiPrompt || "";
-            input.focus();
-        });
-    });
-
-    applyMode();
-}
-
 function initAiPromptChips() {
     document.querySelectorAll("[data-ai-prompt-go]").forEach((chip) => {
         chip.addEventListener("click", () => {
@@ -388,7 +328,7 @@ function initCommandPalette() {
     const commands = [
         { label: "Today", href: "/today", type: "nav" },
         { label: "All mail", href: "/inbox", type: "nav" },
-        { label: "Search", href: "/search", type: "nav" },
+        { label: "AI Search", href: "/search", type: "nav" },
         { label: "Assignments", href: "/assignments", type: "nav" },
         { label: "Settings", href: "/settings", type: "nav" },
         { label: "Guide", href: "/guide", type: "nav" },
@@ -461,7 +401,6 @@ function initKeyboardSheet() {
     });
 }
 
-initHeaderSearch();
 initAiPromptChips();
 initCommandPalette();
 initKeyboardSheet();

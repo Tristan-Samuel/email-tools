@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 
 {% block title %}Assignments — Inbox Tools{% endblock %}
 
@@ -26,15 +27,18 @@
         <ul class="action-items-list">
             {% for item in items %}
             <li class="action-item-row">
-                <div>
-                    <a href="{{ url_for('main.email_detail', email_id=item.email_id) }}" style="font-weight:700;color:var(--text)">
-                        {{ item.title }}
-                    </a>
-                    <p class="email-meta" style="margin:4px 0">
-                        {% if item.due_at %}<strong>Due</strong> {{ item.due_at }} · {% endif %}
-                        {{ item.sender or 'Unknown' }}
-                        {% if item.subject %} · {{ item.subject }}{% endif %}
-                    </p>
+                <div class="action-item-main">
+                    {{ icon("check") }}
+                    <div>
+                        <a class="action-item-title" href="{{ url_for('main.email_detail', email_id=item.email_id) }}">
+                            {{ item.title|sanitize_action }}
+                        </a>
+                        <p class="email-meta" style="margin:4px 0">
+                            {% if item.due_at %}<strong>Due</strong> {{ item.due_at }} · {% endif %}
+                            {{ item.sender or 'Unknown' }}
+                            {% if item.subject %} · {{ item.subject }}{% endif %}
+                        </p>
+                    </div>
                 </div>
                 <div style="display:flex;gap:6px;flex-shrink:0;align-items:flex-start">
                     {% if item.id %}

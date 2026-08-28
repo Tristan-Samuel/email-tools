@@ -25,13 +25,9 @@
     </section>
 
     <section class="panel help-panel reveal">
-        <h2 class="panel-title">Search vs AI</h2>
-        <p>The header search box has two modes. Press <kbd>Tab</kbd> or click <strong>AI</strong> to switch.</p>
-        <ul>
-            <li><strong>Keyword search</strong> — finds mail by words (same as the Search page filters).</li>
-            <li><strong>AI mode</strong> — ask questions (<em>emails about assignments</em>) or run <strong>actions</strong> (<em>list assignments I need to get done</em>). AI searches your summaries even when exact keywords are missing.</li>
-        </ul>
-        <p>Quick action chips appear in AI mode. Try <a href="{{ url_for('main.assignments') }}">Assignments</a> for a persistent due-work board.</p>
+        <h2 class="panel-title">AI Search &amp; actions</h2>
+        <p><strong>AI Search</strong> in the nav asks questions and extracts tasks from your mail (assignments, waiting on you, this week). Keyword search lives on <strong>All mail</strong>.</p>
+        <p>Quick action chips jump straight into a prompt. <a href="{{ url_for('main.assignments') }}">Assignments</a> keeps due work on a board.</p>
     </section>
 
     <section class="panel help-panel reveal">

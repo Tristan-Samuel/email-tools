@@ -374,18 +374,27 @@ def get_ai_client(user_email: str = "") -> AiClient:
     email = user_email or getattr(g, "current_user_email", "")
     user_groq_key = ""
     user_gemini_key = ""
+    groq_model = current_app.config.get("GROQ_DEFAULT_MODEL", DEFAULT_CHAT_MODEL)
+    gemini_model = current_app.config.get("GEMINI_DEFAULT_MODEL", DEFAULT_GEMINI_MODEL)
     if email:
         try:
-            stored_groq = get_store().get_setting(email, "groq_api_key")
+            store = get_store()
+            stored_groq = store.get_setting(email, "groq_api_key")
             if stored_groq:
                 user_groq_key, _ = crypto.decrypt_with_fallback(
                     stored_groq, _credential_keys(), purpose="groq"
                 )
-            stored_gemini = get_store().get_setting(email, "gemini_api_key")
+            stored_gemini = store.get_setting(email, "gemini_api_key")
             if stored_gemini:
                 user_gemini_key, _ = crypto.decrypt_with_fallback(
                     stored_gemini, _credential_keys(), purpose="gemini"
                 )
+            stored_gemini_model = user_prefs.get_pref(store, email, user_prefs.GEMINI_MODEL)
+            if stored_gemini_model in user_prefs.ALLOWED_GEMINI_MODELS:
+                gemini_model = stored_gemini_model
+            stored_groq_model = user_prefs.get_pref(store, email, user_prefs.GROQ_MODEL)
+            if stored_groq_model in user_prefs.ALLOWED_GROQ_MODELS:
+                groq_model = stored_groq_model
         except Exception:
             pass
     groq_key = user_groq_key or current_app.config.get("GROQ_API_KEY", "")
@@ -396,11 +405,11 @@ def get_ai_client(user_email: str = "") -> AiClient:
     )
     groq = GroqClient(
         api_key=groq_key,
-        default_model=current_app.config.get("GROQ_DEFAULT_MODEL", DEFAULT_CHAT_MODEL),
+        default_model=groq_model,
     )
     gemini = GeminiClient(
         api_key=gemini_key,
-        default_model=current_app.config.get("GEMINI_DEFAULT_MODEL", DEFAULT_GEMINI_MODEL),
+        default_model=gemini_model,
     )
     if groq_key:
         cache_key = _groq_model_cache_key(groq_key)
@@ -769,7 +778,9 @@ def analyze_pending_emails(
 
     if ai.gemini_enabled:
         processed = 0
-        gemini_batches = ai.analyze_with_token_packing(emails, store, user_email)
+        gemini_batches = ai.analyze_with_token_packing(
+            emails, store, user_email, on_progress=on_progress
+        )
         for packed, results, _tokens in gemini_batches:
             check_cancelled(store)
             batch_end = processed + len(packed)
@@ -1365,6 +1376,7 @@ def email_detail(email_id: str):
     compose_ctx = {}
     if draft_reply:
         compose_ctx = _compose_context(email, draft_reply, store, user_email)
+    account = (email.get("source_account") or "").strip()
     acct = store.get_imap_account_by_email(user_email, account) if account else None
     pref = user_prefs.open_in_provider(store, user_email)
     provider = webmail.resolve_provider((acct or {}).get("imap_host") or "", pref)
@@ -1827,97 +1839,56 @@ def search_page():
     store = get_store()
     user_email = g.current_user_email
     query = request.args.get("query", "").strip()
-    sender_filter = request.args.get("from_", "").strip()
-    recipient_filter = request.args.get("to_", "").strip()
-    subject_filter = request.args.get("subject_", "").strip()
-    category = request.args.get("category") or None
     source_account = request.args.get("source_account") or None
-    date_from = request.args.get("date_from", "").strip() or None
-    date_to = request.args.get("date_to", "").strip() or None
-    tag_filter_raw = request.args.get("tag_id", "").strip()
-    tag_filter = int(tag_filter_raw) if tag_filter_raw.isdigit() else None
-    ai_mode = request.args.get("ai") == "1"
     sort = request.args.get("sort") or _search_sort(store, user_email)
     if sort not in _VALID_SEARCH_SORTS:
         sort = "urgency"
 
     emails: list = []
     ai_answer: str | None = None
+    ai_answer_blocks: list[str] = []
     ai_no_candidates = False
     ai_result: dict | None = None
     action_items: list = []
-    searched = bool(
-        query or sender_filter or recipient_filter or subject_filter
-        or category or date_from or date_to or tag_filter
-    )
-
-    common_kwargs = dict(
-        user_email=user_email,
-        source_account=source_account,
-        sender_filter=sender_filter or None,
-        recipient_filter=recipient_filter or None,
-        subject_filter=subject_filter or None,
-        category=category,
-        date_from=date_from,
-        date_to=date_to,
-        tag_filter=tag_filter,
-    )
+    searched = bool(query)
 
     if searched:
-        if ai_mode and query:
-            ai = get_ai_client()
-            if ai.enabled:
-                ai_result = ai_query.run_inbox_query(
-                    store,
-                    ai,
-                    user_email,
-                    query,
-                    source_account=source_account,
-                )
-                emails = ai_result.get("emails") or []
-                ai_answer = ai_result.get("answer")
-                action_items = ai_result.get("action_items") or []
-                if ai_result.get("empty") and ai_result.get("mode") == "search":
-                    ai_no_candidates = not emails
-                elif ai_result.get("error"):
-                    flash(f"AI query failed — {ai_result['error']}", "error")
-            else:
-                flash("Add a Gemini or Groq API key in Settings to use AI search.", "error")
-        elif query:
-            emails = store.search(query, sort=sort, **common_kwargs)
-            if ai_mode:
-                ai = get_ai_client()
-                if ai.enabled and emails:
-                    ai_answer = ai.answer_about_emails(query, emails)
-                elif ai_mode and not emails:
-                    ai_no_candidates = True
-        else:
-            emails = store.list_emails(sort=sort, **common_kwargs)
+        ai = get_ai_client()
+        if ai.enabled:
+            ai_result = ai_query.run_inbox_query(
+                store,
+                ai,
+                user_email,
+                query,
+                source_account=source_account,
+            )
+            emails = ai_result.get("emails") or []
+            ai_answer = ai_result.get("answer")
+            if ai_answer:
+                from .services.llm_text import split_ai_answer
 
-    categories = store.get_categories(user_email=user_email)
-    tags = store.list_tags(user_email)
-    groq_available = get_ai_client().enabled
+                ai_answer_blocks = split_ai_answer(ai_answer)
+            action_items = ai_result.get("action_items") or []
+            if ai_result.get("empty") and ai_result.get("mode") == "search":
+                ai_no_candidates = not emails
+            elif ai_result.get("error"):
+                flash(f"AI query failed — {ai_result['error']}", "error")
+        else:
+            flash("Add a Gemini or Groq API key in Settings to use AI search.", "error")
+
     return render_template(
         "search.html",
         emails=emails,
         query=query,
-        sender_filter=sender_filter,
-        recipient_filter=recipient_filter,
-        subject_filter=subject_filter,
-        selected_category=category,
-        categories=categories,
         source_account=source_account,
-        ai_mode=ai_mode,
         ai_answer=ai_answer,
+        ai_answer_blocks=ai_answer_blocks,
         ai_no_candidates=ai_no_candidates,
         ai_result=ai_result,
         action_items=action_items,
         searched=searched,
-        groq_available=groq_available,
-        date_from=date_from or "",
-        date_to=date_to or "",
-        tags=tags,
-        selected_tag=tag_filter,
+        groq_available=get_ai_client().enabled,
+        ai_chips=user_prefs.saved_ai_prompts(store, user_email),
         sort=sort,
     )
 
@@ -2100,6 +2071,11 @@ def inbox():
     )
 
 
+def _settings_redirect(default: str = "appearance"):
+    section = (request.form.get("section") or default).strip().lower()
+    return redirect(url_for("main.settings", section=section))
+
+
 @bp.route("/settings", methods=["GET", "POST"])
 def settings():
     login_redirect = require_login()
@@ -2123,7 +2099,7 @@ def settings():
             store.set_kv(user_email, _INBOX_ROW_ORDER_KEY, order)
             store.set_kv(user_email, _INBOX_SUMMARY_SIZE_KEY, size)
             flash("All mail display preferences saved.", "success")
-            return redirect(url_for("main.settings"))
+            return _settings_redirect("inbox")
 
         if action == "save_search_sort":
             sort_val = (request.form.get("search_sort") or "urgency").strip().lower()
@@ -2131,7 +2107,7 @@ def settings():
                 sort_val = "urgency"
             store.set_kv(user_email, _SEARCH_SORT_KEY, sort_val)
             flash("Default search sort saved.", "success")
-            return redirect(url_for("main.settings"))
+            return _settings_redirect("search")
 
         if action == "add_sender_rule":
             pattern = (request.form.get("pattern") or "").strip()
@@ -2140,7 +2116,7 @@ def settings():
                 store.save_sender_rule(user_email, pattern, rule_type)
                 rebuild_thread_states(store, user_email)
                 flash("Sender rule saved.", "success")
-            return redirect(url_for("main.settings"))
+            return _settings_redirect("senders")
 
         if action == "delete_sender_rule":
             rule_id_raw = request.form.get("rule_id", "")
@@ -2148,7 +2124,7 @@ def settings():
                 store.delete_sender_rule(int(rule_id_raw), user_email)
                 rebuild_thread_states(store, user_email)
                 flash("Sender rule removed.", "success")
-            return redirect(url_for("main.settings"))
+            return _settings_redirect("senders")
 
         if action == "set_app_password":
             new_pw = (request.form.get("new_app_password") or "").strip()
@@ -2162,7 +2138,7 @@ def settings():
             else:
                 store.set_app_password(user_email, generate_password_hash(new_pw, method="pbkdf2:sha256"))
                 flash("Account password set. You'll need it the next time you log in.", "success")
-            return redirect(url_for("main.settings"))
+            return _settings_redirect("profile")
 
         if action == "remove_app_password":
             accounts = store.list_imap_accounts(user_email)
@@ -2171,17 +2147,17 @@ def settings():
             else:
                 store.set_app_password(user_email, "")
                 flash("Account password removed. Next login requires your connected IMAP account.", "success")
-            return redirect(url_for("main.settings"))
+            return _settings_redirect("profile")
 
         if action == "clear_groq":
             store.save_setting(user_email, "groq_api_key", "")
             flash("Groq API key cleared.", "success")
-            return redirect(url_for("main.settings"))
+            return _settings_redirect("ai")
 
         if action == "clear_gemini":
             store.save_setting(user_email, "gemini_api_key", "")
             flash("Gemini API key cleared.", "success")
-            return redirect(url_for("main.settings"))
+            return _settings_redirect("ai")
 
         if action == "save_gemini":
             gemini_key = (request.form.get("gemini_api_key") or "").strip()
@@ -2191,7 +2167,7 @@ def settings():
                 flash("Gemini API key saved.", "success")
             else:
                 flash("Settings saved (Gemini key unchanged).", "success")
-            return redirect(url_for("main.settings"))
+            return _settings_redirect("ai")
 
         if action == "reanalyze_unanalyzed":
             ai = get_ai_client(user_email)
@@ -2208,7 +2184,7 @@ def settings():
                     flash(queue_err, "error")
                 else:
                     flash("AI analysis started — watch the activity panel.", "success")
-            return redirect(url_for("main.settings"))
+            return _settings_redirect("ai")
 
         if action == "rescan_all":
             ai = get_ai_client(user_email)
@@ -2285,7 +2261,7 @@ def settings():
             flash("Groq API key saved.", "success")
         elif action == "save_groq":
             flash("Settings saved (Groq key unchanged).", "success")
-        return redirect(url_for("main.settings"))
+        return _settings_redirect("ai")
 
     has_groq_key = bool(store.get_setting(user_email, "groq_api_key"))
     has_gemini_key = bool(store.get_setting(user_email, "gemini_api_key"))

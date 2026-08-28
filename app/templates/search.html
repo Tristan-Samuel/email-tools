@@ -1,163 +1,98 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 
-{% block title %}Search | Inbox Tools{% endblock %}
+{% block title %}AI Search &amp; actions | Inbox Tools{% endblock %}
 
 {% block content %}
 <main class="page-main">
 
-    <section class="panel search-form-panel">
-        <p class="eyebrow">Advanced search</p>
-        <h1 class="page-title" style="margin-bottom:1.5rem">Search your inbox</h1>
+    <section class="panel search-form-panel search-ai-page">
+        <p class="eyebrow">AI Search &amp; actions</p>
+        <h1 class="page-title" style="margin-bottom:0.5rem">Ask about your inbox</h1>
+        <p class="page-subtitle" style="margin-bottom:1.25rem">Questions, assignments, and things waiting on you — not keyword search. Use All mail to find exact words.</p>
 
         <form action="{{ url_for('main.search_page') }}" method="get" class="search-form" id="search-form">
+            {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
             <div class="search-main-row">
                 <input type="search" name="query" value="{{ query }}"
-                       placeholder="Keywords, topics, phrases…" class="search-query-input" autofocus
-                       id="search-query">
-                <button type="submit" class="btn btn-primary btn-lg">Search</button>
+                       placeholder="List assignments I need to get done…" class="search-query-input" autofocus
+                       id="search-query" autocomplete="off">
+                <button type="submit" class="btn btn-primary btn-lg" id="search-submit-btn">
+                    {{ icon("sparkle") }} Ask
+                </button>
             </div>
-
-            <div class="search-filters-row">
-                <label class="search-filter-label">
-                    <span>From</span>
-                    <input type="text" name="from_" value="{{ sender_filter }}"
-                           placeholder="sender@example.com" class="form-input"
-                           list="senders-datalist" autocomplete="off">
-                </label>
-                <label class="search-filter-label">
-                    <span>To</span>
-                    <input type="text" name="to_" value="{{ recipient_filter }}"
-                           placeholder="recipient@example.com" class="form-input"
-                           list="recipients-datalist" autocomplete="off">
-                </label>
-                <label class="search-filter-label">
-                    <span>Subject</span>
-                    <input type="text" name="subject_" value="{{ subject_filter }}"
-                           placeholder="Subject contains…" class="form-input">
-                </label>
-                <label class="search-filter-label">
-                    <span>Category</span>
-                    <select name="category" class="form-input">
-                        <option value="">All categories</option>
-                        {% for item in categories %}
-                        <option value="{{ item.category }}" {% if selected_category == item.category %}selected{% endif %}>
-                            {{ item.category }} ({{ item.count }})
-                        </option>
-                        {% endfor %}
-                    </select>
-                </label>
-            </div>
-
-            {% if tags %}
-            <div>
-                <span class="search-filter-label" style="display:block;margin-bottom:6px">Tags</span>
-                <div class="search-tag-chips">
-                    <a href="{{ url_for('main.search_page', query=query, from_=sender_filter, to_=recipient_filter, subject_=subject_filter, category=selected_category, date_from=date_from, date_to=date_to, ai=1 if ai_mode else None) }}"
-                       class="search-tag-chip {% if not selected_tag %}search-tag-chip--active{% endif %}">All</a>
-                    {% for tag in tags %}
-                    <a href="{{ url_for('main.search_page', tag_id=tag.id, query=query, from_=sender_filter, to_=recipient_filter, subject_=subject_filter, category=selected_category, date_from=date_from, date_to=date_to, ai=1 if ai_mode else None) }}"
-                       class="search-tag-chip {% if selected_tag == tag.id %}search-tag-chip--active{% endif %}">
-                        <span class="tag-dot" style="background:{{ tag.color }}"></span>
-                        {{ tag.name }} ({{ tag.email_count }})
-                    </a>
-                    {% endfor %}
-                </div>
-            </div>
-            {% endif %}
-
-            <div class="search-filters-row">
-                <label class="search-filter-label">
-                    <span>Date from</span>
-                    <input type="date" name="date_from" value="{{ date_from }}" class="form-input">
-                </label>
-                <label class="search-filter-label">
-                    <span>Date to</span>
-                    <input type="date" name="date_to" value="{{ date_to }}" class="form-input">
-                </label>
-                <label class="search-filter-label search-ai-toggle">
-                    <span>Ask AI</span>
-                    <label class="toggle-switch" title="{% if not groq_available %}Add a Groq API key in Settings to enable{% endif %}">
-                        <input type="checkbox" name="ai" value="1" {% if ai_mode %}checked{% endif %}
-                               {% if not groq_available %}disabled{% endif %}>
-                        <span class="toggle-slider"></span>
-                    </label>
-                    {% if not groq_available %}
-                    <small><a href="{{ url_for('main.settings', section='ai') }}">Add AI key</a></small>
-                    {% else %}
-                    <small>Works without keyword hits first</small>
-                    {% endif %}
-                </label>
-            </div>
+            <p class="search-thinking" id="search-thinking" hidden>Looking through your mail…</p>
         </form>
 
-        {% if searched %}
-        <form action="{{ url_for('main.search_save_tag') }}" method="post" class="sync-form-row" style="margin-top:20px;padding-top:16px;border-top:1px solid var(--line)">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <input type="hidden" name="query" value="{{ query }}">
-            <input type="hidden" name="from_" value="{{ sender_filter }}">
-            <input type="hidden" name="subject_" value="{{ subject_filter }}">
-            <label style="flex:1">
-                Save as auto-tag
-                <input type="text" name="tag_name" class="form-input" placeholder="Tag name for these filters" required>
-            </label>
-            <button type="submit" class="btn btn-teal">Create tag</button>
-        </form>
+        {% if groq_available %}
+        <div class="ai-chips-row" style="margin-top:14px;margin-bottom:0">
+            {% for chip in ai_chips %}
+            <button type="button" class="ai-prompt-chip" data-ai-prompt-go="{{ chip.prompt }}">{{ chip.label }}</button>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="panel-hint" style="margin:14px 0 0">
+            <a href="{{ url_for('main.settings', section='ai') }}">Add a Gemini or Groq API key</a> to run AI search.
+        </p>
         {% endif %}
     </section>
 
-    <datalist id="senders-datalist"></datalist>
-    <datalist id="recipients-datalist"></datalist>
-
     {% if action_items %}
     <section class="panel search-ai-answer reveal">
-        <p class="eyebrow">AI action</p>
+        <p class="eyebrow">Actions</p>
         <ul class="action-items-list">
             {% for item in action_items %}
             <li class="action-item-row">
-                <div>
-                    <a href="{{ url_for('main.email_detail', email_id=item.email_id) }}" style="font-weight:700">{{ item.title }}</a>
-                    {% if item.due_at %}<p class="email-meta">Due {{ item.due_at }}</p>{% endif %}
+                <div class="action-item-main">
+                    {{ icon("check") }}
+                    <div>
+                        <a class="action-item-title" href="{{ url_for('main.email_detail', email_id=item.email_id) }}">{{ item.title|sanitize_action }}</a>
+                        <p class="email-meta" style="margin:4px 0 0">
+                            {% if item.due_at %}<strong>Due</strong> {{ item.due_at }}{% if item.sender or item.subject %} · {% endif %}{% endif %}
+                            {{ item.sender or '' }}{% if item.subject %} · {{ item.subject }}{% endif %}
+                        </p>
+                    </div>
                 </div>
                 <a href="{{ url_for('main.email_detail', email_id=item.email_id) }}" class="btn btn-teal" style="font-size:.78rem">Open</a>
             </li>
             {% endfor %}
         </ul>
-        <p class="ai-answer-note">Structured list from {{ emails|length }} candidate email(s). <a href="{{ url_for('main.assignments') }}">View assignments board</a></p>
+        <p class="ai-answer-note">From {{ emails|length }} related email{{ 's' if emails|length != 1 else '' }}. <a href="{{ url_for('main.assignments') }}">Assignments board</a></p>
     </section>
-    {% elif ai_answer %}
+    {% elif ai_answer_blocks %}
     <section class="panel search-ai-answer reveal">
-        <p class="eyebrow">AI answer</p>
-        <div class="ai-answer-body">{{ ai_answer }}</div>
+        <p class="eyebrow">Answer</p>
+        <div class="ai-answer-blocks">
+            {% if ai_answer_blocks|length == 1 %}
+            <p>{{ ai_answer_blocks[0] }}</p>
+            {% else %}
+            <ul>
+                {% for block in ai_answer_blocks %}
+                <li>{{ block }}</li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+        </div>
         <p class="ai-answer-note">Based on {{ emails|length }} matching email(s). AI can make mistakes — always verify.</p>
     </section>
-    {% elif ai_no_candidates and ai_mode %}
+    {% elif ai_no_candidates and searched %}
     <section class="panel search-ai-answer reveal" role="status">
-        <p class="eyebrow">Ask AI</p>
-        <p>No matching emails found for &ldquo;{{ query }}&rdquo;. Try different wording — AI searches summaries and school/deadline mail even without exact keywords.</p>
+        <p class="eyebrow">AI Search</p>
+        <p>No matching emails found for &ldquo;{{ query }}&rdquo;. Try different wording.</p>
     </section>
     {% endif %}
 
-    {% if searched %}
+    {% if searched and emails %}
     <section class="panel reveal search-results-panel">
         <div class="section-heading section-heading-spread">
             <div>
-                <p class="eyebrow">Results</p>
-                <h2>
-                    {% if query %}Results for &ldquo;{{ query }}&rdquo;{% else %}Filtered emails{% endif %}
-                </h2>
+                <p class="eyebrow">Related mail</p>
+                <h2>{{ emails|length }} email{{ 's' if emails|length != 1 else '' }}</h2>
             </div>
             <div class="search-results-meta">
-                <p class="section-meta">{{ emails|length }} email{{ 's' if emails|length != 1 else '' }}</p>
                 <form action="{{ url_for('main.search_page') }}" method="get" class="search-sort-form">
                     {% if query %}<input type="hidden" name="query" value="{{ query }}">{% endif %}
-                    {% if sender_filter %}<input type="hidden" name="from_" value="{{ sender_filter }}">{% endif %}
-                    {% if recipient_filter %}<input type="hidden" name="to_" value="{{ recipient_filter }}">{% endif %}
-                    {% if subject_filter %}<input type="hidden" name="subject_" value="{{ subject_filter }}">{% endif %}
-                    {% if selected_category %}<input type="hidden" name="category" value="{{ selected_category }}">{% endif %}
-                    {% if date_from %}<input type="hidden" name="date_from" value="{{ date_from }}">{% endif %}
-                    {% if date_to %}<input type="hidden" name="date_to" value="{{ date_to }}">{% endif %}
-                    {% if selected_tag %}<input type="hidden" name="tag_id" value="{{ selected_tag }}">{% endif %}
-                    {% if ai_mode %}<input type="hidden" name="ai" value="1">{% endif %}
+                    {% if source_account %}<input type="hidden" name="source_account" value="{{ source_account }}">{% endif %}
                     <select name="sort" class="sort-select" onchange="this.form.submit()">
                         <option value="urgency" {% if sort == 'urgency' %}selected{% endif %}>Urgency</option>
                         <option value="date_desc" {% if sort == 'date_desc' %}selected{% endif %}>Date ↓ Newest</option>
@@ -168,7 +103,6 @@
             </div>
         </div>
 
-        {% if emails %}
         <div class="inbox-list search-results-list">
             {% for email in emails %}
             <div class="inbox-row-wrap search-result-row">
@@ -185,38 +119,28 @@
                     </div>
                     <div class="inbox-row-meta">
                         <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>
-                        {% if (email.urgency or email.priority_score or 0) >= 80 %}
-                        <span class="inbox-urgent-dot">U{{ email.urgency or email.priority_score }}</span>
-                        {% endif %}
                     </div>
                 </a>
-                <form action="{{ url_for('main.email_hide', email_id=email.email_id) }}" method="post"
-                      class="search-result-hide">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <button type="submit" class="btn btn-ghost" style="padding:4px 8px;font-size:.72rem"
-                            title="Hide this email">Hide</button>
-                </form>
             </div>
             {% endfor %}
         </div>
-        {% else %}
-        <div class="empty-state">
-            <h3>No results</h3>
-            <p>Try different keywords, or remove some filters.</p>
-        </div>
-        {% endif %}
     </section>
     {% endif %}
 
 </main>
+{% endblock %}
+
+{% block scripts %}
 <script>
-fetch('/api/senders').then(r=>r.json()).then(senders=>{
-    const dl = document.getElementById('senders-datalist');
-    senders.forEach(s=>{ const o=document.createElement('option'); o.value=s; dl.appendChild(o); });
-});
-fetch('/api/recipients').then(r=>r.json()).then(recipients=>{
-    const dl = document.getElementById('recipients-datalist');
-    recipients.forEach(s=>{ const o=document.createElement('option'); o.value=s; dl.appendChild(o); });
-});
+(function () {
+    const form = document.getElementById("search-form");
+    const thinking = document.getElementById("search-thinking");
+    const btn = document.getElementById("search-submit-btn");
+    if (!form || !thinking) return;
+    form.addEventListener("submit", function () {
+        thinking.hidden = false;
+        if (btn) btn.disabled = true;
+    });
+})();
 </script>
 {% endblock %}

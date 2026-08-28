@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 
 {% block title %}Settings — Inbox Tools{% endblock %}
 
@@ -13,13 +14,13 @@
 
     <div class="settings-layout">
         <nav class="settings-nav panel" aria-label="Settings sections">
-            <a href="{{ url_for('main.settings', section='appearance') }}" class="{% if section == 'appearance' %}active{% endif %}">Appearance</a>
-            <a href="{{ url_for('main.settings', section='inbox') }}" class="{% if section == 'inbox' %}active{% endif %}">Inbox &amp; Today</a>
-            <a href="{{ url_for('main.settings', section='search') }}" class="{% if section == 'search' %}active{% endif %}">Search</a>
-            <a href="{{ url_for('main.settings', section='senders') }}" class="{% if section == 'senders' %}active{% endif %}">Senders</a>
-            <a href="{{ url_for('main.settings', section='profile') }}" class="{% if section == 'profile' %}active{% endif %}">Account</a>
-            <a href="{{ url_for('main.settings', section='ai') }}" class="{% if section == 'ai' %}active{% endif %}">AI</a>
-            <a href="{{ url_for('main.settings', section='mail') }}" class="{% if section == 'mail' %}active{% endif %}">Mail apps</a>
+            <a href="{{ url_for('main.settings', section='appearance') }}" class="{% if section == 'appearance' %}active{% endif %}">{{ icon("appearance") }} Appearance</a>
+            <a href="{{ url_for('main.settings', section='inbox') }}" class="{% if section == 'inbox' %}active{% endif %}">{{ icon("list") }} Inbox &amp; Today</a>
+            <a href="{{ url_for('main.settings', section='search') }}" class="{% if section == 'search' %}active{% endif %}">{{ icon("search") }} Search</a>
+            <a href="{{ url_for('main.settings', section='senders') }}" class="{% if section == 'senders' %}active{% endif %}">{{ icon("users") }} Senders</a>
+            <a href="{{ url_for('main.settings', section='profile') }}" class="{% if section == 'profile' %}active{% endif %}">{{ icon("user") }} Account</a>
+            <a href="{{ url_for('main.settings', section='ai') }}" class="{% if section == 'ai' %}active{% endif %}">{{ icon("sparkle") }} AI</a>
+            <a href="{{ url_for('main.settings', section='mail') }}" class="{% if section == 'mail' %}active{% endif %}">{{ icon("mail") }} Mail apps</a>
         </nav>
 
         <div class="settings-sections">
@@ -57,7 +58,8 @@
             </section>
 
             <section class="panel settings-panel settings-section" id="search" {% if section != 'search' %}hidden{% endif %}>
-                <h2 class="panel-title">Search results</h2>
+                <h2 class="panel-title">Related mail sort</h2>
+                <p class="panel-hint">Default order for related emails shown under AI Search.</p>
                 <form action="{{ url_for('main.settings') }}" method="post" class="settings-form">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <input type="hidden" name="action" value="save_search_sort">
@@ -146,7 +148,7 @@
                     <label class="form-label">Default max messages
                         <input type="number" name="default_sync_max" class="form-input" min="50" max="2000" value="{{ default_sync_max }}">
                     </label>
-                    <label class="form-label" style="display:flex;align-items:center;gap:8px">
+                    <label class="form-label form-label-inline">
                         <input type="checkbox" name="keyboard_shortcuts" value="1" {% if keyboard_shortcuts %}checked{% endif %}>
                         Enable keyboard shortcuts (j/k/e/u, ?)
                     </label>

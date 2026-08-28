@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 
 {% block title %}All mail | Inbox Tools{% endblock %}
 
@@ -29,7 +30,7 @@
                 {% if sort != 'date_desc' %}<input type="hidden" name="sort" value="{{ sort }}">{% endif %}
                 <input type="search" name="query" value="{{ query }}" placeholder="Search emails…"
                        list="senders-datalist" autocomplete="off">
-                <button type="submit">Search</button>
+                <button type="submit">{{ icon("search") }} Search</button>
             </form>
 
             <!-- Sort selector -->

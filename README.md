@@ -12,11 +12,11 @@ Flask web application for triaging your inbox through AI summaries — see what 
 - Auto-sort messages into category signals (Urgent, Finance, Work, etc.) — **tags** are the user-facing filter taxonomy; **intent** (`i_owe`, `waiting_on_them`, `deadline`, `fyi`, `noise`) is the system triage taxonomy stored on each message and rolled up per thread. **School**, **Marketing**, and **Newsletters** tags are created on first visit. **School** never auto-hides mail (even when Marketing rules also match). Marketing/Newsletters can hide matching mail; optional **Confirm with AI before hiding** on a tag vetoes false positives. **Review hidden with AI** on the Hidden page re-checks buried mail.
 - **Automatic AI analysis** — sync downloads mail quickly with local summaries, then **Gemini** (Google AI Studio) analyzes in token-budget batches (many emails per request under the 1M context window) for a **one-line list summary**, a shorter **compact** clip, key-point bullets, intent, and due date in one pass. **Groq** is the fallback when Gemini is unavailable or the daily token budget is exhausted. Groq still uses 8-email batches with per-model 429 fallback. **Today** and **All mail** have **Analyze now** (missing list-lines) and **Rescan all summaries** (regenerate every cached email). Without any AI key, heuristic intent still powers Today.
 - **Today** (`/` and `/today`) — forgive-the-pile home: **Do now** (AI replies/deadlines plus anything you pin from FYI), curated **FYI digest** (recent unread skim, **Clear shown FYI** only clears what you see), **FYI by urgency** (full ranked list with Add to Do now / Dismiss), and a fold for **Waiting on them**. User triage actions are stamped on `thread_state` so rebuild and Groq cannot undo Done, Snooze, hide, or to-do placement until new inbound (or other release rules). Done / Snooze / Draft reply without opening every message.
-- **All mail** (`/inbox`) — browse archive with tag filters, thread-grouped rows, split-pane preview (`?pane=1`), keyboard triage (j/k/e/u), bulk hide / read / unread + hide undo. Each row shows a dedicated one-line summary (compact clip in Compact / Titles-only views). Row order and summary size in **Settings**. **Resync all** re-downloads the current IMAP window; **Rescan summaries** regenerates AI list-lines without hitting the server.
+- **All mail** (`/inbox`) — browse archive with tag filters, thread-grouped rows, split-pane preview (`?pane=1`), keyboard triage (j/k/e/u), bulk hide / read / unread + hide undo. Each row shows a dedicated one-line summary (compact clip in Compact / Titles-only views). Row order and summary size in **Settings**. Keyword search stays on this page. **Resync all** re-downloads the current IMAP window; **Rescan summaries** regenerates AI list-lines without hitting the server.
 - **Dark mode** — Light / Dark / System theme in the header menu (saved in your browser).
-- **Search** — keyword search with filters, save as auto-tag, sort by urgency. **Tab** (or the **AI** toggle) in the header search box switches to **AI mode**: ask questions or run **actions** (assignments list, waiting on me, this week) without needing keyword hits first. **Assignments** board at `/assignments`. **Cmd/Ctrl+K** command palette.
+- **AI Search & actions** (`/search`) — ask questions or extract tasks (assignments, waiting on me, this week) from your mail. Keyword search is on **All mail**, not here. **Assignments** board at `/assignments`. **Cmd/Ctrl+K** command palette.
 - **Open in Gmail / Outlook** — open originals and AI draft replies in your current browser (https compose), not the OS mail handler. Auto-detected from IMAP host; override in **Settings → Mail apps**.
-- **Guide** (`/guide`) — product tour (Today, AI search, tags, keyboard). App Password help at `/guide#app-passwords` ( `/help` redirects there).
+- **Guide** (`/guide`) — product tour (Today, AI Search, tags, keyboard). App Password help at `/guide#app-passwords` (`/help` redirects there).
 - Import `.eml` and `.mbox` file exports as an alternative to IMAP.
 - **Sender rules** in Settings — VIP (always surfaces on Today) and always-hide (noise). Sent folder is enabled by default on connect so the app can tell *I owe* vs *waiting on them*.
 - Manual and AI tags, hide rules (manual hides preserved), thread grouping, draft reply on Today and detail. Saving a tag applies matching rules immediately; AI tags cache verdicts so the model does not re-scan every sync.
@@ -115,7 +115,7 @@ IMPLEMENTATIONS.md            Audit + remaining follow-ups
 app.py                        Application entry point
 app/
   __init__.py                 Flask app factory, CSRF, configuration
-  routes.py                   All HTTP routes (login, today, inbox, search, assignments, accounts, tags, settings, guide)
+    routes.py                   All HTTP routes (login, today, inbox, AI search, assignments, accounts, tags, settings, guide)
   services/
     crypto.py                 Fernet encryption for IMAP, Groq, and Gemini keys
     email_parser.py           .eml / .mbox parsing, plaintext + HTML body extraction
@@ -128,7 +128,7 @@ app/
     token_budget.py           Local token counting and greedy email batch packing
     groq_client.py            Groq fallback: model discovery, 429 fallback, 8-email batches
     imap_service.py           IMAP connection, UID sync, Sent folder detection
-    llm_text.py               URL-stripped text compaction for LLM prompts
+    llm_text.py               URL-stripped text compaction and action-title sanitizing
     mail.py                   Outbound SMTP for signup verification codes
     store.py                  SQLite persistence, FTS, thread_state, sender_rules, migrations
     summary.py                Categorisation, summaries, digest, thread ids

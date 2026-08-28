@@ -9,7 +9,12 @@ from collections.abc import Callable
 
 import requests
 
-from .llm_text import compact_for_llm
+from .llm_text import (
+    ACTION_EXTRACT_SYSTEM,
+    clean_extracted_action_items,
+    compact_for_llm,
+    format_action_email_blocks,
+)
 
 # Groq retired llama-3.3-70b-versatile (free/dev) on 2026-08-16.
 # Prefer smaller chat models first: on-demand TPM is per-model, so a 429 on
@@ -488,7 +493,8 @@ class GroqClient:
                     "role": "system",
                     "content": (
                         "You are a helpful email assistant. The user will ask a question about their emails. "
-                        "Answer concisely using only the email summaries provided. "
+                        "Answer in a few short sentences or a simple bullet list using only the summaries. "
+                        "Never mention email IDs or hashes. Do not use a 'Key actions:' heading. "
                         "If you can't answer from the emails, say so briefly."
                     ),
                 },
@@ -545,29 +551,13 @@ class GroqClient:
     ) -> tuple[list[dict], str | None]:
         if not self.enabled or not emails:
             return [], self.last_error or "No emails to analyze."
-        context_parts = []
-        for e in emails[:30]:
-            bullets = e.get("bullet_summary") or []
-            summary = " ".join(bullets) if bullets else (e.get("preview") or "")
-            context_parts.append(
-                f"ID: {e['email_id']}\n"
-                f"Date: {e.get('received_at', 'unknown')}\n"
-                f"Due: {e.get('due_at') or 'unknown'}\n"
-                f"From: {e.get('sender', '?')}\n"
-                f"Subject: {e.get('subject', '?')}\n"
-                f"Summary: {summary}"
-            )
-        context = "\n\n---\n\n".join(context_parts)
+        context = format_action_email_blocks(emails, 30)
         today_line = f"Today's date: {today}\n" if today else ""
         parsed, err = self._complete(
             [
                 {
                     "role": "system",
-                    "content": (
-                        "Extract actionable items from emails for the user's request. "
-                        'Return JSON: {"items": [{"email_id": "...", "title": "short task title", '
-                        '"due_at": "YYYY-MM-DD or empty", "status": "open"}]}.'
-                    ),
+                    "content": ACTION_EXTRACT_SYSTEM,
                 },
                 {
                     "role": "user",
@@ -582,27 +572,7 @@ class GroqClient:
         )
         if not isinstance(parsed, dict):
             return [], err
-        raw = parsed.get("items") or []
-        if not isinstance(raw, list):
-            return [], err
-        cleaned: list[dict] = []
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            eid = str(item.get("email_id") or "").strip()
-            title = str(item.get("title") or item.get("reason") or "").strip()
-            if not eid or not title:
-                continue
-            due = str(item.get("due_at") or item.get("due_date") or "")[:10]
-            cleaned.append(
-                {
-                    "email_id": eid,
-                    "title": title,
-                    "due_at": due or None,
-                    "status": "open",
-                }
-            )
-        return cleaned, None
+        return clean_extracted_action_items(parsed.get("items"), emails[:30]), None
 
     def classify_email_for_tag(
         self,

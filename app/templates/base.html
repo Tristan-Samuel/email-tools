@@ -16,6 +16,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}?v={{ static_version }}">
 </head>
 <body data-keyboard-shortcuts="{{ '1' if keyboard_shortcuts else '0' }}">
+    {% from "_icons.html" import icon %}
     <a class="skip-link" href="#main-content">Skip to content</a>
     <div class="page-shell">
         <header class="topbar">
@@ -28,9 +29,9 @@
             </a>
             {% if current_user_email %}
                 <nav class="topbar-nav" aria-label="Primary">
-                    <a href="{{ url_for('main.today') }}" class="topbar-nav-link {% if request.endpoint == 'main.today' %}topbar-nav-link--active{% endif %}">Today</a>
-                    <a href="{{ url_for('main.inbox') }}" class="topbar-nav-link {% if request.endpoint == 'main.inbox' %}topbar-nav-link--active{% endif %}">All mail</a>
-                    <a href="{{ url_for('main.search_page') }}" class="topbar-nav-link {% if request.endpoint == 'main.search_page' %}topbar-nav-link--active{% endif %}">Search</a>
+                    <a href="{{ url_for('main.today') }}" class="topbar-nav-link {% if request.endpoint == 'main.today' %}topbar-nav-link--active{% endif %}">{{ icon("today") }} Today</a>
+                    <a href="{{ url_for('main.inbox') }}" class="topbar-nav-link {% if request.endpoint == 'main.inbox' %}topbar-nav-link--active{% endif %}">{{ icon("inbox") }} All mail</a>
+                    <a href="{{ url_for('main.search_page') }}" class="topbar-nav-link {% if request.endpoint == 'main.search_page' %}topbar-nav-link--active{% endif %}">{{ icon("sparkle") }} AI Search</a>
                 </nav>
                 {% if active_accounts %}
                 <nav class="acct-pills" aria-label="Account filter">
@@ -43,26 +44,6 @@
                     {% endfor %}
                 </nav>
                 {% endif %}
-                <form class="searchbar searchbar-wrap" action="{{ url_for('main.search_page') }}" method="get" id="header-search-form">
-                    <label class="visually-hidden" for="nav-search">Search emails</label>
-                    <div class="searchbar-inner" id="searchbar-inner">
-                        <input type="hidden" name="ai" value="0" id="nav-search-ai-flag">
-                        <input id="nav-search" type="search" name="query" value="{{ query|default('') }}"
-                               placeholder="Search…" autocomplete="off"
-                               data-placeholder-keyword="Search…"
-                               data-placeholder-ai="Ask a question or run an action…">
-                        <button type="button" class="search-mode-toggle" id="search-mode-toggle" aria-pressed="false" title="Switch to AI mode">AI</button>
-                        <button type="submit" class="search-submit-btn">Search</button>
-                    </div>
-                    <p class="searchbar-hint" id="searchbar-hint">Tab to ask AI · search and actions</p>
-                    <div class="search-ai-chips" id="search-ai-chips" hidden>
-                        <span class="search-ai-chips-label">Quick actions:</span>
-                        <button type="button" class="search-ai-chip" data-ai-prompt="List assignments I need to get done">Assignments</button>
-                        <button type="button" class="search-ai-chip" data-ai-prompt="What emails are waiting on me to reply?">Waiting on me</button>
-                        <button type="button" class="search-ai-chip" data-ai-prompt="What do I need to handle this week?">This week</button>
-                        <button type="button" class="search-ai-chip" data-ai-prompt="Find emails about ">Find emails</button>
-                    </div>
-                </form>
                 <div class="topbar-user">
                     <details class="account-menu">
                         <summary class="profile-avatar" aria-label="Account menu" title="{{ current_user_email }}">
@@ -213,7 +194,6 @@
         <div class="keyboard-sheet-panel panel">
             <h2 class="panel-title">Keyboard shortcuts</h2>
             <ul class="keyboard-sheet-list">
-                <li><kbd>Tab</kbd> in search — toggle AI mode (questions &amp; actions)</li>
                 <li><kbd>j</kbd> / <kbd>k</kbd> — move selection (All mail)</li>
                 <li><kbd>e</kbd> — hide selected (All mail)</li>
                 <li><kbd>u</kbd> — mark unread (All mail)</li>

@@ -1,7 +1,7 @@
 """Unified AI client: Gemini primary, Groq fallback."""
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from .gemini_client import (
@@ -23,7 +23,6 @@ from .token_budget import (
     GeminiQuotaTracker,
     TokenCounter,
     pack_email_batch,
-    shrink_pack_for_preflight,
 )
 
 
@@ -113,35 +112,44 @@ class AiClient:
         store: Any,
         user_email: str,
         limits: BudgetLimits | None = None,
-    ) -> list[tuple[list[dict], dict[str, dict], int]]:
-        """Yield-style batches: list of (chunk, results, tokens_used) for Gemini packing."""
+        on_progress: Callable[..., None] | None = None,
+    ) -> Iterator[tuple[list[dict], dict[str, dict], int]]:
+        """Yield (chunk, results, tokens_used) as each Gemini batch finishes."""
         self._sync_cancel()
         if not self.gemini_enabled:
-            return []
+            return
 
         limits = limits or BudgetLimits.from_env()
         tracker = GeminiQuotaTracker(store, user_email, limits)
-        counter = TokenCounter(
-            self._gemini.default_model,
-            api_client=self._gemini.client if self._gemini.enabled else None,
-        )
-        batches: list[tuple[list[dict], dict[str, dict], int]] = []
+        # Local tokenizer only — CountTokens on a packed prompt can hang with no timeout.
+        counter = TokenCounter(self._gemini.default_model, api_client=None)
         remaining = list(emails)
+        total = len(emails)
+        processed = 0
 
         while remaining:
             if tracker.tpd_exhausted():
                 self.disable_gemini_for_job("Gemini daily token budget reached.")
                 break
 
+            if on_progress:
+                on_progress(
+                    f"Packing emails {processed + 1}–{total}…",
+                    processed,
+                    total,
+                    phase="summarize",
+                )
             packed, blocks = pack_email_batch(remaining, counter, limits, tracker.remaining_tpd())
             if not packed:
                 break
-            packed, blocks = shrink_pack_for_preflight(
-                packed, blocks, counter, limits, tracker.remaining_tpd()
-            )
-            if not packed:
-                break
 
+            if on_progress:
+                on_progress(
+                    f"Sending {len(packed)} email(s) to Gemini…",
+                    processed,
+                    total,
+                    phase="summarize",
+                )
             tracker.wait_for_rpm_slot()
             tracker.mark_request_started()
             results = self._gemini.analyze_emails_batch(packed, blocks=blocks)
@@ -156,19 +164,29 @@ class AiClient:
                     half = len(packed) // 2
                     packed = packed[:half]
                     blocks = blocks[:half]
+                    if on_progress:
+                        on_progress(
+                            f"Retrying with {len(packed)} email(s)…",
+                            processed,
+                            total,
+                            phase="summarize",
+                        )
                     tracker.wait_for_rpm_slot()
                     tracker.mark_request_started()
                     results = self._gemini.analyze_emails_batch(packed, blocks=blocks)
                     tokens = self._gemini.last_tokens_used
                     tracker.record_tokens(tokens)
+                    self.last_error = self._gemini.last_error
+                    self.last_model_used = self._gemini.last_model_used
                 if not results and self._gemini_failed(self._gemini.last_error):
                     self.disable_gemini_for_job(self._gemini.last_error or "Gemini failed.")
+                    if on_progress:
+                        on_progress(f"Gemini error: {self.last_error}")
                     break
 
-            batches.append((packed, results, tokens))
+            yield (packed, results, tokens)
             remaining = remaining[len(packed) :]
-
-        return batches
+            processed += len(packed)
 
     def summarize_email(self, sender: str, subject: str, body: str) -> dict[str, object] | None:
         self._sync_cancel()
