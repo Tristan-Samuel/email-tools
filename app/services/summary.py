@@ -91,6 +91,10 @@ def compact_for_llm(text: str, limit: int = 800) -> str:
     return _compact(text, limit)
 
 
+LINE_SUMMARY_MAX = 160
+COMPACT_SUMMARY_MAX = 72
+
+
 def clean_summary_line(text: str, max_len: int = 220) -> str:
     """Strip footer junk and angle-bracket mailto/URL artifacts from a summary line."""
     if not text:
@@ -101,6 +105,86 @@ def clean_summary_line(text: str, max_len: int = 220) -> str:
     if len(line) > max_len:
         line = line[: max_len - 3].rstrip() + "..."
     return line
+
+
+def clip_at_word(text: str, max_len: int) -> str:
+    """Truncate on a word boundary for one-line list display."""
+    compact = re.sub(r"\s+", " ", text or "").strip()
+    if len(compact) <= max_len:
+        return compact
+    clipped = compact[: max_len - 3].rsplit(" ", 1)[0].rstrip(".,;:")
+    return (clipped or compact[: max_len - 3]).rstrip() + "..."
+
+
+def derive_line_summary(
+    *,
+    line: str = "",
+    bullets: list[str] | None = None,
+    preview: str = "",
+    sender: str = "",
+    subject: str = "",
+) -> str:
+    """One-sentence list summary. Prefer an AI `line`; never just reuse key-point #1 as-is."""
+    cleaned = clean_summary_line(line, max_len=LINE_SUMMARY_MAX)
+    if cleaned:
+        return cleaned
+    subject_clean = clean_summary_line(SUBJECT_PREFIX_RE.sub("", subject or "").strip(), max_len=90)
+    gist = clean_summary_line(preview, max_len=LINE_SUMMARY_MAX)
+    if not gist and bullets:
+        gist = clean_summary_line(str(bullets[0]), max_len=LINE_SUMMARY_MAX)
+    if subject_clean and gist and subject_clean.lower() not in gist.lower():
+        return clip_at_word(f"{subject_clean}: {gist}", LINE_SUMMARY_MAX)
+    if gist:
+        return gist
+    if subject_clean:
+        sender_label = (sender or "Someone").split("<")[0].strip() or "Someone"
+        return clip_at_word(f"{sender_label} — {subject_clean}", LINE_SUMMARY_MAX)
+    return ""
+
+
+def derive_compact_summary(line: str, compact: str = "") -> str:
+    """Shorter clip for dense / compact inbox rows."""
+    cleaned = clean_summary_line(compact, max_len=COMPACT_SUMMARY_MAX)
+    if cleaned:
+        return cleaned
+    return clip_at_word(line, COMPACT_SUMMARY_MAX)
+
+
+def fill_summary_fields(
+    *,
+    line: str = "",
+    compact: str = "",
+    bullets: list[str] | None = None,
+    preview: str = "",
+    sender: str = "",
+    subject: str = "",
+) -> tuple[str, str, list[str]]:
+    """Return (line, compact, bullets) with both one-liners always filled."""
+    cleaned_bullets = [str(b).strip() for b in (bullets or []) if str(b).strip()][:4]
+    line_out = derive_line_summary(
+        line=line,
+        bullets=cleaned_bullets,
+        preview=preview,
+        sender=sender,
+        subject=subject,
+    )
+    compact_out = derive_compact_summary(line_out, compact)
+    return line_out, compact_out, cleaned_bullets
+
+
+def email_row_summaries(email: dict) -> tuple[str, str]:
+    """(line, compact) for inbox/search rows, with fallbacks for older cached mail."""
+    bullets = email.get("bullet_summary") or []
+    fallback = (
+        (email.get("line_summary") or "").strip()
+        or (email.get("thread_summary") or "").strip()
+        or (str(bullets[0]) if bullets else "")
+        or (email.get("preview") or "")
+        or ""
+    )
+    line = (email.get("line_summary") or "").strip() or fallback
+    compact = (email.get("compact_summary") or "").strip() or clip_at_word(line, COMPACT_SUMMARY_MAX)
+    return line, compact
 
 
 def extract_links_from_text(text: str, limit: int = 5) -> list[dict[str, str]]:
@@ -249,14 +333,31 @@ def summarize_email_with_groq(
     subject: str,
     body: str,
     groq_client: AiClient | None,
-) -> tuple[list[str], bool]:
-    """Return (bullets, ai_analyzed). ai_analyzed is True when AI produced bullets."""
+) -> tuple[list[str], str, str, bool]:
+    """Return (bullets, line, compact, ai_analyzed)."""
+    preview = preview_text(body)
     if groq_client is not None and groq_client.enabled:
-        groq_bullets = groq_client.summarize_email(sender=sender, subject=subject, body=body)
-        if groq_bullets:
-            return groq_bullets, True
+        result = groq_client.summarize_email(sender=sender, subject=subject, body=body)
+        if result:
+            line, compact, bullets = fill_summary_fields(
+                line=result.get("line") or "",
+                compact=result.get("compact") or "",
+                bullets=result.get("bullets") or [],
+                preview=preview,
+                sender=sender,
+                subject=subject,
+            )
+            if bullets or line:
+                return bullets, line, compact, True
 
-    return summarize_email(sender=sender, subject=subject, body=body), False
+    bullets = summarize_email(sender=sender, subject=subject, body=body)
+    line, compact, bullets = fill_summary_fields(
+        bullets=bullets,
+        preview=preview,
+        sender=sender,
+        subject=subject,
+    )
+    return bullets, line, compact, False
 
 
 def preview_text(body: str, limit: int = 180) -> str:
@@ -277,7 +378,7 @@ def build_email_record(
 ) -> dict:
     category, priority_score = choose_category(message["subject"], message["body"])
     keywords = extract_keywords(message["subject"], message["body"])
-    bullet_summary, ai_analyzed = summarize_email_with_groq(
+    bullet_summary, line_summary, compact_summary, ai_analyzed = summarize_email_with_groq(
         message["sender"],
         message["subject"],
         message["body"],
@@ -289,6 +390,8 @@ def build_email_record(
             message["sender"],
             message["recipient"],
             message["body"],
+            line_summary,
+            compact_summary,
             " ".join(bullet_summary),
             " ".join(keywords),
             category,
@@ -317,6 +420,8 @@ def build_email_record(
         "body_html": message.get("body_html") or "",
         "preview": preview_text(message["body"]),
         "bullet_summary": bullet_summary,
+        "line_summary": line_summary,
+        "compact_summary": compact_summary,
         "category": category,
         "priority_score": priority_score,
         "keywords": keywords,
@@ -394,7 +499,9 @@ def build_digest(
     ]
 
     for email in emails[:3]:
-        raw = email["bullet_summary"][0] if email["bullet_summary"] else email["preview"]
+        raw = (email.get("line_summary") or "").strip()
+        if not raw:
+            raw = email["bullet_summary"][0] if email["bullet_summary"] else email["preview"]
         summary_line = clean_summary_line(raw)
         if summary_line:
             bullets.append(
@@ -419,7 +526,9 @@ def build_important_items(emails: list[dict], limit: int = 8) -> list[dict]:
     )[:limit]
     items: list[dict] = []
     for email in urgent:
-        raw = email["bullet_summary"][0] if email.get("bullet_summary") else email.get("preview", "")
+        raw = (email.get("line_summary") or "").strip()
+        if not raw:
+            raw = email["bullet_summary"][0] if email.get("bullet_summary") else email.get("preview", "")
         blob = " ".join(email.get("bullet_summary") or []) + " " + (email.get("body") or "")[:2000]
         items.append(
             {

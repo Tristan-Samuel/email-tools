@@ -5,7 +5,7 @@ import datetime
 import re
 from typing import TYPE_CHECKING
 
-from .summary import ACTION_WORDS, CATEGORY_RULES, contains_keyword, preview_text
+from .summary import ACTION_WORDS, CATEGORY_RULES, contains_keyword, fill_summary_fields, preview_text
 
 if TYPE_CHECKING:
     from .store import EmailStore
@@ -157,6 +157,9 @@ def thread_summary_text(emails: list[dict]) -> str:
     if not emails:
         return ""
     latest = emails[-1]
+    line = (latest.get("line_summary") or "").strip()
+    if line:
+        return line
     bullets = latest.get("bullet_summary") or []
     if bullets:
         return str(bullets[0])
@@ -481,10 +484,20 @@ def analyze_heuristic_batch(store: EmailStore, user_email: str, limit: int = 400
             vip=vip,
             today=today,
         )
+        line, compact, bullets = fill_summary_fields(
+            line=email.get("line_summary") or "",
+            compact=email.get("compact_summary") or "",
+            bullets=email.get("bullet_summary") or [],
+            preview=email.get("preview") or "",
+            sender=sender,
+            subject=email.get("subject") or "",
+        )
         store.update_email_analysis(
             email["email_id"],
             user_email,
-            bullet_summary=email.get("bullet_summary") or [],
+            bullet_summary=bullets,
+            line_summary=line,
+            compact_summary=compact,
             intent=intent,
             intent_reason=reason,
             due_at=due_at,

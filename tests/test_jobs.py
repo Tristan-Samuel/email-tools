@@ -219,8 +219,8 @@ def test_complete_falls_back_from_decommissioned_model(mock_post: MagicMock) -> 
     }
     mock_post.side_effect = [dead, live]
     client = GroqClient(api_key="gsk_test", default_model="openai/gpt-oss-120b")
-    bullets = client.summarize_email("a@b.com", "Hello", "Please reply")
-    assert bullets == ["Action: reply today"]
+    result = client.summarize_email("a@b.com", "Hello", "Please reply")
+    assert result == {"bullets": ["Action: reply today"], "line": "", "compact": ""}
     assert mock_post.call_count == 2
     assert client._cached_best_model in (
         "openai/gpt-oss-20b",
@@ -248,8 +248,8 @@ def test_complete_falls_back_from_rate_limit(mock_post: MagicMock, mock_sleep: M
     mock_post.side_effect = [limited, live]
     client = GroqClient(api_key="gsk_test", default_model="openai/gpt-oss-120b")
     client._cached_best_model = "openai/gpt-oss-120b"
-    bullets = client.summarize_email("a@b.com", "Hello", "Please reply")
-    assert bullets == ["Action: reply today"]
+    result = client.summarize_email("a@b.com", "Hello", "Please reply")
+    assert result == {"bullets": ["Action: reply today"], "line": "", "compact": ""}
     assert mock_sleep.call_count == 0
     assert mock_post.call_count == 2
     assert mock_post.call_args_list[0].kwargs["json"]["model"] == "openai/gpt-oss-120b"

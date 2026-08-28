@@ -29,7 +29,7 @@ from .services.groq_client import (
     GroqClient,
     resolve_chat_model,
 )
-from .services.summary import build_digest, build_email_record, build_important_items
+from .services.summary import build_digest, build_email_record, build_important_items, fill_summary_fields
 from .services import sync_worker, triage
 from .services.triage import build_today_view, rebuild_thread_states, analyze_heuristic_batch
 from .services.sync_worker import JobCancelled, check_cancelled, current_job_is_cancelled
@@ -570,6 +570,8 @@ def _persist_email_analysis(
     today: datetime.date,
 ) -> None:
     sender = email.get("sender") or ""
+    subject = email.get("subject") or ""
+    preview = email.get("preview") or ""
     vip = any(triage.sender_matches_pattern(sender, p) for p in vip_patterns)
     intent = data.get("intent") or "fyi"
     if vip and intent == "fyi":
@@ -581,10 +583,20 @@ def _persist_email_analysis(
         vip=vip,
         today=today,
     )
+    line, compact, bullets = fill_summary_fields(
+        line=str(data.get("line") or ""),
+        compact=str(data.get("compact") or ""),
+        bullets=data.get("bullets") or [],
+        preview=preview,
+        sender=sender,
+        subject=subject,
+    )
     store.update_email_analysis(
         email["email_id"],
         user_email,
-        bullet_summary=data.get("bullets") or [],
+        bullet_summary=bullets,
+        line_summary=line,
+        compact_summary=compact,
         intent=intent,
         intent_reason=data.get("reason") or "",
         due_at=data.get("due_at"),
@@ -626,20 +638,22 @@ def analyze_pending_emails(
         for email in chunk:
             data = results.get(email["email_id"])
             if not data:
-                bullets = ai.summarize_email(
+                result = ai.summarize_email(
                     sender=email.get("sender") or "",
                     subject=email.get("subject") or "",
                     body=email.get("body") or "",
                 )
-                if bullets:
+                if result:
                     data = {
-                        "bullets": bullets,
+                        "bullets": result.get("bullets") or [],
+                        "line": result.get("line") or "",
+                        "compact": result.get("compact") or "",
                         "intent": "fyi",
                         "reason": "",
                         "due_at": None,
                         "tags": [],
                     }
-            if not data or not data.get("bullets"):
+            if not data or not (data.get("bullets") or data.get("line")):
                 if ai.last_error and is_fatal_auth_error(ai.last_error):
                     on_progress(f"AI error: {ai.last_error}")
                     on_progress("Stopping analysis — API key rejected.")
@@ -1186,15 +1200,31 @@ def email_detail(email_id: str):
 
     ai = get_ai_client()
     auto_analyzed = False
-    if ai.enabled and not email.get("ai_analyzed"):
-        bullets = ai.summarize_email(
+    if ai.enabled and (not email.get("ai_analyzed") or not (email.get("line_summary") or "").strip()):
+        result = ai.summarize_email(
             sender=email["sender"],
             subject=email["subject"],
             body=email["body"],
         )
-        if bullets:
-            store.update_email_summary(email_id, user_email, bullets)
+        if result:
+            line, compact, bullets = fill_summary_fields(
+                line=str(result.get("line") or ""),
+                compact=str(result.get("compact") or ""),
+                bullets=result.get("bullets") or [],
+                preview=email.get("preview") or "",
+                sender=email["sender"],
+                subject=email["subject"],
+            )
+            store.update_email_summary(
+                email_id,
+                user_email,
+                bullets,
+                line_summary=line,
+                compact_summary=compact,
+            )
             email["bullet_summary"] = bullets
+            email["line_summary"] = line
+            email["compact_summary"] = compact
             email["ai_analyzed"] = 1
             auto_analyzed = True
 
@@ -1270,13 +1300,27 @@ def email_reanalyze(email_id: str):
         flash("Add a Gemini or Groq API key in Settings to enable AI analysis.", "error")
         return redirect(url_for("main.email_detail", email_id=email_id))
 
-    bullets = ai.summarize_email(
+    result = ai.summarize_email(
         sender=email["sender"],
         subject=email["subject"],
         body=email["body"],
     )
-    if bullets:
-        store.update_email_summary(email_id, g.current_user_email, bullets)
+    if result:
+        line, compact, bullets = fill_summary_fields(
+            line=str(result.get("line") or ""),
+            compact=str(result.get("compact") or ""),
+            bullets=result.get("bullets") or [],
+            preview=email.get("preview") or "",
+            sender=email["sender"],
+            subject=email["subject"],
+        )
+        store.update_email_summary(
+            email_id,
+            g.current_user_email,
+            bullets,
+            line_summary=line,
+            compact_summary=compact,
+        )
         flash("AI analysis updated.", "success")
     else:
         flash("AI analysis failed — check your Groq key in Settings.", "error")
@@ -1950,6 +1994,26 @@ def settings():
                     flash("AI analysis started — watch the activity panel.", "success")
             return redirect(url_for("main.settings"))
 
+        if action == "rescan_all":
+            ai = get_ai_client(user_email)
+            if not ai.enabled:
+                flash("Add a Gemini or Groq API key to rescan summaries.", "error")
+            else:
+                cleared = store.clear_ai_analyzed(user_email)
+                job_id, queue_err = _queue_job(
+                    user_email,
+                    "reanalyze",
+                    f"Rescan {cleared} email(s) with AI",
+                )
+                if queue_err:
+                    flash(queue_err, "error")
+                else:
+                    flash(
+                        f"Rescan started for {cleared} email(s) — watch the activity panel.",
+                        "success",
+                    )
+            return redirect(url_for("main.settings"))
+
         groq_key = (request.form.get("groq_api_key") or "").strip()
         if groq_key:
             encrypted = crypto.encrypt(groq_key, get_credential_key(), purpose="groq")
@@ -2064,6 +2128,112 @@ def analyze_now():
     else:
         flash("AI analysis started — watch the activity panel for progress.", "success")
     return redirect(request.referrer or url_for("main.today"))
+
+
+@bp.post("/analyze/rescan")
+def analyze_rescan():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    user_email = g.current_user_email
+    ai = get_ai_client(user_email)
+    if not ai.enabled:
+        flash("Add a Gemini or Groq API key in Settings to generate AI summaries.", "error")
+        return redirect(url_for("main.settings"))
+
+    cleared = store.clear_ai_analyzed(user_email)
+    if cleared <= 0:
+        flash("No cached emails to rescan.", "error")
+        return redirect(request.referrer or url_for("main.inbox"))
+
+    job_id, queue_err = _queue_job(
+        user_email,
+        "reanalyze",
+        f"Rescan {cleared} email(s) with AI",
+    )
+    if queue_err:
+        flash(queue_err, "error")
+    else:
+        flash(
+            f"Rescan started for {cleared} email(s) — list lines and key points will refresh.",
+            "success",
+        )
+    return redirect(request.referrer or url_for("main.inbox"))
+
+
+@bp.post("/accounts/resync-all")
+def accounts_resync_all():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    user_email = g.current_user_email
+    accounts = store.list_imap_accounts(user_email)
+    if not accounts:
+        flash("No accounts to resync.", "error")
+        return redirect(url_for("main.accounts"))
+
+    for acct in accounts:
+        store.reset_account_sync_cursors(acct["id"], user_email)
+    store.clear_ai_analyzed(user_email)
+    job_id, queue_err = _queue_job(
+        user_email,
+        "sync",
+        f"Resync {len(accounts)} account(s) from server",
+    )
+    if queue_err:
+        flash(queue_err, "error")
+    else:
+        flash(
+            "Full resync started — mail is re-downloaded in your current date window, then summaries refresh.",
+            "success",
+        )
+    return redirect(request.referrer or url_for("main.accounts"))
+
+
+@bp.post("/accounts/resync/<int:account_id>")
+def accounts_resync(account_id: int):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    user_email = g.current_user_email
+    account = store.get_imap_account(account_id, user_email)
+    if account is None:
+        flash("Account not found.", "error")
+        return redirect(url_for("main.accounts"))
+
+    since = (request.form.get("sync_since") or "").strip() or _default_sync_since()
+    sync_max = _parse_sync_max(request.form.get("sync_max") or account.get("sync_max_count"))
+    store.update_imap_sync_prefs(account_id, since, sync_max)
+    folder_names = request.form.getlist("folders")
+    if folder_names:
+        for row in store.list_folder_sync(account_id):
+            store.set_folder_enabled(account_id, row["folder"], row["folder"] in folder_names)
+    account = store.get_imap_account(account_id, user_email)
+    if account is None:
+        return redirect(url_for("main.accounts"))
+
+    store.reset_account_sync_cursors(account_id, user_email)
+    store.clear_ai_analyzed(user_email, source_account=account["account_email"])
+    job_id, queue_err = _queue_job(
+        user_email,
+        "sync",
+        f"Resync {account['account_email']} from server",
+        account_ids=[account_id],
+    )
+    if queue_err:
+        flash(queue_err, "error")
+    else:
+        flash(
+            f"Full resync started for {account['account_email']}.",
+            "success",
+        )
+    return redirect(request.referrer or url_for("main.accounts"))
 
 
 @bp.post("/accounts/<int:account_id>/password")

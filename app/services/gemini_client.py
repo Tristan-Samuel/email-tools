@@ -14,12 +14,15 @@ from .groq_client import (
     _JSON_MAX_TOKENS,
     _MAX_SUMMARY_BATCH,
     _SINGLE_BODY_CHARS,
+    _SUMMARY_LINE_HINT,
     _SUMMARY_TRIAGE_HINT,
     _TAG_BODY_CHARS,
     _TAG_SUMMARY_CHARS,
     _parse_bool,
     _parse_json_content,
     _parse_tag_verdict,
+    parse_analyze_entry,
+    parse_single_summary,
 )
 from .llm_text import compact_for_llm
 from .token_budget import (
@@ -230,27 +233,11 @@ class GeminiClient:
         if not isinstance(entries, list):
             return by_id
         for entry in entries:
-            if not isinstance(entry, dict):
+            parsed_entry = parse_analyze_entry(entry)
+            if not parsed_entry:
                 continue
-            eid = str(entry.get("id") or entry.get("email_id") or "")
-            if not eid:
-                continue
-            bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
-            intent = str(entry.get("intent") or "fyi").strip().lower()
-            if intent not in ("i_owe", "waiting_on_them", "deadline", "fyi", "noise"):
-                intent = "fyi"
-            reason = str(entry.get("reason") or "").strip()
-            due_raw = str(entry.get("due_at") or "").strip()
-            due_at = due_raw[:10] if due_raw and due_raw.lower() not in ("", "null", "none") else None
-            raw_tags = entry.get("tags") or []
-            tags = [str(t).strip() for t in raw_tags if str(t).strip()] if isinstance(raw_tags, list) else []
-            by_id[eid] = {
-                "bullets": bullets[:4] if bullets else [],
-                "intent": intent,
-                "reason": reason,
-                "due_at": due_at,
-                "tags": tags,
-            }
+            eid = str(parsed_entry.pop("id"))
+            by_id[eid] = parsed_entry
         return by_id
 
     def analyze_emails_batch(
@@ -285,14 +272,16 @@ class GeminiClient:
             return {}
         return self._parse_analyze_entries(parsed)
 
-    def summarize_email(self, sender: str, subject: str, body: str) -> list[str] | None:
+    def summarize_email(self, sender: str, subject: str, body: str) -> dict[str, object] | None:
         if not self.enabled:
             return None
         clipped_body = compact_for_llm(body, _SINGLE_BODY_CHARS)
         prompt = (
-            "Summarize this email as concise bullet points for fast triage. "
-            'Return JSON only with key "bullets" as an array of up to 4 strings. '
-            f"{_SUMMARY_TRIAGE_HINT}"
+            "Summarize this email for inbox triage. Return JSON only with keys "
+            '"line" (one sentence for a message list), '
+            '"compact" (6–10 words for a dense list), and '
+            '"bullets" (up to 4 distinct key points). '
+            f"{_SUMMARY_LINE_HINT} {_SUMMARY_TRIAGE_HINT}"
         )
         parsed, _err, _tokens = self._generate_json(
             (
@@ -303,11 +292,7 @@ class GeminiClient:
             ),
             timeout_ms=60_000,
         )
-        if not isinstance(parsed, dict):
-            return None
-        bullets = parsed.get("bullets", [])
-        cleaned = [str(bullet).strip() for bullet in bullets if str(bullet).strip()]
-        return cleaned[:4] if cleaned else None
+        return parse_single_summary(parsed) if isinstance(parsed, dict) else None
 
     def answer_about_emails(self, question: str, emails: list[dict]) -> str | None:
         if not self.enabled or not emails:

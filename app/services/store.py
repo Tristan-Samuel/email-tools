@@ -440,6 +440,20 @@ class EmailStore:
                 "ALTER TABLE user_settings ADD COLUMN gemini_api_key TEXT NOT NULL DEFAULT ''"
             )
 
+    def _migrate_v13(self, connection: sqlite3.Connection) -> None:
+        """Dedicated one-line and compact list summaries, separate from key-point bullets."""
+        email_cols = self._table_columns(connection, "emails")
+        if not email_cols:
+            return
+        if "line_summary" not in email_cols:
+            connection.execute(
+                "ALTER TABLE emails ADD COLUMN line_summary TEXT NOT NULL DEFAULT ''"
+            )
+        if "compact_summary" not in email_cols:
+            connection.execute(
+                "ALTER TABLE emails ADD COLUMN compact_summary TEXT NOT NULL DEFAULT ''"
+            )
+
     def initialize(self) -> None:
         with self._connect() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -491,6 +505,10 @@ class EmailStore:
                 self._migrate_v12(connection)
                 connection.execute("PRAGMA user_version = 12")
                 version = 12
+            if version < 13:
+                self._migrate_v13(connection)
+                connection.execute("PRAGMA user_version = 13")
+                version = 13
             try:
                 connection.execute("SELECT email_id FROM email_search LIMIT 0")
                 self.fts_enabled = True
@@ -559,6 +577,8 @@ class EmailStore:
                         body_html,
                         preview,
                         bullet_summary,
+                        line_summary,
+                        compact_summary,
                         category,
                         priority_score,
                         keywords,
@@ -572,7 +592,7 @@ class EmailStore:
                         snooze_until,
                         from_me,
                         urgency
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(email_id) DO UPDATE SET
                         user_email=excluded.user_email,
                         message_id=excluded.message_id,
@@ -592,6 +612,14 @@ class EmailStore:
                         END,
                         preview=excluded.preview,
                         bullet_summary=CASE WHEN excluded.ai_analyzed=1 THEN excluded.bullet_summary ELSE emails.bullet_summary END,
+                        line_summary=CASE
+                            WHEN excluded.ai_analyzed=1 OR emails.line_summary = '' THEN excluded.line_summary
+                            ELSE emails.line_summary
+                        END,
+                        compact_summary=CASE
+                            WHEN excluded.ai_analyzed=1 OR emails.compact_summary = '' THEN excluded.compact_summary
+                            ELSE emails.compact_summary
+                        END,
                         ai_analyzed=MAX(emails.ai_analyzed, excluded.ai_analyzed),
                         category=excluded.category,
                         priority_score=excluded.priority_score,
@@ -621,6 +649,8 @@ class EmailStore:
                         record.get("body_html") or "",
                         record["preview"],
                         json.dumps(record["bullet_summary"]),
+                        record.get("line_summary") or "",
+                        record.get("compact_summary") or "",
                         record["category"],
                         record["priority_score"],
                         json.dumps(record["keywords"]),
@@ -659,6 +689,8 @@ class EmailStore:
         email = dict(row)
         email["bullet_summary"] = json.loads(email["bullet_summary"])
         email["keywords"] = json.loads(email["keywords"])
+        email["line_summary"] = email.get("line_summary") or ""
+        email["compact_summary"] = email.get("compact_summary") or ""
         return email
 
     def list_emails(
@@ -1236,7 +1268,10 @@ class EmailStore:
     def count_ai_stats(self, user_email: str) -> tuple[int, int]:
         with self._connect() as connection:
             analyzed = connection.execute(
-                "SELECT COUNT(*) FROM emails WHERE user_email = ? AND ai_analyzed = 1",
+                """
+                SELECT COUNT(*) FROM emails
+                WHERE user_email = ? AND ai_analyzed = 1 AND line_summary != ''
+                """,
                 (user_email,),
             ).fetchone()[0]
             total = connection.execute(
@@ -1250,7 +1285,7 @@ class EmailStore:
             rows = connection.execute(
                 """
                 SELECT email_id FROM emails
-                WHERE user_email = ? AND ai_analyzed = 0
+                WHERE user_email = ? AND (ai_analyzed = 0 OR line_summary = '')
                 ORDER BY received_at DESC
                 LIMIT ?
                 """,
@@ -1259,18 +1294,56 @@ class EmailStore:
         return [row["email_id"] for row in rows]
 
     def list_unanalyzed_emails(self, user_email: str, limit: int = 40) -> list[dict]:
-        """Recent emails that still need a Groq summary."""
+        """Recent emails that still need an AI summary (or a dedicated list line)."""
         with self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM emails
-                WHERE user_email = ? AND ai_analyzed = 0
+                WHERE user_email = ? AND (ai_analyzed = 0 OR line_summary = '')
                 ORDER BY received_at DESC
                 LIMIT ?
                 """,
                 (user_email, limit),
             ).fetchall()
         return [self._deserialize_row(row) for row in rows if row]
+
+    def clear_ai_analyzed(self, user_email: str, source_account: str | None = None) -> int:
+        """Mark mail as needing a fresh AI pass so list-line summaries can be regenerated."""
+        query = "UPDATE emails SET ai_analyzed = 0 WHERE user_email = ?"
+        params: list[object] = [user_email]
+        if source_account:
+            query += " AND source_account = ?"
+            params.append(source_account)
+        with self._connect() as connection:
+            cursor = connection.execute(query, params)
+            return int(cursor.rowcount)
+
+    def reset_account_sync_cursors(self, account_id: int, user_email: str) -> bool:
+        """Zero IMAP UID checkpoints so the next sync re-downloads the current window."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id FROM imap_accounts WHERE id = ? AND user_email = ?",
+                (account_id, user_email),
+            ).fetchone()
+            if row is None:
+                return False
+            connection.execute(
+                """
+                UPDATE imap_folder_sync
+                SET last_uid = 0, backfill_uid = 0
+                WHERE account_id = ?
+                """,
+                (account_id,),
+            )
+            connection.execute(
+                """
+                UPDATE imap_accounts
+                SET last_uid = 0, backfill_uid = 0
+                WHERE id = ?
+                """,
+                (account_id,),
+            )
+        return True
 
     def get_email_tags_batch(self, email_ids: list[str]) -> dict[str, list[dict]]:
         if not email_ids:
@@ -1698,6 +1771,8 @@ class EmailStore:
         bullet_summary: list[str],
         keywords: list[str] | None = None,
         category: str | None = None,
+        line_summary: str = "",
+        compact_summary: str = "",
     ) -> None:
         with self._connect() as connection:
             row = connection.execute(
@@ -1715,14 +1790,31 @@ class EmailStore:
                     row["sender"] or "",
                     row["recipient"] or "",
                     row["body"],
+                    line_summary,
+                    compact_summary,
                     " ".join(bullet_summary),
                     " ".join(kw),
                     cat,
                 ]
             )
             connection.execute(
-                "UPDATE emails SET bullet_summary = ?, ai_analyzed = 1, search_blob = ? WHERE email_id = ? AND user_email = ?",
-                (json.dumps(bullet_summary), search_blob, email_id, user_email),
+                """
+                UPDATE emails SET
+                    bullet_summary = ?,
+                    line_summary = ?,
+                    compact_summary = ?,
+                    ai_analyzed = 1,
+                    search_blob = ?
+                WHERE email_id = ? AND user_email = ?
+                """,
+                (
+                    json.dumps(bullet_summary),
+                    line_summary,
+                    compact_summary,
+                    search_blob,
+                    email_id,
+                    user_email,
+                ),
             )
             self._write_search_index(
                 connection,
@@ -2559,6 +2651,8 @@ class EmailStore:
         ai_analyzed: bool = True,
         keywords: list[str] | None = None,
         category: str | None = None,
+        line_summary: str = "",
+        compact_summary: str = "",
     ) -> None:
         with self._connect() as connection:
             row = connection.execute(
@@ -2596,6 +2690,8 @@ class EmailStore:
                     row["sender"] or "",
                     row["recipient"] or "",
                     row["body"],
+                    line_summary,
+                    compact_summary,
                     " ".join(bullet_summary),
                     " ".join(kw),
                     cat,
@@ -2607,6 +2703,8 @@ class EmailStore:
                 """
                 UPDATE emails SET
                     bullet_summary = ?,
+                    line_summary = ?,
+                    compact_summary = ?,
                     ai_analyzed = ?,
                     search_blob = ?,
                     intent = ?,
@@ -2617,6 +2715,8 @@ class EmailStore:
                 """,
                 (
                     json.dumps(bullet_summary),
+                    line_summary,
+                    compact_summary,
                     1 if ai_analyzed else 0,
                     search_blob,
                     intent,

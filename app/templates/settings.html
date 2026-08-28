@@ -158,6 +158,25 @@
             <strong class="text-ok">✓ Key saved (encrypted).</strong>
             {% endif %}
         </p>
+        <p class="panel-hint">
+            <strong>{{ ai_analyzed }}</strong> emails analyzed with AI ·
+            <strong>{{ ai_pending }}</strong> still need a list-line summary.
+        </p>
+        {% if groq_available and ai_pending > 0 %}
+        <form action="{{ url_for('main.settings') }}" method="post" style="margin-bottom:12px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="reanalyze_unanalyzed">
+            <button type="submit" class="btn btn-teal">Analyze missing ({{ ai_pending }})</button>
+        </form>
+        {% endif %}
+        {% if groq_available %}
+        <form action="{{ url_for('main.settings') }}" method="post" style="margin-bottom:16px"
+              onsubmit="return confirm('Re-run AI summaries on every cached email? This uses API quota.');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="rescan_all">
+            <button type="submit" class="btn btn-ghost">Rescan all summaries</button>
+        </form>
+        {% endif %}
         <form action="{{ url_for('main.settings') }}" method="post" class="settings-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="action" value="save_gemini">
@@ -191,17 +210,6 @@
             {% endif %}
             After you sync, analysis starts automatically. You can also click <strong>Analyze now</strong> on Today or All mail.
         </p>
-        <p class="panel-hint">
-            <strong>{{ ai_analyzed }}</strong> emails analyzed with AI ·
-            <strong>{{ ai_pending }}</strong> still heuristic-only.
-        </p>
-        {% if groq_available and ai_pending > 0 %}
-        <form action="{{ url_for('main.settings') }}" method="post" style="margin-bottom:16px">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <input type="hidden" name="action" value="reanalyze_unanalyzed">
-            <button type="submit" class="btn btn-teal">Re-analyze unanalyzed ({{ ai_pending }})</button>
-        </form>
-        {% endif %}
         <form action="{{ url_for('main.settings') }}" method="post" class="settings-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="action" value="save_groq">

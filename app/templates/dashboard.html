@@ -128,7 +128,9 @@
                 <span class="unread-subject">{{ email.subject }}</span>
                 <span class="unread-date">{{ email.received_at|datetimeformat }}</span>
             </a>
-            {% if email.bullet_summary %}
+            {% if email.line_summary %}
+            <p class="unread-summary">{{ email.line_summary|sanitize_bullet }}</p>
+            {% elif email.bullet_summary %}
             <p class="unread-summary">{{ email.bullet_summary[0]|sanitize_bullet }}</p>
             {% endif %}
             {% endfor %}

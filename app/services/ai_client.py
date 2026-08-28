@@ -170,22 +170,22 @@ class AiClient:
 
         return batches
 
-    def summarize_email(self, sender: str, subject: str, body: str) -> list[str] | None:
+    def summarize_email(self, sender: str, subject: str, body: str) -> dict[str, object] | None:
         self._sync_cancel()
         if self.gemini_enabled:
-            bullets = self._gemini.summarize_email(sender, subject, body)
-            if bullets:
+            result = self._gemini.summarize_email(sender, subject, body)
+            if result:
                 self.last_provider = "gemini"
                 self.last_model_used = self._gemini.last_model_used
-                return bullets
+                return result
             if self._gemini_failed(self._gemini.last_error):
                 self.disable_gemini_for_job(self._gemini.last_error)
         if self._groq.enabled:
-            bullets = self._groq.summarize_email(sender, subject, body)
+            result = self._groq.summarize_email(sender, subject, body)
             self.last_provider = "groq"
             self.last_model_used = self._groq.last_model_used
             self.last_error = self._groq.last_error
-            return bullets
+            return result
         return None
 
     def answer_about_emails(self, question: str, emails: list[dict]) -> str | None:

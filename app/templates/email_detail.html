@@ -131,6 +131,9 @@
                 ✨ AI analysis ran automatically on first view.
             </div>
             {% endif %}
+            {% if email.line_summary %}
+            <p style="font-size:1.05rem;font-weight:600;margin:0 0 12px">{{ email.line_summary|sanitize_bullet }}</p>
+            {% endif %}
             {% if email.intent_reason %}
             <p class="panel-hint" style="margin-bottom:12px">{{ email.intent_reason }}</p>
             {% endif %}

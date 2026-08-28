@@ -16,6 +16,11 @@
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-teal">Sync All</button>
             </form>
+            <form action="{{ url_for('main.accounts_resync_all') }}" method="post"
+                  onsubmit="return confirm('Re-download mail for every account in the current date/count window and regenerate summaries?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-ghost">Resync all from server</button>
+            </form>
             {% endif %}
             <a href="{{ url_for('main.accounts_add') }}" class="btn btn-primary">+ Add Account</a>
         </div>
@@ -77,6 +82,11 @@
                         <input type="number" name="sync_max" min="1" max="2000" value="{{ acct.sync_max_count or default_sync_max }}" style="width:88px">
                     </label>
                     <button type="submit" class="btn btn-teal">Sync now</button>
+                    <button type="submit" formaction="{{ url_for('main.accounts_resync', account_id=acct.id) }}"
+                            class="btn btn-ghost"
+                            onclick="return confirm('Re-download this mailbox in the current date/count window and regenerate summaries?');">
+                        Resync from server
+                    </button>
                 </div>
                 {% if acct.folder_sync %}
                 <p style="font-size:.8rem;color:var(--muted);margin:10px 0 6px">Folders to sync</p>

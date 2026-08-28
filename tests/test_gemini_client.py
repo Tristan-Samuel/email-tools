@@ -31,3 +31,5 @@ def test_analyze_emails_batch_parses_items(mock_generate) -> None:
     )
     assert result["abc"]["bullets"][0] == "Pay the invoice"
     assert result["abc"]["intent"] == "deadline"
+    assert "line" in result["abc"]
+    assert "compact" in result["abc"]

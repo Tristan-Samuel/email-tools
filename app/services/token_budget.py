@@ -16,9 +16,13 @@ if TYPE_CHECKING:
 _PACIFIC = ZoneInfo("America/Los_Angeles")
 _ANALYZE_PROMPT_OVERHEAD = (
     "Analyze each email for inbox triage. Return JSON only: "
-    '{"items": [{"id": "...", "bullets": ["..."], "intent": "i_owe|waiting_on_them|deadline|fyi|noise", '
+    '{"items": [{"id": "...", "line": "one-sentence list summary", "compact": "6-10 word clip", '
+    '"bullets": ["..."], "intent": "i_owe|waiting_on_them|deadline|fyi|noise", '
     '"reason": "short why", "due_at": "YYYY-MM-DD or empty", "tags": ["optional tag names"]}]}. '
-    "Up to 3 bullets per email. intent=i_owe when the user must reply; waiting_on_them when user sent last; "
+    '"line" is a dedicated one-sentence overview for a message list (what this is and whether action is needed); '
+    "do not copy the first bullet. "
+    '"compact" is 6–10 words for dense lists. '
+    "Up to 3 bullets as distinct facts, dates, or asks. intent=i_owe when the user must reply; waiting_on_them when user sent last; "
     "deadline when a real due date exists; fyi for informational; noise for promos/newsletters. "
     "Use the given ID values exactly."
 )
@@ -35,7 +39,7 @@ class BudgetLimits:
     context_window: int = 1_048_576
     output_reserve: int = 16_384
     max_output_tokens: int = 65_536
-    tokens_per_email_output: int = 120
+    tokens_per_email_output: int = 180
     max_emails_per_batch: int = 130
     body_chars: int = 6000
     tpm_safety: float = 0.7

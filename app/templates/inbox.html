@@ -98,6 +98,18 @@
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-teal" style="padding:5px 12px;font-size:.82rem">Sync</button>
             </form>
+            <form action="{{ url_for('main.accounts_resync_all') }}" method="post"
+                  onsubmit="return confirm('Re-download mail in your current date/count window and regenerate summaries?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-ghost" style="padding:5px 12px;font-size:.82rem">Resync all</button>
+            </form>
+            {% endif %}
+            {% if groq_available %}
+            <form action="{{ url_for('main.analyze_rescan') }}" method="post"
+                  onsubmit="return confirm('Re-run AI summaries on every cached email? This uses API quota.');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-ghost" style="padding:5px 12px;font-size:.82rem">Rescan summaries</button>
+            </form>
             {% endif %}
             {% if groq_available and ai_pending > 0 %}
             <form action="{{ url_for('main.analyze_now') }}" method="post">
@@ -169,13 +181,8 @@
                         {% if tc > 1 %}<span class="thread-badge" title="{{ tc }} in thread">{{ tc }}</span>{% endif %}
                     </div>
                     <div class="inbox-row-preview inbox-field inbox-field--summary">
-                        {% if email.thread_summary %}
-                            {{ email.thread_summary|sanitize_bullet }}
-                        {% elif email.bullet_summary %}
-                            {{ email.bullet_summary[0]|sanitize_bullet }}
-                        {% else %}
-                            {{ email.preview or 'No preview available.' }}
-                        {% endif %}
+                        <span class="inbox-summary inbox-summary--line">{{ email|row_line|sanitize_bullet }}</span>
+                        <span class="inbox-summary inbox-summary--compact">{{ email|row_compact|sanitize_bullet }}</span>
                     </div>
                     {% set row_tags = email_tags_map.get(email.email_id, []) %}
                     {% if row_tags %}
@@ -260,6 +267,9 @@
         <div class="inbox-preview">
             <h2 class="detail-subject" style="font-size:1.1rem">{{ selected_email.subject }}</h2>
             <p class="email-meta"><strong>From</strong> {{ selected_email.sender or 'Unknown' }}</p>
+            {% if selected_email.line_summary %}
+            <p class="inbox-row-preview" style="white-space:normal">{{ selected_email.line_summary|sanitize_bullet }}</p>
+            {% endif %}
             <ul class="bullet-list">
                 {% for bullet in selected_email.bullet_summary %}
                 <li>{{ bullet }}</li>

@@ -137,6 +137,53 @@ _SUMMARY_TRIAGE_HINT = (
     "Do not paraphrase marketing CTAs or brochure copy. "
     "For unsolicited admissions or promo mail, say so in one line and note any real deadline."
 )
+_SUMMARY_LINE_HINT = (
+    '"line" is a dedicated one-sentence overview for a message list (what this is and whether action is needed); '
+    "do not copy the first bullet. "
+    '"compact" is 6–10 words for dense lists.'
+)
+
+
+def parse_analyze_entry(entry: dict) -> dict | None:
+    """Normalize one triage JSON item. Return None when id is missing."""
+    if not isinstance(entry, dict):
+        return None
+    eid = str(entry.get("id") or entry.get("email_id") or "").strip()
+    if not eid:
+        return None
+    bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()][:4]
+    line = str(entry.get("line") or entry.get("one_line") or entry.get("headline") or "").strip()
+    compact = str(entry.get("compact") or entry.get("short") or "").strip()
+    intent = str(entry.get("intent") or "fyi").strip().lower()
+    if intent not in ("i_owe", "waiting_on_them", "deadline", "fyi", "noise"):
+        intent = "fyi"
+    reason = str(entry.get("reason") or "").strip()
+    due_raw = str(entry.get("due_at") or "").strip()
+    due_at = due_raw[:10] if due_raw and due_raw.lower() not in ("", "null", "none") else None
+    raw_tags = entry.get("tags") or []
+    tags = [str(t).strip() for t in raw_tags if str(t).strip()] if isinstance(raw_tags, list) else []
+    return {
+        "id": eid,
+        "bullets": bullets,
+        "line": line,
+        "compact": compact,
+        "intent": intent,
+        "reason": reason,
+        "due_at": due_at,
+        "tags": tags,
+    }
+
+
+def parse_single_summary(parsed: dict) -> dict[str, object] | None:
+    """Normalize summarize_email JSON into {bullets, line, compact}."""
+    if not isinstance(parsed, dict):
+        return None
+    bullets = [str(b).strip() for b in (parsed.get("bullets") or []) if str(b).strip()][:4]
+    line = str(parsed.get("line") or parsed.get("one_line") or parsed.get("headline") or "").strip()
+    compact = str(parsed.get("compact") or parsed.get("short") or "").strip()
+    if not bullets and not line:
+        return None
+    return {"bullets": bullets, "line": line, "compact": compact}
 
 
 def _parse_retry_after(value: str | None) -> float:
@@ -393,15 +440,17 @@ class GroqClient:
         self.last_error = last_err or "Groq request failed."
         return None, self.last_error
 
-    def summarize_email(self, sender: str, subject: str, body: str) -> list[str] | None:
+    def summarize_email(self, sender: str, subject: str, body: str) -> dict[str, object] | None:
         if not self.enabled:
             return None
 
         clipped_body = compact_for_llm(body, _SINGLE_BODY_CHARS)
         prompt = (
-            "Summarize this email as concise bullet points for fast triage. "
-            "Return JSON only with key \"bullets\" as an array of up to 4 strings. "
-            f"{_SUMMARY_TRIAGE_HINT}"
+            "Summarize this email for inbox triage. Return JSON only with keys "
+            '"line" (one sentence for a message list), '
+            '"compact" (6–10 words for a dense list), and '
+            '"bullets" (up to 4 distinct key points). '
+            f"{_SUMMARY_LINE_HINT} {_SUMMARY_TRIAGE_HINT}"
         )
         parsed, _err = self._complete(
             [
@@ -418,11 +467,7 @@ class GroqClient:
             ],
             timeout=30,
         )
-        if not isinstance(parsed, dict):
-            return None
-        bullets = parsed.get("bullets", [])
-        cleaned = [str(bullet).strip() for bullet in bullets if str(bullet).strip()]
-        return cleaned[:4] if cleaned else None
+        return parse_single_summary(parsed) if isinstance(parsed, dict) else None
 
     def answer_about_emails(self, question: str, emails: list[dict]) -> str | None:
         """Answer a natural-language question using the provided email summaries as context."""
@@ -853,9 +898,11 @@ class GroqClient:
             )
         prompt = (
             "Analyze each email for inbox triage. Return JSON only: "
-            '{"items": [{"id": "...", "bullets": ["..."], "intent": "i_owe|waiting_on_them|deadline|fyi|noise", '
+            '{"items": [{"id": "...", "line": "one-sentence list summary", "compact": "6-10 word clip", '
+            '"bullets": ["..."], "intent": "i_owe|waiting_on_them|deadline|fyi|noise", '
             '"reason": "short why", "due_at": "YYYY-MM-DD or empty", "tags": ["optional tag names"]}]}. '
-            "Up to 3 bullets per email. intent=i_owe when the user must reply; waiting_on_them when user sent last; "
+            f"{_SUMMARY_LINE_HINT} "
+            "Up to 3 bullets as distinct facts, dates, or asks. intent=i_owe when the user must reply; waiting_on_them when user sent last; "
             "deadline when a real due date exists; fyi for informational; noise for promos/newsletters. "
             f"{_SUMMARY_TRIAGE_HINT} Use the given ID values exactly."
         )
@@ -876,27 +923,11 @@ class GroqClient:
         if not isinstance(entries, list):
             return by_id
         for entry in entries:
-            if not isinstance(entry, dict):
+            parsed_entry = parse_analyze_entry(entry)
+            if not parsed_entry:
                 continue
-            eid = str(entry.get("id") or entry.get("email_id") or "")
-            if not eid:
-                continue
-            bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
-            intent = str(entry.get("intent") or "fyi").strip().lower()
-            if intent not in ("i_owe", "waiting_on_them", "deadline", "fyi", "noise"):
-                intent = "fyi"
-            reason = str(entry.get("reason") or "").strip()
-            due_raw = str(entry.get("due_at") or "").strip()
-            due_at = due_raw[:10] if due_raw and due_raw.lower() not in ("", "null", "none") else None
-            raw_tags = entry.get("tags") or []
-            tags = [str(t).strip() for t in raw_tags if str(t).strip()] if isinstance(raw_tags, list) else []
-            by_id[eid] = {
-                "bullets": bullets[:4] if bullets else [],
-                "intent": intent,
-                "reason": reason,
-                "due_at": due_at,
-                "tags": tags,
-            }
+            eid = str(parsed_entry.pop("id"))
+            by_id[eid] = parsed_entry
         return by_id
 
     def summarize_emails_batch(self, emails: list[dict], batch_size: int = 8) -> dict[str, list[str]]:

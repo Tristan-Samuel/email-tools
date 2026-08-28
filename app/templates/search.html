@@ -163,7 +163,7 @@
                             <span class="inbox-row-date">{{ email.received_at|datetimeformat }}</span>
                         </div>
                         <div class="inbox-row-subject">{{ email.subject }}</div>
-                        <div class="inbox-row-preview">{{ email.preview or 'No preview available.' }}</div>
+                        <div class="inbox-row-preview">{{ (email|row_line or email.preview or 'No preview available.')|sanitize_bullet }}</div>
                     </div>
                     <div class="inbox-row-meta">
                         <span class="category-tag category-{{ email.category|lower|replace(' ', '-') }}">{{ email.category }}</span>

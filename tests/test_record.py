@@ -23,6 +23,8 @@ def test_build_email_record_includes_flags_and_scoped_id() -> None:
     )
     assert record["is_mailing_list"] == 1
     assert record["ai_analyzed"] == 0
+    assert record["line_summary"]
+    assert record["compact_summary"]
     assert record["email_id"] != message["email_id"]
     assert record["thread_id"]
 

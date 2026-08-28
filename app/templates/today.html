@@ -27,6 +27,13 @@
                 <button type="submit" class="btn btn-teal">Analyze {{ ai_pending }}</button>
             </form>
             {% endif %}
+            {% if groq_available %}
+            <form action="{{ url_for('main.analyze_rescan') }}" method="post"
+                  onsubmit="return confirm('Re-run AI summaries on every cached email? This uses API quota.');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-ghost">Rescan all summaries</button>
+            </form>
+            {% endif %}
             <a href="{{ url_for('main.inbox') }}" class="btn btn-ghost">All mail →</a>
         </div>
     </div>

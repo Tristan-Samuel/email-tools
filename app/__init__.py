@@ -85,7 +85,7 @@ def create_app() -> Flask:
         SMTP_PASSWORD=os.environ.get("SMTP_PASSWORD", ""),
         SMTP_FROM=os.environ.get("SMTP_FROM", "").strip(),
         SMTP_USE_TLS=os.environ.get("SMTP_USE_TLS", "true").lower() in ("1", "true", "yes"),
-        STATIC_VERSION="28",
+        STATIC_VERSION="29",
     )
 
     app.config["UPLOAD_FOLDER"].mkdir(parents=True, exist_ok=True)
@@ -170,6 +170,22 @@ def create_app() -> Flask:
         from .services.summary import sanitize_bullet_text
 
         return Markup(sanitize_bullet_text(value or ""))
+
+    @app.template_filter("row_line")
+    def row_line_filter(email: dict | None) -> str:
+        from .services.summary import email_row_summaries
+
+        if not email:
+            return ""
+        return email_row_summaries(email)[0]
+
+    @app.template_filter("row_compact")
+    def row_compact_filter(email: dict | None) -> str:
+        from .services.summary import email_row_summaries
+
+        if not email:
+            return ""
+        return email_row_summaries(email)[1]
 
     @app.template_filter("sender_name")
     def sender_name_filter(value: str | None) -> str:

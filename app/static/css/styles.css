@@ -1487,6 +1487,26 @@ h2 {
     text-overflow: ellipsis;
 }
 
+.inbox-summary--compact {
+    display: none;
+}
+
+.inbox-list.compact .inbox-summary--line {
+    display: none;
+}
+
+.inbox-list.compact .inbox-summary--compact {
+    display: inline;
+}
+
+.inbox-list.titles-only .inbox-summary--line {
+    display: none;
+}
+
+.inbox-list.titles-only .inbox-summary--compact {
+    display: inline;
+}
+
 .inbox-list--summary-large .inbox-row-preview {
     font-size: 1.05rem;
     font-weight: 600;

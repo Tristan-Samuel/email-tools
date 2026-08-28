@@ -63,6 +63,11 @@
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                 <button type="submit">Sync all</button>
                             </form>
+                            <form action="{{ url_for('main.analyze_rescan') }}" method="post"
+                                  onsubmit="return confirm('Re-run AI summaries on every cached email?');">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit">Rescan summaries</button>
+                            </form>
                             <div class="account-menu-divider"></div>
                             <form action="{{ url_for('main.logout') }}" method="post">
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
