@@ -78,6 +78,17 @@ def test_fetch_emails_uidvalidity_resets_checkpoint(mock_connect: MagicMock) -> 
     assert any("ALL" in str(c) for c in search_calls)
 
 
+def test_parse_fetch_items_reads_gmail_thrid() -> None:
+    meta = b"1 (X-GM-THRID 1490737687333300257 UID 101 BODY[] {5})"
+    payload = b"From: a@b.com\r\nSubject: Hi\r\n\r\nHello body"
+    items = imap_service._parse_fetch_items([(meta, payload)])
+    assert len(items) == 1
+    uid, raw, thrid = items[0]
+    assert uid == 101
+    assert raw == payload
+    assert thrid == format(1490737687333300257, "x")
+
+
 @patch("app.services.imap_service._connect")
 def test_fetch_emails_first_sync_sets_backfill(mock_connect: MagicMock) -> None:
     conn = _mock_conn(b"1 2 3 4 5")

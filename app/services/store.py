@@ -478,6 +478,14 @@ class EmailStore:
             "CREATE INDEX IF NOT EXISTS idx_assignment_user ON assignment_items(user_email, status)"
         )
 
+    def _migrate_v15(self, connection: sqlite3.Connection) -> None:
+        """Gmail X-GM-THRID hex so Open in Gmail can open the conversation."""
+        email_cols = self._table_columns(connection, "emails")
+        if email_cols and "gmail_thrid" not in email_cols:
+            connection.execute(
+                "ALTER TABLE emails ADD COLUMN gmail_thrid TEXT NOT NULL DEFAULT ''"
+            )
+
     def initialize(self) -> None:
         with self._connect() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -537,6 +545,10 @@ class EmailStore:
                 self._migrate_v14(connection)
                 connection.execute("PRAGMA user_version = 14")
                 version = 14
+            if version < 15:
+                self._migrate_v15(connection)
+                connection.execute("PRAGMA user_version = 15")
+                version = 15
             try:
                 connection.execute("SELECT email_id FROM email_search LIMIT 0")
                 self.fts_enabled = True
@@ -619,8 +631,9 @@ class EmailStore:
                         triage_status,
                         snooze_until,
                         from_me,
-                        urgency
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        urgency,
+                        gmail_thrid
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(email_id) DO UPDATE SET
                         user_email=excluded.user_email,
                         message_id=excluded.message_id,
@@ -655,6 +668,10 @@ class EmailStore:
                         search_blob=excluded.search_blob,
                         is_mailing_list=excluded.is_mailing_list,
                         from_me=CASE WHEN excluded.from_me=1 THEN 1 ELSE emails.from_me END,
+                        gmail_thrid=CASE
+                            WHEN excluded.gmail_thrid != '' THEN excluded.gmail_thrid
+                            ELSE emails.gmail_thrid
+                        END,
                         intent=CASE WHEN excluded.ai_analyzed=1 THEN excluded.intent ELSE emails.intent END,
                         intent_reason=CASE WHEN excluded.ai_analyzed=1 THEN excluded.intent_reason ELSE emails.intent_reason END,
                         due_at=CASE WHEN excluded.ai_analyzed=1 THEN excluded.due_at ELSE emails.due_at END,
@@ -692,6 +709,7 @@ class EmailStore:
                         record.get("snooze_until"),
                         1 if record.get("from_me") else 0,
                         record.get("urgency", 0),
+                        record.get("gmail_thrid") or "",
                     ),
                 )
                 keywords_list = record["keywords"]
@@ -719,6 +737,7 @@ class EmailStore:
         email["keywords"] = json.loads(email["keywords"])
         email["line_summary"] = email.get("line_summary") or ""
         email["compact_summary"] = email.get("compact_summary") or ""
+        email["gmail_thrid"] = email.get("gmail_thrid") or ""
         return email
 
     def list_emails(
@@ -1791,6 +1810,16 @@ class EmailStore:
     def delete_verification(self, email: str) -> None:
         with self._connect() as connection:
             connection.execute("DELETE FROM email_verifications WHERE email = ?", (email,))
+
+    def set_gmail_thrid(self, email_id: str, user_email: str, thrid: str) -> None:
+        hex_id = (thrid or "").strip().lower()
+        if not hex_id:
+            return
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE emails SET gmail_thrid = ? WHERE email_id = ? AND user_email = ?",
+                (hex_id, email_id, user_email),
+            )
 
     def update_email_summary(
         self,

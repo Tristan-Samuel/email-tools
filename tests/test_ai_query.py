@@ -4,6 +4,7 @@ from __future__ import annotations
 from app.services.ai_query import classify_query_heuristic, rerank_candidates
 from app.services.llm_text import (
     clean_extracted_action_items,
+    clean_inbox_digest,
     sanitize_action_title,
     split_ai_answer,
 )
@@ -64,3 +65,23 @@ def test_split_ai_answer_drops_key_actions_teaser() -> None:
     assert not any(b.lower().startswith("key actions:") for b in blocks)
     assert not any("a9690bf" in b for b in blocks)
     assert any("pavilion" in b.lower() for b in blocks)
+
+
+def test_clean_inbox_digest_strips_ids_and_key_actions_teaser() -> None:
+    out = clean_inbox_digest(
+        {
+            "headline": "Key actions: physics docs due Monday, volunteer today, flyer",
+            "bullets": [
+                {
+                    "text": "Submit physics independent study grade and form by Monday (ID: a9690bf176b6f2132dc96cd7c463114373b1a8c9).",
+                    "id": "keep-me",
+                }
+            ],
+        }
+    )
+    assert out is not None
+    assert "key actions" not in out["headline"].lower()
+    assert "a9690bf" not in out["headline"]
+    assert "a9690bf" not in out["bullets"][0]["text"]
+    assert "ID:" not in out["bullets"][0]["text"]
+    assert out["bullets"][0]["email_id"] == "keep-me"

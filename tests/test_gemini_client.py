@@ -74,3 +74,30 @@ def test_generate_json_skips_404_model_on_retry() -> None:
     assert "gemini-3.5-flash-lite" in client._unavailable_models
     assert client._models_to_try()[0] == "gemini-3.1-flash-lite"
     assert models.generate_content.call_count == 2
+
+
+def test_generate_json_omits_thinking_config() -> None:
+    client = GeminiClient(api_key="test-key", default_model="gemini-3.5-flash-lite")
+    models = MagicMock()
+    models.generate_content.return_value = SimpleNamespace(
+        text='{"ok": true}',
+        usage_metadata=SimpleNamespace(total_token_count=1),
+    )
+    client._client = SimpleNamespace(models=models)
+    client._generate_json('{"prompt": true}')
+    config = models.generate_content.call_args.kwargs["config"]
+    assert getattr(config, "thinking_config", None) is None
+
+
+def test_generate_json_stops_on_invalid_argument() -> None:
+    client = GeminiClient(api_key="test-key", default_model="gemini-3.5-flash-lite")
+    models = MagicMock()
+    models.generate_content.side_effect = Exception(
+        "400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': 'Request contains an invalid argument.', 'status': 'INVALID_ARGUMENT'}}"
+    )
+    client._client = SimpleNamespace(models=models)
+    parsed, err, tokens = client._generate_json('{"prompt": true}')
+    assert parsed is None
+    assert tokens == 0
+    assert err is not None and "INVALID_ARGUMENT" in err
+    assert models.generate_content.call_count == 1

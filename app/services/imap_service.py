@@ -80,10 +80,17 @@ def default_enabled_folders(folders: list[str]) -> set[str]:
             enabled.add(folder)
     return enabled
 UID_META_RE = re.compile(rb"UID (\d+)")
+THRID_RE = re.compile(rb"X-GM-THRID (\d+)")
 FETCH_CHUNK_SIZE = 25
 logger = logging.getLogger(__name__)
 
 ProgressFn = Callable[[int, int], None]
+
+GMAIL_IMAP_HOSTS = frozenset({"imap.gmail.com", "imap.googlemail.com"})
+
+
+def is_gmail_imap(host: str) -> bool:
+    return (host or "").strip().lower() in GMAIL_IMAP_HOSTS
 
 
 def host_resolves(host: str) -> bool:
@@ -286,9 +293,19 @@ def _parse_raw_bytes(uid_bytes: bytes, raw_bytes: bytes) -> dict | None:
     return parsed
 
 
-def _parse_fetch_items(msg_data: list | None) -> list[tuple[int, bytes]]:
-    """Extract (uid, raw_bytes) pairs from a multi-message UID FETCH response."""
-    results: list[tuple[int, bytes]] = []
+def _thrid_hex_from_meta(meta: bytes) -> str:
+    match = THRID_RE.search(meta)
+    if not match:
+        return ""
+    try:
+        return format(int(match.group(1)), "x")
+    except ValueError:
+        return ""
+
+
+def _parse_fetch_items(msg_data: list | None) -> list[tuple[int, bytes, str]]:
+    """Extract (uid, raw_bytes, gmail_thrid_hex) pairs from a UID FETCH response."""
+    results: list[tuple[int, bytes, str]] = []
     if not msg_data:
         return results
     for item in msg_data:
@@ -305,7 +322,7 @@ def _parse_fetch_items(msg_data: list | None) -> list[tuple[int, bytes]]:
             uid_int = int(match.group(1))
         except ValueError:
             continue
-        results.append((uid_int, payload))
+        results.append((uid_int, payload, _thrid_hex_from_meta(meta_b)))
     return results
 
 
@@ -314,25 +331,29 @@ def _fetch_uid_batch(
     uid_ints: list[int],
     last_uid: int,
     on_progress: ProgressFn | None = None,
+    gmail: bool = False,
 ) -> tuple[list[dict], int, list[int]]:
     """Fetch UIDs in batched BODY.PEEK[] requests; bump last_uid only on successful parses."""
     emails: list[dict] = []
     parsed_uids: list[int] = []
     total = len(uid_ints)
+    fetch_spec = "(X-GM-THRID BODY.PEEK[])" if gmail else "(BODY.PEEK[])"
     if on_progress:
         on_progress(0, total)
     for start in range(0, total, FETCH_CHUNK_SIZE):
         chunk_uids = uid_ints[start : start + FETCH_CHUNK_SIZE]
         uid_set = ",".join(str(uid_int) for uid_int in chunk_uids)
-        typ2, msg_data = conn.uid("fetch", uid_set.encode(), "(BODY.PEEK[])")
+        typ2, msg_data = conn.uid("fetch", uid_set.encode(), fetch_spec)
         if typ2 != "OK" or not msg_data:
             if on_progress:
                 on_progress(min(start + len(chunk_uids), total), total)
             continue
-        for uid_int, raw_bytes in _parse_fetch_items(msg_data):
+        for uid_int, raw_bytes, thrid in _parse_fetch_items(msg_data):
             uid_bytes = str(uid_int).encode()
             parsed = _parse_raw_bytes(uid_bytes, raw_bytes)
             if parsed:
+                if thrid:
+                    parsed["gmail_thrid"] = thrid
                 emails.append(parsed)
                 parsed_uids.append(uid_int)
                 last_uid = max(last_uid, uid_int)
@@ -395,6 +416,7 @@ def fetch_emails(
     try:
         conn.select(folder, readonly=True)
         uidvalidity = _uidvalidity(conn)
+        gmail = is_gmail_imap(host)
 
         if stored_uidvalidity and stored_uidvalidity != uidvalidity:
             since_uid = 0
@@ -417,7 +439,7 @@ def fetch_emails(
                 if on_progress:
                     on_progress(1, 1)
                 return [], last_uid, []
-            return _fetch_uid_batch(conn, uid_list, last_uid, on_progress=on_progress)
+            return _fetch_uid_batch(conn, uid_list, last_uid, on_progress=on_progress, gmail=gmail)
 
         if not backfill_only and since_uid > 0:
             new_uids = _filter_uids(_uids_for_search(conn, f"UID {since_uid + 1}:*"))
@@ -480,8 +502,59 @@ def fetch_recent_emails(
         if not all_uids:
             return []
         recent_uids = all_uids[-limit:]
-        emails, _, _ = _fetch_uid_batch(conn, recent_uids, 0, on_progress=on_progress)
+        emails, _, _ = _fetch_uid_batch(
+            conn, recent_uids, 0, on_progress=on_progress, gmail=is_gmail_imap(host)
+        )
         return emails
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+
+def lookup_gmail_thrid_hex(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    message_id: str,
+) -> str:
+    """IMAP-lookup Gmail's X-GM-THRID for one RFC822 Message-ID. Return hex or ''."""
+    mid = (message_id or "").strip()
+    if mid.startswith("<") and mid.endswith(">"):
+        mid = mid[1:-1]
+    if not mid or not is_gmail_imap(host):
+        return ""
+    conn = _connect(host, port, username, password)
+    try:
+        selected = False
+        for folder in ('"[Gmail]/All Mail"', '"[Google Mail]/All Mail"', "INBOX"):
+            typ, _ = conn.select(folder, readonly=True)
+            if typ == "OK":
+                selected = True
+                break
+        if not selected:
+            return ""
+        uids = _parse_uid_list(conn.uid("search", None, "X-GM-RAW", f"rfc822msgid:{mid}")[1])
+        if not uids:
+            wrapped = f"<{mid}>"
+            uids = _parse_uid_list(conn.uid("search", None, "HEADER", "Message-ID", wrapped)[1])
+        if not uids:
+            return ""
+        typ, msg_data = conn.uid("fetch", str(uids[0]).encode(), "(X-GM-THRID)")
+        if typ != "OK" or not msg_data:
+            return ""
+        blobs: list[bytes] = []
+        for item in msg_data:
+            if isinstance(item, bytes):
+                blobs.append(item)
+            elif isinstance(item, tuple):
+                blobs.extend(part for part in item if isinstance(part, bytes))
+        return _thrid_hex_from_meta(b" ".join(blobs))
+    except Exception:
+        logger.exception("Gmail thread-id lookup failed")
+        return ""
     finally:
         try:
             conn.logout()

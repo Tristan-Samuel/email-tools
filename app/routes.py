@@ -29,10 +29,11 @@ from .services.groq_client import (
     GroqClient,
     resolve_chat_model,
 )
+from .services.llm_text import clean_inbox_digest
 from .services.summary import build_digest, build_email_record, build_important_items, fill_summary_fields
 from .services import sync_worker, triage, ai_query, user_prefs, webmail
 from .services.triage import build_today_view, rebuild_thread_states, analyze_heuristic_batch
-from .services.sync_worker import JobCancelled, check_cancelled, current_job_is_cancelled
+from .services.sync_worker import JobCancelled, JobFailed, check_cancelled, current_job_is_cancelled
 
 logger = logging.getLogger(__name__)
 
@@ -254,16 +255,27 @@ def _fyi_digest_email_ids(fyi_digest: dict | list | None) -> list[str]:
     return ids
 
 
+def _normalize_fyi_brief(payload: dict | None) -> dict | None:
+    if not isinstance(payload, dict):
+        return None
+    cleaned = clean_inbox_digest(payload)
+    if not cleaned:
+        return None
+    return {"date": str(payload.get("date") or ""), **cleaned}
+
+
 def _load_fyi_brief(store, user_email: str, fyi_digest: dict | list | None, ai: AiClient) -> dict | None:
     from .services.token_budget import pacific_today
 
     today = pacific_today()
     cached = user_prefs.get_json_pref(store, user_email, user_prefs.FYI_BRIEF_CACHE, {})
     if isinstance(cached, dict) and cached.get("date") == today and cached.get("headline"):
-        return cached
+        normalized = _normalize_fyi_brief(cached)
+        if normalized:
+            return normalized
     email_ids = _fyi_digest_email_ids(fyi_digest)
     if not ai.enabled or not email_ids:
-        return cached if isinstance(cached, dict) else None
+        return _normalize_fyi_brief(cached if isinstance(cached, dict) else None)
     emails = [store.get_email(eid, user_email=user_email) for eid in email_ids[:20]]
     emails = [e for e in emails if e]
     if not emails:
@@ -272,8 +284,10 @@ def _load_fyi_brief(store, user_email: str, fyi_digest: dict | list | None, ai: 
     if not digest:
         return None
     payload = {"date": today, **digest}
-    user_prefs.set_json_pref(store, user_email, user_prefs.FYI_BRIEF_CACHE, payload)
-    return payload
+    cleaned = _normalize_fyi_brief(payload)
+    if cleaned:
+        user_prefs.set_json_pref(store, user_email, user_prefs.FYI_BRIEF_CACHE, cleaned)
+    return cleaned
 
 
 def _onboarding_state(store, user_email: str, ai: AiClient) -> dict:
@@ -328,12 +342,7 @@ def _compose_context(email: dict, draft: str, store, user_email: str) -> dict:
         subject=re_subject,
         body=draft,
     )
-    open_url = webmail.open_message_url(
-        provider=provider,
-        account_email=account,
-        message_id=email.get("message_id") or "",
-        subject=subject,
-    )
+    open_url, provider = _open_webmail_href(email, store, user_email)
     return {
         "compose_url": links.get("primary"),
         "compose_secondary": links.get("secondary"),
@@ -341,6 +350,26 @@ def _compose_context(email: dict, draft: str, store, user_email: str) -> dict:
         "open_in_webmail_url": open_url,
         "webmail_provider": provider,
     }
+
+
+def _open_webmail_href(email: dict, store, user_email: str) -> tuple[str | None, str]:
+    """Return (url, provider). Missing Gmail thread ids go through a lookup redirect."""
+    account = (email.get("source_account") or "").strip()
+    acct = store.get_imap_account_by_email(user_email, account) if account else None
+    imap_host = (acct or {}).get("imap_host") or ""
+    pref = user_prefs.open_in_provider(store, user_email)
+    provider = webmail.resolve_provider(imap_host, pref)
+    thrid = str(email.get("gmail_thrid") or "").strip()
+    url = webmail.open_message_url(
+        provider=provider,
+        account_email=account,
+        message_id=email.get("message_id") or "",
+        subject=email.get("subject") or "",
+        gmail_thrid=thrid,
+    )
+    if provider == "gmail" and not thrid and email.get("email_id"):
+        url = url_for("main.email_open_webmail", email_id=email["email_id"])
+    return url, provider
 
 
 def _invalidate_needs_reply_cache(store=None, user_email: str = "") -> None:
@@ -745,9 +774,12 @@ def analyze_pending_emails(
     def process_chunk(chunk: list[dict], results: dict[str, dict]) -> int:
         nonlocal analyzed
         count = 0
+        batch_failed = not results and bool(ai.last_error)
         for email in chunk:
             data = results.get(email["email_id"])
             if not data:
+                if batch_failed:
+                    continue
                 result = ai.summarize_email(
                     sender=email.get("sender") or "",
                     subject=email.get("subject") or "",
@@ -767,7 +799,7 @@ def analyze_pending_emails(
                 if ai.last_error and is_fatal_auth_error(ai.last_error):
                     on_progress(f"AI error: {ai.last_error}")
                     on_progress("Stopping analysis — API key rejected.")
-                    return -1
+                    raise JobFailed(ai.last_error)
                 continue
             _persist_email_analysis(
                 store, user_email, email, data, vip_patterns=vip_patterns, today=today
@@ -798,11 +830,12 @@ def analyze_pending_emails(
                 on_progress(f"Gemini error: {ai.last_error}")
                 if ai.last_error == "Cancelled.":
                     raise JobCancelled()
-            wrote = process_chunk(packed, results)
-            if wrote < 0:
-                return analyzed
+            process_chunk(packed, results)
             processed += len(packed)
             _cache_ai_model(ai)
+
+        if ai.last_error == "Cancelled.":
+            raise JobCancelled()
 
         if not ai.gemini_enabled and ai.groq_enabled:
             remaining = emails[processed:]
@@ -834,24 +867,24 @@ def analyze_pending_emails(
             on_progress(f"AI error: {ai.last_error}")
             if is_fatal_auth_error(ai.last_error):
                 on_progress("Stopping analysis — API key rejected.")
-                return analyzed
+                raise JobFailed(ai.last_error)
             if is_unreachable(ai.last_error):
                 on_progress("Stopping analysis — AI provider is unreachable (network/DNS).")
-                return analyzed
+                raise JobFailed(ai.last_error)
             if is_rate_limit_error(ai.last_error):
                 on_progress("Rate limited — retrying with smaller batches or fallback provider.")
             if ai.last_error == "Cancelled.":
                 raise JobCancelled()
-        wrote = process_chunk(chunk, results)
-        if wrote < 0:
-            return analyzed
+        process_chunk(chunk, results)
         _cache_ai_model(ai)
 
     rebuild_thread_states(store, user_email)
     if analyzed == 0 and ai.last_error:
+        if ai.last_error == "Cancelled.":
+            raise JobCancelled()
         on_progress(f"No emails could be analyzed. {ai.last_error}")
-    else:
-        on_progress(f"Analyzed {analyzed} of {total}.", total, total, phase="summarize")
+        raise JobFailed(ai.last_error)
+    on_progress(f"Analyzed {analyzed} of {total}.", total, total, phase="summarize")
     return analyzed
 
 
@@ -1376,16 +1409,7 @@ def email_detail(email_id: str):
     compose_ctx = {}
     if draft_reply:
         compose_ctx = _compose_context(email, draft_reply, store, user_email)
-    account = (email.get("source_account") or "").strip()
-    acct = store.get_imap_account_by_email(user_email, account) if account else None
-    pref = user_prefs.open_in_provider(store, user_email)
-    provider = webmail.resolve_provider((acct or {}).get("imap_host") or "", pref)
-    open_in_webmail_url = webmail.open_message_url(
-        provider=provider,
-        account_email=account,
-        message_id=email.get("message_id") or "",
-        subject=email.get("subject") or "",
-    )
+    open_in_webmail_url, provider = _open_webmail_href(email, store, user_email)
     return render_template(
         "email_detail.html",
         email=email,
@@ -1401,6 +1425,52 @@ def email_detail(email_id: str):
         open_in_webmail_url=open_in_webmail_url,
         webmail_provider=provider,
     )
+
+
+@bp.get("/email/<email_id>/open-webmail")
+def email_open_webmail(email_id: str):
+    """Resolve a Gmail conversation URL (thread id) then redirect into Gmail."""
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+
+    store = get_store()
+    user_email = g.current_user_email
+    email = store.get_email(email_id, user_email=user_email)
+    if email is None:
+        flash("That email could not be found.", "error")
+        return redirect(url_for("main.inbox"))
+
+    account = (email.get("source_account") or "").strip()
+    acct = store.get_imap_account_by_email(user_email, account) if account else None
+    pref = user_prefs.open_in_provider(store, user_email)
+    provider = webmail.resolve_provider((acct or {}).get("imap_host") or "", pref)
+    thrid = str(email.get("gmail_thrid") or "").strip()
+
+    if provider == "gmail" and not thrid and acct:
+        password, decrypt_err = _imap_password_for_account(store, acct)
+        if not decrypt_err and password:
+            thrid = imap_service.lookup_gmail_thrid_hex(
+                host=acct.get("imap_host") or "",
+                port=int(acct.get("imap_port") or 993),
+                username=acct.get("account_email") or account,
+                password=password,
+                message_id=email.get("message_id") or "",
+            )
+            if thrid:
+                store.set_gmail_thrid(email_id, user_email, thrid)
+
+    url = webmail.open_message_url(
+        provider=provider,
+        account_email=account,
+        message_id=email.get("message_id") or "",
+        subject=email.get("subject") or "",
+        gmail_thrid=thrid,
+    )
+    if not url:
+        flash("Could not build a webmail link for this message.", "error")
+        return redirect(url_for("main.email_detail", email_id=email_id))
+    return redirect(url)
 
 
 @bp.post("/email/<email_id>/tags")
@@ -1574,16 +1644,7 @@ def email_draft_reply(email_id: str):
         return redirect(url_for("main.email_detail", email_id=email_id))
 
     compose_ctx = _compose_context(email, draft, store, user_email)
-    account = (email.get("source_account") or "").strip()
-    acct = store.get_imap_account_by_email(user_email, account) if account else None
-    pref = user_prefs.open_in_provider(store, user_email)
-    provider = webmail.resolve_provider((acct or {}).get("imap_host") or "", pref)
-    open_in_webmail_url = webmail.open_message_url(
-        provider=provider,
-        account_email=account,
-        message_id=email.get("message_id") or "",
-        subject=email.get("subject") or "",
-    )
+    open_in_webmail_url, provider = _open_webmail_href(email, store, user_email)
     return render_template(
         "email_detail.html",
         email=email,

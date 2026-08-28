@@ -9,6 +9,7 @@ from .gemini_client import (
     GeminiClient,
     is_fatal_gemini_auth_error,
     is_gemini_unreachable,
+    is_invalid_argument_error,
     is_rate_limit_error as is_gemini_rate_limit_error,
     is_tpd_exhausted_error,
 )
@@ -61,6 +62,8 @@ class AiClient:
         if is_fatal_gemini_auth_error(err) or is_gemini_unreachable(err):
             return True
         if is_gemini_rate_limit_error(err) or is_tpd_exhausted_error(err):
+            return True
+        if is_invalid_argument_error(err):
             return True
         return False
 
@@ -159,9 +162,12 @@ class AiClient:
             self.last_model_used = self._gemini.last_model_used
             self.last_provider = "gemini"
 
-            if not results and self._gemini_failed(self._gemini.last_error):
-                if len(packed) > 1:
-                    half = len(packed) // 2
+            if not results:
+                err = self._gemini.last_error or ""
+                if err == "Cancelled.":
+                    break
+                if err and len(packed) > 1:
+                    half = max(1, len(packed) // 2)
                     packed = packed[:half]
                     blocks = blocks[:half]
                     if on_progress:
@@ -178,10 +184,12 @@ class AiClient:
                     tracker.record_tokens(tokens)
                     self.last_error = self._gemini.last_error
                     self.last_model_used = self._gemini.last_model_used
-                if not results and self._gemini_failed(self._gemini.last_error):
-                    self.disable_gemini_for_job(self._gemini.last_error or "Gemini failed.")
-                    if on_progress:
-                        on_progress(f"Gemini error: {self.last_error}")
+                    err = self._gemini.last_error or ""
+                if not results:
+                    if err:
+                        self.disable_gemini_for_job(err)
+                        if on_progress:
+                            on_progress(f"Gemini error: {err}")
                     break
 
             yield (packed, results, tokens)

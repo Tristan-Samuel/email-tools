@@ -26,7 +26,9 @@ from .groq_client import (
 )
 from .llm_text import (
     ACTION_EXTRACT_SYSTEM,
+    DIGEST_SYSTEM,
     clean_extracted_action_items,
+    clean_inbox_digest,
     compact_for_llm,
     format_action_email_blocks,
 )
@@ -81,6 +83,12 @@ def is_unavailable_model_error(message: str) -> bool:
             "is not found",
         )
     )
+
+
+def is_invalid_argument_error(message: str) -> bool:
+    """True for Gemini 400 INVALID_ARGUMENT (bad config or oversized request)."""
+    lowered = (message or "").lower()
+    return "invalid_argument" in lowered or "invalid argument" in lowered
 
 
 def _parse_retry_after(value: str | None) -> float:
@@ -243,7 +251,6 @@ class GeminiClient:
                     temperature=temperature,
                     max_output_tokens=max_output_tokens,
                     response_mime_type="application/json",
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
                     http_options=types.HttpOptions(timeout=timeout_ms),
                 )
                 try:
@@ -265,6 +272,9 @@ class GeminiClient:
                     if is_unavailable_model_error(last_err):
                         self._unavailable_models.add(model_name)
                         continue
+                    if is_invalid_argument_error(last_err):
+                        # Same payload/config will 400 on every model — shrink at the packer.
+                        break
                     continue
 
                 tokens_used = _usage_total_tokens(response)
@@ -725,32 +735,11 @@ class GeminiClient:
         context = "\n\n---\n\n".join(context_parts)
         parsed, _err, _tokens = self._generate_json(
             f"Summarize this inbox for the user:\n\n{context}",
-            system=(
-                "You write inbox briefs for email triage. Return JSON with "
-                '"headline" (one short sentence) and "bullets" '
-                '(array of up to 6 objects with "text" and "id" — email ID from context). '
-                "Prioritize deadlines, action items, and urgent mail. No raw URLs in angle brackets."
-            ),
+            system=DIGEST_SYSTEM,
             temperature=0.2,
             timeout_ms=90_000,
         )
-        if not isinstance(parsed, dict):
-            return None
-        headline = str(parsed.get("headline", "")).strip()
-        raw_bullets = parsed.get("bullets", [])
-        cleaned_bullets: list[dict[str, str]] = []
-        if isinstance(raw_bullets, list):
-            for item in raw_bullets:
-                if isinstance(item, dict):
-                    text = str(item.get("text") or item.get("bullet") or "").strip()
-                    eid = str(item.get("id") or item.get("email_id") or "").strip()
-                    if text:
-                        cleaned_bullets.append({"text": text, "email_id": eid})
-                elif isinstance(item, str) and item.strip():
-                    cleaned_bullets.append({"text": item.strip(), "email_id": ""})
-        if headline and cleaned_bullets:
-            return {"headline": headline, "bullets": cleaned_bullets[:6]}
-        return None
+        return clean_inbox_digest(parsed)
 
     def summarize_emails_batch(self, emails: list[dict], batch_size: int = 8) -> dict[str, list[str]]:
         analyzed = self.analyze_emails_batch(emails, batch_size=batch_size)

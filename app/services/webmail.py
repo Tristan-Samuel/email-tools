@@ -42,14 +42,18 @@ def open_message_url(
     account_email: str,
     message_id: str,
     subject: str = "",
+    gmail_thrid: str = "",
 ) -> str | None:
     prov = (provider or "auto").lower()
     if prov == "gmail":
+        auth = quote(account_email) if account_email else ""
+        auth_q = f"authuser={auth}&" if auth else ""
+        hex_id = (gmail_thrid or "").strip().lower()
+        if hex_id and all(c in "0123456789abcdef" for c in hex_id):
+            return f"https://mail.google.com/mail/?{auth_q}#all/{hex_id}"
         mid = normalize_message_id(message_id)
         if not mid:
             return None
-        auth = quote(account_email) if account_email else ""
-        auth_q = f"authuser={auth}&" if auth else ""
         return (
             f"https://mail.google.com/mail/?{auth_q}"
             f"#search/rfc822msgid%3A{quote(mid, safe='')}"

@@ -28,6 +28,18 @@ def test_gmail_open_message_rfc822() -> None:
     assert "rfc822msgid" in url
 
 
+def test_gmail_open_uses_thread_id_when_present() -> None:
+    url = webmail.open_message_url(
+        provider="gmail",
+        account_email="me@gmail.com",
+        message_id="<abc@mail.gmail.com>",
+        gmail_thrid="14a73b9c2d1e",
+    )
+    assert url is not None
+    assert "#all/14a73b9c2d1e" in url
+    assert "rfc822msgid" not in url
+
+
 def test_resolve_provider_auto() -> None:
     assert webmail.resolve_provider("imap.gmail.com", "auto") == "gmail"
     assert webmail.resolve_provider("outlook.office365.com", "auto") == "outlook"

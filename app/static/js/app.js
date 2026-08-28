@@ -160,16 +160,22 @@ function initActivityPanel() {
         }
 
         panel.hidden = false;
+        const isError = !!(latest && latest.status === "error" && !busy);
         panel.classList.toggle("is-running", busy);
-        panel.classList.toggle("is-error", !!(latest && latest.status === "error" && !busy));
-        panel.classList.toggle("activity-panel--idle", !busy && pending > 0);
+        panel.classList.toggle("is-error", isError);
+        panel.classList.toggle("activity-panel--idle", !busy && pending > 0 && !isError);
 
         const displayJob = job || latest;
 
         if (phasesEl) phasesEl.hidden = !busy;
         if (meterEl) meterEl.hidden = !busy;
-        if (toggle) toggle.hidden = !busy;
-        if (logEl && !busy) logEl.setAttribute("hidden", "");
+        if (toggle) toggle.hidden = !busy && !isError;
+        if (isError && logEl) {
+            logEl.removeAttribute("hidden");
+            if (toggle) toggle.setAttribute("aria-expanded", "true");
+        } else if (logEl && !busy) {
+            logEl.setAttribute("hidden", "");
+        }
 
         if (labelEl) {
             if (busy) labelEl.textContent = displayJob.label || displayJob.job_type || "Working…";
@@ -329,6 +335,7 @@ function initCommandPalette() {
         { label: "Today", href: "/today", type: "nav" },
         { label: "All mail", href: "/inbox", type: "nav" },
         { label: "AI Search", href: "/search", type: "nav" },
+        { label: "Tags", href: "/tags", type: "nav" },
         { label: "Assignments", href: "/assignments", type: "nav" },
         { label: "Settings", href: "/settings", type: "nav" },
         { label: "Guide", href: "/guide", type: "nav" },

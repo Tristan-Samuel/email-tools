@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 from app import create_app
 from app.services.groq_client import GroqClient
 from app.services.store import EmailStore, job_percent_from_phases
-from app.services.sync_worker import _run_job
+from app.services.sync_worker import JobFailed, _run_job
 from app.services.summary import build_email_record
 
 
@@ -105,6 +105,39 @@ def test_run_job_records_decrypt_error() -> None:
         assert job["status"] == "error"
         assert "decrypt" in job["error"]
         assert any("decrypt" in line for line in job["log"])
+
+
+def test_run_job_stops_on_analyze_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = EmailStore(Path(tmp) / "t.db")
+        store.initialize()
+        job_id = store.create_job("me@example.com", "reanalyze", "Analyze")
+
+        def analyze_fn(*_args, **_kwargs):
+            raise JobFailed(
+                "400 INVALID_ARGUMENT. Request contains an invalid argument."
+            )
+
+        groq = MagicMock()
+        groq.enabled = True
+        groq.last_error = ""
+        _run_job(
+            store,
+            job_id,
+            "reanalyze",
+            None,
+            "me@example.com",
+            lambda *_a, **_k: (0, None),
+            lambda _email: groq,
+            None,
+            analyze_fn,
+            None,
+        )
+        job = store.get_job(job_id, "me@example.com")
+        assert job is not None
+        assert job["status"] == "error"
+        assert "INVALID_ARGUMENT" in job["error"]
+        assert any("Stopped:" in line for line in job["log"])
 
 
 def test_api_jobs_requires_auth() -> None:

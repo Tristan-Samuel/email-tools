@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 
 {% block title %}Guide — Inbox Tools{% endblock %}
 
@@ -6,12 +7,13 @@
 <main class="page-main help-page">
     <div class="page-header">
         <div>
+            <p class="eyebrow">How it works</p>
             <h1 class="page-title">Guide</h1>
-            <p class="page-subtitle">How Inbox Tools works — triage, search, AI, and connecting mail.</p>
+            <p class="page-subtitle">Triage first, then jump into Gmail when you actually need to reply.</p>
         </div>
         <div class="page-header-actions">
             {% if current_user_email %}
-            <a href="{{ url_for('main.today') }}" class="btn btn-primary">Today</a>
+            <a href="{{ url_for('main.today') }}" class="btn btn-primary">Open Today</a>
             {% else %}
             <a href="{{ url_for('main.signup') }}" class="btn btn-primary">Create account</a>
             {% endif %}
@@ -19,35 +21,43 @@
     </div>
 
     {% if current_user_email %}
-    <section class="panel help-panel reveal">
-        <h2 class="panel-title">Today</h2>
-        <p>Your home surface: <strong>Do now</strong> (replies and deadlines), a curated <strong>FYI digest</strong>, and <strong>Waiting on them</strong>. Done, Snooze, and Draft reply without opening every message.</p>
-    </section>
-
-    <section class="panel help-panel reveal">
-        <h2 class="panel-title">AI Search &amp; actions</h2>
-        <p><strong>AI Search</strong> in the nav asks questions and extracts tasks from your mail (assignments, waiting on you, this week). Keyword search lives on <strong>All mail</strong>.</p>
-        <p>Quick action chips jump straight into a prompt. <a href="{{ url_for('main.assignments') }}">Assignments</a> keeps due work on a board.</p>
-    </section>
-
-    <section class="panel help-panel reveal">
-        <h2 class="panel-title">All mail &amp; keyboard</h2>
-        <p>Browse archive with tags and split-pane preview. On All mail: <kbd>j</kbd>/<kbd>k</kbd> move, <kbd>e</kbd> hide, <kbd>u</kbd> unread. Press <kbd>?</kbd> for shortcuts; <kbd>Ctrl</kbd>+<kbd>K</kbd> opens the command palette.</p>
-    </section>
-
-    <section class="panel help-panel reveal">
-        <h2 class="panel-title">Tags &amp; hidden mail</h2>
-        <p>Tags filter your inbox. Marketing/Newsletters can auto-hide; School never auto-hides. Review buried mail on <a href="{{ url_for('main.hidden') }}">Hidden</a>.</p>
-    </section>
-
-    <section class="panel help-panel reveal">
-        <h2 class="panel-title">Open in Gmail / Outlook</h2>
-        <p>Inbox Tools triages and summarizes — you reply in your real mail app. Use <strong>Open in Gmail</strong> (or Outlook) on a message or AI draft; compose opens in your <em>current browser</em>, not a separate mail handler.</p>
-    </section>
+    <div class="help-grid">
+        <a class="help-card reveal" href="{{ url_for('main.today') }}">
+            <span class="help-card-icon">{{ icon("today") }}</span>
+            <h2>Today</h2>
+            <p><strong>Do now</strong> is replies and deadlines. Skim the <strong>FYI</strong> brief, then pin anything that still needs you. Done, Snooze, and Draft reply without opening every message.</p>
+        </a>
+        <a class="help-card reveal" href="{{ url_for('main.search_page') }}">
+            <span class="help-card-icon">{{ icon("sparkle") }}</span>
+            <h2>AI Search</h2>
+            <p>Ask questions or extract tasks — assignments, waiting on you, this week. Keyword search stays on <strong>All mail</strong>. Quick chips jump straight into a prompt.</p>
+        </a>
+        <a class="help-card reveal" href="{{ url_for('main.inbox') }}">
+            <span class="help-card-icon">{{ icon("inbox") }}</span>
+            <h2>All mail</h2>
+            <p>Browse the archive with tags and split-pane preview. <kbd>j</kbd>/<kbd>k</kbd> move, <kbd>e</kbd> hide, <kbd>u</kbd> unread. <kbd>?</kbd> for shortcuts; <kbd>Ctrl</kbd>+<kbd>K</kbd> opens the command palette.</p>
+        </a>
+        <a class="help-card reveal" href="{{ url_for('main.tags') }}">
+            <span class="help-card-icon">{{ icon("tag") }}</span>
+            <h2>Tags &amp; hidden</h2>
+            <p>Tags filter your inbox. Marketing/Newsletters can auto-hide; School never auto-hides. Review buried mail on Hidden.</p>
+        </a>
+        <a class="help-card reveal" href="{{ url_for('main.assignments') }}">
+            <span class="help-card-icon">{{ icon("check") }}</span>
+            <h2>Assignments</h2>
+            <p>Due work extracted from mail, kept on a board so it does not vanish into FYI.</p>
+        </a>
+        <div class="help-card reveal">
+            <span class="help-card-icon">{{ icon("mail") }}</span>
+            <h2>Open in Gmail</h2>
+            <p>Inbox Tools triages — you reply in Gmail. <strong>Open in Gmail</strong> jumps to the conversation in this browser (not a search list) when the thread id is known.</p>
+        </div>
+    </div>
     {% endif %}
 
     <section class="panel help-panel reveal" id="app-passwords">
         <h2 class="panel-title">Connecting your inbox</h2>
+        <p class="panel-hint" style="margin-top:0">Use a mailbox <strong>App Password</strong>, not your normal email password. Expand your provider below.</p>
         {% include "_app_password_help.html" %}
     </section>
 </main>

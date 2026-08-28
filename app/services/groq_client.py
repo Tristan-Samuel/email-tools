@@ -11,7 +11,9 @@ import requests
 
 from .llm_text import (
     ACTION_EXTRACT_SYSTEM,
+    DIGEST_SYSTEM,
     clean_extracted_action_items,
+    clean_inbox_digest,
     compact_for_llm,
     format_action_email_blocks,
 )
@@ -918,12 +920,7 @@ class GroqClient:
             [
                 {
                     "role": "system",
-                    "content": (
-                        "You write inbox briefs for email triage. Return JSON with "
-                        "\"headline\" (one short sentence) and \"bullets\" "
-                        "(array of up to 6 objects with \"text\" and \"id\" — email ID from context). "
-                        "Prioritize deadlines, action items, and urgent mail. No raw URLs in angle brackets."
-                    ),
+                    "content": DIGEST_SYSTEM,
                 },
                 {
                     "role": "user",
@@ -935,21 +932,7 @@ class GroqClient:
         )
         if not isinstance(parsed, dict):
             return None
-        headline = str(parsed.get("headline", "")).strip()
-        raw_bullets = parsed.get("bullets", [])
-        cleaned_bullets: list[dict[str, str]] = []
-        if isinstance(raw_bullets, list):
-            for item in raw_bullets:
-                if isinstance(item, dict):
-                    text = str(item.get("text") or item.get("bullet") or "").strip()
-                    eid = str(item.get("id") or item.get("email_id") or "").strip()
-                    if text:
-                        cleaned_bullets.append({"text": text, "email_id": eid})
-                elif isinstance(item, str) and item.strip():
-                    cleaned_bullets.append({"text": item.strip(), "email_id": ""})
-        if headline and cleaned_bullets:
-            return {"headline": headline, "bullets": cleaned_bullets[:6]}
-        return None
+        return clean_inbox_digest(parsed)
 
     def analyze_emails_batch(self, emails: list[dict], batch_size: int = 8) -> dict[str, dict]:
         """Return {email_id: {bullets, intent, reason, due_at, tags}} for one Groq batch."""

@@ -62,24 +62,30 @@
     </div>
 
     {% if fyi_brief and fyi_brief.headline %}
-    <section class="panel fyi-brief-panel reveal" style="padding:16px 20px">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+    <section class="panel fyi-brief-panel reveal">
+        <div class="fyi-brief-head">
             <div>
                 <p class="eyebrow">This week's FYI</p>
-                <p style="margin:0;font-weight:700">{{ fyi_brief.headline }}</p>
-                {% if fyi_brief.bullets %}
-                <ul style="margin:8px 0 0;padding-left:18px;font-size:.88rem">
-                    {% for b in fyi_brief.bullets %}
-                    <li>{% if b.email_id %}<a href="{{ url_for('main.email_detail', email_id=b.email_id) }}">{{ b.text }}</a>{% else %}{{ b.text }}{% endif %}</li>
-                    {% endfor %}
-                </ul>
-                {% endif %}
+                <p class="fyi-brief-headline">{{ fyi_brief.headline|sanitize_action }}</p>
             </div>
             <form action="{{ url_for('main.today_fyi_brief_regenerate') }}" method="post">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-ghost" style="font-size:.78rem">Regenerate</button>
             </form>
         </div>
+        {% if fyi_brief.bullets %}
+        <ul class="fyi-brief-list">
+            {% for b in fyi_brief.bullets %}
+            <li>
+                {% if b.email_id %}
+                <a href="{{ url_for('main.email_detail', email_id=b.email_id) }}">{{ b.text|sanitize_action }}</a>
+                {% else %}
+                {{ b.text|sanitize_action }}
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
     </section>
     {% endif %}
 

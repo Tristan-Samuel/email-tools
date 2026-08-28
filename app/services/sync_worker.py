@@ -26,6 +26,10 @@ class JobCancelled(Exception):
     """User cancelled the in-flight background job."""
 
 
+class JobFailed(Exception):
+    """Unrecoverable worker error — stop and keep the message in the job log."""
+
+
 def enqueue_job(
     job_id: str,
     job_type: str,
@@ -250,6 +254,8 @@ def _run_job_inner(
             if groq.enabled and analyze_fn:
                 report("Starting automatic AI analysis…", 0, 1, phase="summarize")
                 analyzed = analyze_fn(store, user_email, groq, report)
+                if analyzed == 0 and getattr(groq, "last_error", ""):
+                    raise JobFailed(groq.last_error)
                 report(f"AI analysis finished — {analyzed} email(s) summarized.", 1, 1, phase="summarize")
             elif not groq.enabled:
                 report("No AI key — mail is cached with quick local summaries. Add Gemini or Groq in Settings for a real AI brief.")
@@ -277,6 +283,8 @@ def _run_job_inner(
             if analyze_fn:
                 report("Starting AI analysis…", 0, 1, phase="summarize")
                 analyzed = analyze_fn(store, user_email, groq, report)
+                if analyzed == 0 and getattr(groq, "last_error", ""):
+                    raise JobFailed(groq.last_error)
                 report(f"AI analysis finished — {analyzed} email(s) summarized.", 1, 1, phase="summarize")
             if tag_apply_fn:
                 report("Applying tags…", 0, 1, phase="tag")
@@ -296,11 +304,15 @@ def _run_job_inner(
                 error=" · ".join(errors[:3]),
                 message=errors[0],
             )
+            store.append_job_log(job_id, f"Stopped with errors: {' · '.join(errors[:3])}")
         else:
             store.update_job(job_id, status="done", message="Finished.")
             store.append_job_log(job_id, "Finished.")
     except JobCancelled:
         store.append_job_log(job_id, "Stopped after cancel.")
+    except JobFailed as exc:
+        store.append_job_log(job_id, f"Stopped: {exc}")
+        store.update_job(job_id, status="error", error=str(exc), message=str(exc))
     except Exception as exc:
         store.append_job_log(job_id, f"Failed: {exc}")
         store.update_job(job_id, status="error", error=str(exc), message=str(exc))

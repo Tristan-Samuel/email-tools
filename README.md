@@ -7,7 +7,7 @@ Flask web application for triaging your inbox through AI summaries — see what 
 - **Verified signup** — new accounts require a 6-digit code sent to the email address so no one can claim an address they do not own.
 - **Account login** — sign in with your Inbox Tools account password. If you remove the account password, the next login requires your mailbox **App Password** from a connected IMAP account (no email-only access).
 - **Multiple accounts per user** — connect as many IMAP accounts as you like. Filter with account pills in the nav bar, or view everything together.
-- **Background sync with a live activity panel** — Sync All / per-account sync runs in a background queue. Stacked phase meters (Fetch / Summarize / Tag / Brief) update as mail downloads and AI analysis runs. **Cancel** stops a stuck job; the panel dismisses so it does not keep the header. A one-line strip remains when mail still needs AI analysis.
+- **Background sync with a live activity panel** — Sync All / per-account sync runs in a background queue. Stacked phase meters (Fetch / Summarize / Tag / Brief) update as mail downloads and AI analysis runs. **Cancel** stops a stuck job; the panel dismisses so it does not keep the header. If Gemini/Groq returns a hard error (invalid request, auth, unreachable), the job **stops**, the error is written to the activity **Log**, and the panel stays visible so you can copy it. A one-line strip remains when mail still needs AI analysis.
 - Parse and cache every email in SQLite with full-text search (subject, sender, recipient, body, bullets, keywords, category). New mail stores **sanitized HTML** (`body_html`) for the detail view with a **Load images** button; older cached mail gets improved plaintext (forward breaks, visible links, `[image: …]` chips). Next sync backfills HTML for your recent window.
 - Auto-sort messages into category signals (Urgent, Finance, Work, etc.) — **tags** are the user-facing filter taxonomy; **intent** (`i_owe`, `waiting_on_them`, `deadline`, `fyi`, `noise`) is the system triage taxonomy stored on each message and rolled up per thread. **School**, **Marketing**, and **Newsletters** tags are created on first visit. **School** never auto-hides mail (even when Marketing rules also match). Marketing/Newsletters can hide matching mail; optional **Confirm with AI before hiding** on a tag vetoes false positives. **Review hidden with AI** on the Hidden page re-checks buried mail.
 - **Automatic AI analysis** — sync downloads mail quickly with local summaries, then **Gemini** (Google AI Studio) analyzes in token-budget batches (many emails per request under the 1M context window) for a **one-line list summary**, a shorter **compact** clip, key-point bullets, intent, and due date in one pass. **Groq** is the fallback when Gemini is unavailable or the daily token budget is exhausted. Groq still uses 8-email batches with per-model 429 fallback. **Today** and **All mail** have **Analyze now** (missing list-lines) and **Rescan all summaries** (regenerate every cached email). Without any AI key, heuristic intent still powers Today.
@@ -15,8 +15,8 @@ Flask web application for triaging your inbox through AI summaries — see what 
 - **All mail** (`/inbox`) — browse archive with tag filters, thread-grouped rows, split-pane preview (`?pane=1`), keyboard triage (j/k/e/u), bulk hide / read / unread + hide undo. Each row shows a dedicated one-line summary (compact clip in Compact / Titles-only views). Row order and summary size in **Settings**. Keyword search stays on this page. **Resync all** re-downloads the current IMAP window; **Rescan summaries** regenerates AI list-lines without hitting the server.
 - **Dark mode** — Light / Dark / System theme in the header menu (saved in your browser).
 - **AI Search & actions** (`/search`) — ask questions or extract tasks (assignments, waiting on me, this week) from your mail. Keyword search is on **All mail**, not here. **Assignments** board at `/assignments`. **Cmd/Ctrl+K** command palette.
-- **Open in Gmail / Outlook** — open originals and AI draft replies in your current browser (https compose), not the OS mail handler. Auto-detected from IMAP host; override in **Settings → Mail apps**.
-- **Guide** (`/guide`) — product tour (Today, AI Search, tags, keyboard). App Password help at `/guide#app-passwords` (`/help` redirects there).
+- **Open in Gmail / Outlook** — open originals and AI draft replies in your current browser (https compose), not the OS mail handler. Gmail uses the IMAP thread id (`X-GM-THRID`) so **Open in Gmail** opens the conversation, not a search listing; first click on older mail looks the id up once. Auto-detected from IMAP host; override in **Settings → Mail apps**.
+- **Guide** (`/guide`) — product tour (Today, AI Search, tags, keyboard) as cards, plus App Password help at `/guide#app-passwords` (`/help` redirects there). **Tags** is in the primary nav.
 - Import `.eml` and `.mbox` file exports as an alternative to IMAP.
 - **Sender rules** in Settings — VIP (always surfaces on Today) and always-hide (noise). Sent folder is enabled by default on connect so the app can tell *I owe* vs *waiting on them*.
 - Manual and AI tags, hide rules (manual hides preserved), thread grouping, draft reply on Today and detail. Saving a tag applies matching rules immediately; AI tags cache verdicts so the model does not re-scan every sync.
@@ -50,7 +50,7 @@ Log in → account menu → **Settings** → **Gemini AI (primary)**. Paste your
 **Option 2 — server-level key:**
 Set `GEMINI_API_KEY` or `GOOGLE_API_KEY` before starting the app (used when no per-user Gemini key is set).
 
-Default model: `gemini-3.5-flash-lite` (1M-token context, high-volume JSON). Google now 404s Gemini 2.5 for new API keys; leftover `gemini-2.5-flash-lite` / `gemini-2.5-flash` values are remapped automatically. Override with `GEMINI_DEFAULT_MODEL` (`gemini-3.1-flash-lite` and `gemini-3.6-flash` are tried if the default is unavailable).
+Default model: `gemini-3.5-flash-lite` (1M-token context, high-volume JSON). Google now 404s Gemini 2.5 for new API keys; leftover `gemini-2.5-flash-lite` / `gemini-2.5-flash` values are remapped automatically. Override with `GEMINI_DEFAULT_MODEL` (`gemini-3.1-flash-lite` and `gemini-3.6-flash` are tried if the default is unavailable). Flash-Lite does not support Gemini thinking config; the client omits it so requests are not rejected with `INVALID_ARGUMENT`.
 
 Without a Gemini key, the app falls back to Groq (if configured) or local heuristic summaries.
 
@@ -123,12 +123,12 @@ app/
     ai_client.py              Gemini-primary / Groq-fallback facade for all AI calls
     ai_query.py               Natural-language search and structured AI actions
     user_prefs.py             User KV preferences (profile, models, mail app, chips)
-    webmail.py                Gmail/Outlook https URLs for open and compose
+    webmail.py                Gmail/Outlook https URLs for open and compose (Gmail thread id when known)
     gemini_client.py          Google AI Studio client, JSON triage, token usage tracking
     token_budget.py           Local token counting and greedy email batch packing
     groq_client.py            Groq fallback: model discovery, 429 fallback, 8-email batches
-    imap_service.py           IMAP connection, UID sync, Sent folder detection
-    llm_text.py               URL-stripped text compaction and action-title sanitizing
+    imap_service.py           IMAP connection, UID sync, Gmail X-GM-THRID, Sent folder detection
+    llm_text.py               URL-stripped text compaction, action-title and digest sanitizing
     mail.py                   Outbound SMTP for signup verification codes
     store.py                  SQLite persistence, FTS, thread_state, sender_rules, migrations
     summary.py                Categorisation, summaries, digest, thread ids

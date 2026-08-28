@@ -32,6 +32,7 @@
                     <a href="{{ url_for('main.today') }}" class="topbar-nav-link {% if request.endpoint == 'main.today' %}topbar-nav-link--active{% endif %}">{{ icon("today") }} Today</a>
                     <a href="{{ url_for('main.inbox') }}" class="topbar-nav-link {% if request.endpoint == 'main.inbox' %}topbar-nav-link--active{% endif %}">{{ icon("inbox") }} All mail</a>
                     <a href="{{ url_for('main.search_page') }}" class="topbar-nav-link {% if request.endpoint == 'main.search_page' %}topbar-nav-link--active{% endif %}">{{ icon("sparkle") }} AI Search</a>
+                    <a href="{{ url_for('main.tags') }}" class="topbar-nav-link {% if request.endpoint in ('main.tags', 'main.tags_edit') %}topbar-nav-link--active{% endif %}">{{ icon("tag") }} Tags</a>
                 </nav>
                 {% if active_accounts %}
                 <nav class="acct-pills" aria-label="Account filter">

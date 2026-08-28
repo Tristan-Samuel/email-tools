@@ -23,6 +23,14 @@ ACTION_EXTRACT_SYSTEM = (
     "Only include items clearly supported by the emails."
 )
 
+DIGEST_SYSTEM = (
+    "You write inbox briefs for email triage. Return JSON with "
+    '"headline" (one short sentence — never a "Key actions:" teaser or comma list) '
+    'and "bullets" (up to 6 objects with "text" and "id"). '
+    "Put the email ID only in id, never in headline or text. No hashes. "
+    "Prioritize deadlines, action items, and urgent mail. No raw URLs in angle brackets."
+)
+
 
 def compact_for_llm(text: str, limit: int = 800) -> str:
     """Strip URLs and tracking noise before sending text to Groq."""
@@ -45,6 +53,42 @@ def sanitize_action_title(title: str) -> str:
     text = _SHA1_RE.sub(" ", text)
     text = re.sub(r"\s{2,}", " ", text)
     return text.strip(" \t-–—.,;:")
+
+
+def sanitize_digest_headline(text: str) -> str:
+    """Drop Key-actions teasers and hashes from a digest headline."""
+    line = sanitize_action_title(text)
+    if _KEY_ACTIONS_RE.match(line):
+        rest = _KEY_ACTIONS_RE.sub("", line).strip()
+        if not rest or ("," in rest and len(rest) < 220):
+            return ""
+        return rest
+    return line
+
+
+def clean_inbox_digest(parsed: Any) -> dict | None:
+    """Normalize a digest JSON object; strip IDs from display text."""
+    if not isinstance(parsed, dict):
+        return None
+    cleaned_bullets: list[dict[str, str]] = []
+    raw_bullets = parsed.get("bullets") or []
+    if isinstance(raw_bullets, list):
+        for item in raw_bullets:
+            if isinstance(item, dict):
+                text = sanitize_action_title(str(item.get("text") or item.get("bullet") or ""))
+                eid = str(item.get("id") or item.get("email_id") or "").strip()
+                if text:
+                    cleaned_bullets.append({"text": text, "email_id": eid})
+            elif isinstance(item, str) and item.strip():
+                text = sanitize_action_title(item)
+                if text:
+                    cleaned_bullets.append({"text": text, "email_id": ""})
+    headline = sanitize_digest_headline(str(parsed.get("headline") or ""))
+    if not headline and cleaned_bullets:
+        headline = cleaned_bullets[0]["text"]
+    if headline and cleaned_bullets:
+        return {"headline": headline, "bullets": cleaned_bullets[:6]}
+    return None
 
 
 def format_action_email_blocks(emails: list[dict], limit: int = 30) -> str:
