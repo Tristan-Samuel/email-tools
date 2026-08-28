@@ -236,16 +236,34 @@ def _search_sort(store, user_email: str) -> str:
     return sort
 
 
-def _load_fyi_brief(store, user_email: str, fyi_digest: list, ai: AiClient) -> dict | None:
+def _fyi_digest_email_ids(fyi_digest: dict | list | None) -> list[str]:
+    """Email ids from a Today FYI digest dict, or a list of bullet/row dicts."""
+    if isinstance(fyi_digest, dict):
+        items = fyi_digest.get("bullets") or []
+    elif isinstance(fyi_digest, list):
+        items = fyi_digest
+    else:
+        items = []
+    ids: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        eid = str(item.get("email_id") or item.get("latest_email_id") or "")
+        if eid:
+            ids.append(eid)
+    return ids
+
+
+def _load_fyi_brief(store, user_email: str, fyi_digest: dict | list | None, ai: AiClient) -> dict | None:
     from .services.token_budget import pacific_today
 
     today = pacific_today()
     cached = user_prefs.get_json_pref(store, user_email, user_prefs.FYI_BRIEF_CACHE, {})
     if isinstance(cached, dict) and cached.get("date") == today and cached.get("headline"):
         return cached
-    if not ai.enabled or not fyi_digest:
+    email_ids = _fyi_digest_email_ids(fyi_digest)
+    if not ai.enabled or not email_ids:
         return cached if isinstance(cached, dict) else None
-    email_ids = [str(item.get("email_id") or "") for item in fyi_digest if item.get("email_id")]
     emails = [store.get_email(eid, user_email=user_email) for eid in email_ids[:20]]
     emails = [e for e in emails if e]
     if not emails:
@@ -1076,7 +1094,7 @@ def today():
             mailto_link = _mailto_draft(draft_email, draft_reply, store, user_email)
             compose_ctx = _compose_context(draft_email, draft_reply, store, user_email)
 
-    fyi_brief = _load_fyi_brief(store, user_email, view.get("fyi_digest") or [], ai)
+    fyi_brief = _load_fyi_brief(store, user_email, view.get("fyi_digest"), ai)
     onboarding = _onboarding_state(store, user_email, ai)
     ai_chips = user_prefs.saved_ai_prompts(store, user_email)
 

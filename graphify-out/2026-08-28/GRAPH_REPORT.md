@@ -1,16 +1,16 @@
 # Graph Report - email-tools  (2026-08-28)
 
 ## Corpus Check
-- 42 files · ~58,290 words
+- 42 files · ~58,020 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 895 nodes · 2128 edges · 41 communities (29 shown, 12 thin omitted)
+- 891 nodes · 2111 edges · 45 communities (29 shown, 16 thin omitted)
 - Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 45 edges (avg confidence: 0.76)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `edfdda41`
+- Built from commit: `4ee59ffb`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -22,7 +22,7 @@
 - imap_service.py
 - Shipped (P0–P4 core + triage overhaul)
 - crypto.py
-- create_app
+- .analyze_emails_batch
 - user_prefs.py
 - Ponytail
 - app.js
@@ -32,7 +32,7 @@
 - conftest.py
 - mail.py
 - GroqClient
-- analyze_pending_emails
+- test_jobs.py
 - Connection
 - ._deserialize_row
 - .apply_all_manual_tags
@@ -40,45 +40,48 @@
 - .update_email_analysis
 - .__init__
 - webmail.py
-- gemini_client.py
-- .list_inbox_thread_heads
+- .get_app_password_hash
+- _parse_bool
 - compact_for_llm
 - test_webmail.py
 - .enable_default_folders
-- email_parser.py
+- create_app
 - summary.py
-- _format_http_error
-- resolve_gemini_model
+- .cancel_active_jobs
+- gemini_client.py
 - .bump_verification_attempts
 - .clear_thread_user_lock
 - GeminiClient
 - test_ai_client.py
-- .update_job_phase
+- .reset_account_sync_cursors
+- .clear_ai_analyzed
+- .create_job
+- .update_imap_password
 - test_store_init.py
 
 ## God Nodes (most connected - your core abstractions)
-1. `EmailStore` - 158 edges
+1. `EmailStore` - 157 edges
 2. `get_store()` - 59 edges
 3. `require_login()` - 53 edges
 4. `AiClient` - 46 edges
-5. `create_app()` - 43 edges
+5. `create_app()` - 42 edges
 6. `GroqClient` - 42 edges
 7. `GeminiClient` - 35 edges
 8. `get_ai_client()` - 32 edges
-9. `build_email_record()` - 30 edges
+9. `build_email_record()` - 28 edges
 10. `compact_for_llm()` - 24 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `Auto-Sort Categories` --semantically_similar_to--> `Tags`  [INFERRED] [semantically similar]
   README.md → app/templates/tags.html
-- `test_format_email_body_image_chip()` --calls--> `create_app()`  [EXTRACTED]
-  tests/test_email_parser.py → app/__init__.py
-- `test_format_email_body_linkifies_short_label_only()` --calls--> `create_app()`  [EXTRACTED]
-  tests/test_email_parser.py → app/__init__.py
+- `test_analyze_requires_login()` --calls--> `create_app()`  [EXTRACTED]
+  tests/test_jobs.py → app/__init__.py
+- `test_api_jobs_requires_auth()` --calls--> `create_app()`  [EXTRACTED]
+  tests/test_jobs.py → app/__init__.py
+- `test_jobs_cancel_requires_auth()` --calls--> `create_app()`  [EXTRACTED]
+  tests/test_jobs.py → app/__init__.py
 - `test_retired_default_model_is_remapped()` --calls--> `GeminiClient`  [EXTRACTED]
   tests/test_gemini_client.py → app/services/gemini_client.py
-- `test_retired_default_model_is_remapped()` --calls--> `GroqClient`  [EXTRACTED]
-  tests/test_jobs.py → app/services/groq_client.py
 
 ## Import Cycles
 - None detected.
@@ -88,11 +91,11 @@
 - **Groq-Powered AI Surfaces** — readme_groq_ai, app_templates_email_detail_ai_summary, app_templates_search_ask_ai, app_templates_tags_ai_classification, app_templates_respond_now_respond_now [INFERRED 0.85]
 - **IMAP Inbox Connection Flow** — readme_direct_imap_connection, readme_provider_app_password, app_templates_login_login, app_templates_login_imap_host_autofill, app_templates_accounts_connected_accounts [EXTRACTED 1.00]
 
-## Communities (41 total, 12 thin omitted)
+## Communities (45 total, 16 thin omitted)
 
 ### Community 0 - "EmailStore"
-Cohesion: 0.05
-Nodes (9): EmailStore, Replace stored IMAP ciphertext. Return True if a row was updated., Mark mail as needing a fresh AI pass so list-line summaries can be regenerated., Zero IMAP UID checkpoints so the next sync re-downloads the current window., Mark queued/running jobs cancelled. Return cancelled job ids., Insert a queued job and return its id., Append a log line and set the job's current message to that line., Store a hashed account password for this email-tools user. (+1 more)
+Cohesion: 0.06
+Nodes (7): EmailStore, Update one phase meter and recompute weighted job percent., Append a log line and set the job's current message to that line., Store a hashed account password for this email-tools user., test_ai_confirm_tag_column(), test_marketing_offer_rule_not_seeded(), test_school_tag_prevents_marketing_hide()
 
 ### Community 1 - "Email Intelligence Studio"
 Cohesion: 0.09
@@ -100,7 +103,7 @@ Nodes (47): Connected Accounts, Email Intelligence Studio, Sync All Accounts, To
 
 ### Community 2 - "routes.py"
 Cohesion: 0.06
-Nodes (118): accounts(), accounts_add(), accounts_delete(), accounts_load_older(), accounts_resync(), accounts_resync_all(), accounts_sync(), accounts_sync_all() (+110 more)
+Nodes (122): accounts(), accounts_add(), accounts_delete(), accounts_load_older(), accounts_resync(), accounts_resync_all(), accounts_sync(), accounts_sync_all() (+114 more)
 
 ### Community 3 - "ai_query.py"
 Cohesion: 0.24
@@ -117,10 +120,6 @@ Nodes (12): High-leverage triage, How to use this file, IA and design, Later, Le
 ### Community 6 - "crypto.py"
 Cohesion: 0.25
 Nodes (10): decrypt(), decrypt_with_fallback(), _derive_material(), encrypt(), _make_fernet(), Symmetric encryption for stored IMAP passwords, Groq keys, and Gemini keys.…, Return URL-safe base64 ciphertext string., Return original plaintext, or empty string on failure. (+2 more)
-
-### Community 7 - "create_app"
-Cohesion: 0.06
-Nodes (53): create_app(), _credential_encryption_key(), _load_env_file(), _load_secret_key(), Flask, Path, Fill os.environ from `.env` without overriding vars already set., _guess_imap_port() (+45 more)
 
 ### Community 8 - "user_prefs.py"
 Cohesion: 0.31
@@ -144,23 +143,27 @@ Nodes (5): Outbound email for signup verification codes (stdlib SMTP only)., Ret
 
 ### Community 16 - "GroqClient"
 Cohesion: 0.09
-Nodes (15): GroqClient, _looks_like_chat_model(), Return {email_id: bullets} — legacy wrapper around analyze_emails_batch., Map blank or retired env/UI values to a live chat model., Stop retrying a model whose TPM window is exhausted., Return a live chat model. Skips audio/TTS IDs and retired Llama defaults., Sleep in 1s slices. Return True if cancelled., Return (parsed_json_or_text, error). error is set on failure. (+7 more)
+Nodes (19): _format_http_error(), GroqClient, _is_dead_model_error(), _looks_like_chat_model(), _parse_json_content(), _parse_retry_after(), parse_single_summary(), Normalize summarize_email JSON into {bullets, line, compact}. (+11 more)
 
-### Community 17 - "analyze_pending_emails"
-Cohesion: 0.10
-Nodes (34): AnalyzeFn, analyze_pending_emails(), _apply_all_ai_tags(), _apply_all_tags(), _apply_hide_ai_confirm(), _cache_ai_model(), Confirm hide-tag matches with Groq before hiding (or unhide false positives)., Write AI summaries + intent for unanalyzed mail. Return how many succeeded. (+26 more)
+### Community 17 - "test_jobs.py"
+Cohesion: 0.06
+Nodes (46): AnalyzeFn, _apply_hide_ai_confirm(), Confirm hide-tag matches with Groq before hiding (or unhide false positives)., is_groq_unreachable(), DNS, connection, and timeout failures should not retry every model., job_percent_from_phases(), Weighted percent across fetch / summarize / tag / brief meters., check_cancelled() (+38 more)
 
 ### Community 18 - "Connection"
 Cohesion: 0.12
 Nodes (14): IMAP UIDVALIDITY and backfill cursor for incremental sync., hidden_by_tag, thread columns, FTS recipient/category alignment., Pending signup verification codes (hashed, short-lived)., IMAP sync prefs and per-folder UID checkpoints., Background job status/logs and generic per-user key-value cache., Per-phase job progress for fetch / summarize / tag / brief meters., AI tag verdict cache so Groq does not re-scan every sync., Sanitized HTML bodies and AI confirm-before-hide on tags. (+6 more)
 
-### Community 20 - ".apply_all_manual_tags"
+### Community 19 - "._deserialize_row"
 Cohesion: 0.12
-Nodes (6): Subject/body contains rules so Hide matching works without a custom filter., Create School / Marketing / Newsletters with synonym rules when missing., Remove Marketing body rule for 'offer' — too many school false positives., Return {thread_id: [emails...]} for non-hidden mail., Heuristic candidate pool for AI search/actions., Merge AI items with due-date / school / deadline emails.
+Nodes (6): Recent emails that still need an AI summary (or a dedicated list line)., Return {thread_id: [emails...]} for non-hidden mail., One row per thread — latest message metadata plus thread_state when present., Heuristic candidate pool for AI search/actions., Count emails matching the same filters as list_emails / search., Row
+
+### Community 20 - ".apply_all_manual_tags"
+Cohesion: 0.15
+Nodes (4): Subject/body contains rules so Hide matching works without a custom filter., Create School / Marketing / Newsletters with synonym rules when missing., Remove Marketing body rule for 'offer' — too many school false positives., Merge AI items with due-date / school / deadline emails.
 
 ### Community 21 - "AiClient"
-Cohesion: 0.07
-Nodes (25): AiClient, Any, Yield-style batches: list of (chunk, results, tokens_used) for Gemini packing., Facade over Gemini (primary) and Groq (fallback)., BudgetLimits, format_analyze_email_block(), GeminiQuotaTracker, pack_email_batch() (+17 more)
+Cohesion: 0.06
+Nodes (37): analyze_pending_emails(), Write AI summaries + intent for unanalyzed mail. Return how many succeeded., AiClient, is_fatal_auth_error(), is_rate_limit_error(), is_unreachable(), Any, Unified AI client: Gemini primary, Groq fallback. (+29 more)
 
 ### Community 22 - ".update_email_analysis"
 Cohesion: 0.20
@@ -170,32 +173,28 @@ Nodes (3): date, Stamp a user triage action so rebuild/Groq cannot undo it., Ret
 Cohesion: 0.29
 Nodes (9): compose_links(), compose_url(), mailto_url(), normalize_message_id(), open_message_url(), provider_for_imap_host(), Build webmail URLs for opening originals and composing replies in the user's…, Return primary https compose URL and optional mailto fallback. (+1 more)
 
-### Community 26 - "gemini_client.py"
-Cohesion: 0.13
-Nodes (21): is_fatal_auth_error(), is_rate_limit_error(), Unified AI client: Gemini primary, Groq fallback., is_fatal_gemini_auth_error(), is_gemini_unreachable(), is_rate_limit_error(), is_tpd_exhausted_error(), is_unavailable_model_error() (+13 more)
+### Community 27 - "_parse_bool"
+Cohesion: 0.40
+Nodes (3): _parse_bool(), Return True if AI decides this email should receive the given tag., Return True when email is commercial/promotional bulk mail worth hiding.
 
 ### Community 28 - "compact_for_llm"
 Cohesion: 0.15
-Nodes (12): _parse_bool(), parse_single_summary(), Normalize summarize_email JSON into {bullets, line, compact}., Return True if AI decides this email should receive the given tag., Return True when email is commercial/promotional bulk mail worth hiding., compact_for_llm(), Shared text compaction for LLM prompts — no imports from provider clients., Strip URLs and tracking noise before sending text to Groq. (+4 more)
+Nodes (9): _parse_tag_verdict(), Normalize yes / no / unsure from model output., Two-pass tagging: summary first, compact body only when unsure., Return a short reply draft the user can copy or open via mailto:., compact_for_llm(), Shared text compaction for LLM prompts — no imports from provider clients., Strip URLs and tracking noise before sending text to Groq., test_compact_for_llm_strips_urls_keeps_labels() (+1 more)
 
-### Community 31 - "email_parser.py"
-Cohesion: 0.08
-Nodes (43): build_message_id(), expand_inline_breaks(), extract_body(), extract_body_parts(), html_to_text(), is_mailing_list_message(), is_url_heavy_plaintext(), message_email_id() (+35 more)
+### Community 31 - "create_app"
+Cohesion: 0.05
+Nodes (72): create_app(), _credential_encryption_key(), _load_env_file(), _load_secret_key(), Flask, Path, Fill os.environ from `.env` without overriding vars already set., _guess_imap_port() (+64 more)
 
 ### Community 32 - "summary.py"
 Cohesion: 0.06
 Nodes (74): _persist_email_analysis(), parse_analyze_entry(), Normalize one triage JSON item. Return None when id is missing., build_digest(), build_email_record(), build_important_items(), choose_category(), clean_summary_line() (+66 more)
 
-### Community 33 - "_format_http_error"
-Cohesion: 0.67
-Nodes (3): _format_http_error(), Short Groq error without leaking request secrets., Response
-
-### Community 34 - "resolve_gemini_model"
-Cohesion: 0.18
-Nodes (10): _normalize_gemini_model_id(), Map blank or 2.5-era env/UI values to a live Gemini 3.x model., resolve_gemini_model(), Exception, object, Tests for GeminiClient JSON parsing and model fallback., test_analyze_emails_batch_parses_items(), test_generate_json_skips_404_model_on_retry() (+2 more)
+### Community 34 - "gemini_client.py"
+Cohesion: 0.12
+Nodes (17): is_unavailable_model_error(), _normalize_gemini_model_id(), _parse_retry_after(), Any, Google AI Studio / Gemini API client for email triage and summaries., Prefer response.text; fall back to concatenated part text (thought signatures)., Map blank or 2.5-era env/UI values to a live Gemini 3.x model., resolve_gemini_model() (+9 more)
 
 ### Community 37 - "GeminiClient"
-Cohesion: 0.14
+Cohesion: 0.16
 Nodes (4): GeminiClient, Return (parsed_json_or_text, error, tokens_used)., Analyze a pre-packed batch (or up to batch_size emails with compact bodies)., Client
 
 ### Community 38 - "test_ai_client.py"
@@ -205,16 +204,16 @@ Nodes (4): patch, Tests for AiClient Gemini-primary / Groq-fallback facade., tes
 ## Knowledge Gaps
 - **22 isolated node(s):** `ACTIVITY_PHASES`, `How to use this file`, `What this app actually is`, `Security and boot`, `Mail pipeline` (+17 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **12 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **16 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `EmailStore` connect `EmailStore` to `summary.py`, `.bump_verification_attempts`, `.clear_thread_user_lock`, `create_app`, `.update_job_phase`, `test_store_init.py`, `analyze_pending_emails`, `Connection`, `._deserialize_row`, `.apply_all_manual_tags`, `AiClient`, `.update_email_analysis`, `.__init__`, `.list_inbox_thread_heads`, `.enable_default_folders`?**
+- **Why does `EmailStore` connect `EmailStore` to `test_jobs.py`, `Connection`, `._deserialize_row`, `.apply_all_manual_tags`, `AiClient`, `.update_email_analysis`, `.__init__`, `.get_app_password_hash`, `.enable_default_folders`, `create_app`, `summary.py`, `.cancel_active_jobs`, `.bump_verification_attempts`, `.clear_thread_user_lock`, `.reset_account_sync_cursors`, `.clear_ai_analyzed`, `.create_job`, `.update_imap_password`, `._job_from_row`, `test_store_init.py`?**
   _High betweenness centrality (0.281) - this node is a cross-community bridge._
-- **Why does `AiClient` connect `AiClient` to `summary.py`, `routes.py`, `ai_query.py`, `GeminiClient`, `test_ai_client.py`, `GroqClient`, `analyze_pending_emails`, `gemini_client.py`?**
-  _High betweenness centrality (0.069) - this node is a cross-community bridge._
-- **Why does `GroqClient` connect `GroqClient` to `routes.py`, `test_ai_client.py`, `create_app`, `AiClient`, `gemini_client.py`, `compact_for_llm`?**
+- **Why does `AiClient` connect `AiClient` to `summary.py`, `routes.py`, `ai_query.py`, `GeminiClient`, `test_ai_client.py`, `GroqClient`?**
+  _High betweenness centrality (0.070) - this node is a cross-community bridge._
+- **Why does `GroqClient` connect `GroqClient` to `routes.py`, `test_ai_client.py`, `.analyze_emails_batch`, `test_jobs.py`, `AiClient`, `_parse_bool`, `compact_for_llm`?**
   _High betweenness centrality (0.068) - this node is a cross-community bridge._
 - **Are the 3 inferred relationships involving `EmailStore` (e.g. with `BudgetLimits` and `GeminiQuotaTracker`) actually correct?**
   _`EmailStore` has 3 INFERRED edges - model-reasoned connections that need verification._
@@ -223,4 +222,4 @@ _Questions this graph is uniquely positioned to answer:_
 - **What connects `ACTIVITY_PHASES`, `How to use this file`, `What this app actually is` to the rest of the system?**
   _22 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `EmailStore` be split into smaller, more focused modules?**
-  _Cohesion score 0.05341614906832298 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.06001984126984127 - nodes in this community are weakly interconnected._

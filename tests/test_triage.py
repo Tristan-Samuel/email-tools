@@ -99,6 +99,47 @@ def test_today_route_renders_do_now() -> None:
         assert "/today" in redirect.headers["Location"]
 
 
+def test_today_route_with_ai_reads_fyi_digest_dict() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from app import create_app
+    from werkzeug.security import generate_password_hash
+
+    app = create_app()
+    app.config.update(TESTING=True, WTF_CSRF_ENABLED=False)
+    store: EmailStore = app.extensions["email_store"]
+    user = f"today-fyi-{uuid.uuid4().hex[:8]}@example.com"
+    store.set_app_password(user, generate_password_hash("secret12", method="pbkdf2:sha256"))
+    rec = build_email_record(
+        _sample_message(
+            email_id="fyi-1",
+            message_id="<fyi@b>",
+            subject="FYI note",
+            body="Just FYI.",
+        ),
+        source_name=user,
+        user_email=user,
+        source_account=user,
+    )
+    rec["intent"] = "fyi"
+    rec["ai_analyzed"] = 1
+    store.bulk_upsert([rec])
+    rebuild_thread_states(store, user)
+
+    fake_ai = MagicMock()
+    fake_ai.enabled = True
+    fake_ai.build_inbox_digest.return_value = {"headline": "Today skim", "bullets": ["Note"]}
+
+    with app.test_client() as client:
+        client.post("/login", data={"email": user, "app_password": "secret12"})
+        with patch("app.routes.get_ai_client", return_value=fake_ai):
+            with patch("app.routes._queue_job"):
+                response = client.get("/today")
+        assert response.status_code == 200
+        assert b"FYI digest" in response.data
+        assert b"Today skim" in response.data
+
+
 def test_fyi_digest_curated_cap() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = EmailStore(Path(tmp) / "fyi.db")
@@ -130,6 +171,48 @@ def test_fyi_digest_curated_cap() -> None:
         assert len(digest["thread_ids"]) <= 6
         assert digest["headline"].startswith(str(len(digest["thread_ids"])))
         assert "64" not in digest["headline"]
+        assert digest["bullets"]
+        assert all(isinstance(b, dict) and b.get("email_id") for b in digest["bullets"])
+
+
+def test_load_fyi_brief_reads_digest_dict() -> None:
+    from app.routes import _load_fyi_brief
+
+    class _FakeAI:
+        def __init__(self) -> None:
+            self.enabled = True
+            self.seen: list[list] = []
+
+        def build_inbox_digest(self, emails):
+            self.seen.append(emails)
+            return {"headline": "Skim these", "bullets": ["One update"]}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = EmailStore(Path(tmp) / "brief.db")
+        store.initialize()
+        user = "me@example.com"
+        rec = build_email_record(
+            _sample_message(
+                email_id="msg-fyi",
+                message_id="<fyi@b>",
+                subject="FYI update",
+                body="Informational only.",
+            ),
+            source_name=user,
+            user_email=user,
+            source_account=user,
+        )
+        rec["intent"] = "fyi"
+        rec["urgency"] = 20
+        rec["is_read"] = 0
+        store.bulk_upsert([rec])
+        rebuild_thread_states(store, user)
+        view = build_today_view(store, user)
+        ai = _FakeAI()
+        brief = _load_fyi_brief(store, user, view["fyi_digest"], ai)
+        assert brief is not None
+        assert brief["headline"] == "Skim these"
+        assert ai.seen and ai.seen[0]
 
 
 def test_add_todo_survives_rebuild() -> None:
