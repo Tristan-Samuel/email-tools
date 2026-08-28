@@ -48,7 +48,7 @@ Log in → account menu → **Settings** → **Gemini AI (primary)**. Paste your
 **Option 2 — server-level key:**
 Set `GEMINI_API_KEY` or `GOOGLE_API_KEY` before starting the app (used when no per-user Gemini key is set).
 
-Default model: `gemini-2.5-flash-lite` (1M-token context). Override with `GEMINI_DEFAULT_MODEL`.
+Default model: `gemini-3.5-flash-lite` (1M-token context, high-volume JSON). Google now 404s Gemini 2.5 for new API keys; leftover `gemini-2.5-flash-lite` / `gemini-2.5-flash` values are remapped automatically. Override with `GEMINI_DEFAULT_MODEL` (`gemini-3.1-flash-lite` and `gemini-3.6-flash` are tried if the default is unavailable).
 
 Without a Gemini key, the app falls back to Groq (if configured) or local heuristic summaries.
 
@@ -90,7 +90,7 @@ If you **remove your account password** in Settings, the next login requires the
 | Variable | Description |
 |---|---|
 | `GEMINI_API_KEY` | Server-level Gemini key (primary). `GOOGLE_API_KEY` is accepted as an alias. |
-| `GEMINI_DEFAULT_MODEL` | Gemini model (default: `gemini-2.5-flash-lite`). |
+| `GEMINI_DEFAULT_MODEL` | Gemini model (default: `gemini-3.5-flash-lite`). Retired 2.5 IDs remap to 3.x. |
 | `GEMINI_RPM` | Requests per minute for pacing (default: `15`). |
 | `GEMINI_TPM` | Tokens per minute ceiling per packed request (default: `250000`). |
 | `GEMINI_TPD` | Tokens per day budget tracked in SQLite (default: `1500000`). Resets at midnight Pacific. |

@@ -13,7 +13,7 @@ class _CharCounter(TokenCounter):
     """Force char/4 fallback for deterministic tests."""
 
     def __init__(self) -> None:
-        self.model_name = "gemini-2.5-flash-lite"
+        self.model_name = "gemini-3.5-flash-lite"
         self._api_client = None
         self._local = None
 

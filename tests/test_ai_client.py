@@ -36,7 +36,7 @@ def test_ai_client_falls_back_to_groq_on_gemini_failure(mock_post: MagicMock) ->
     }
     mock_post.return_value = groq_response
 
-    gemini = GeminiClient(api_key="gemini-key", default_model="gemini-2.5-flash-lite")
+    gemini = GeminiClient(api_key="gemini-key", default_model="gemini-3.5-flash-lite")
     groq = GroqClient(api_key="gsk_test", default_model="openai/gpt-oss-20b")
     groq._cached_best_model = "openai/gpt-oss-20b"
 
@@ -55,7 +55,7 @@ def test_ai_client_falls_back_to_groq_on_gemini_failure(mock_post: MagicMock) ->
 
 
 def test_ai_client_uses_groq_when_no_gemini_key() -> None:
-    gemini = GeminiClient(api_key="", default_model="gemini-2.5-flash-lite")
+    gemini = GeminiClient(api_key="", default_model="gemini-3.5-flash-lite")
     groq = GroqClient(api_key="gsk_test", default_model="openai/gpt-oss-20b")
     ai = AiClient(gemini=gemini, groq=groq)
     assert ai.enabled

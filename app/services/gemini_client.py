@@ -31,20 +31,51 @@ from .token_budget import (
     format_analyze_email_block,
 )
 
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite"
+# Google gates Gemini 2.5 to accounts that already used it. New API keys get
+# 404 NOT_FOUND and are told to switch to 3.x (gemini-3.6-flash / Flash-Lite).
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 PREFERRED_GEMINI_MODELS = (
-    "gemini-2.5-flash-lite",
+    "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
-    "gemini-2.5-flash",
+    "gemini-3.6-flash",
 )
+_RETIRED_GEMINI_MODELS = {
+    "gemini-2.5-flash-lite": "gemini-3.5-flash-lite",
+    "gemini-2.5-flash": "gemini-3.6-flash",
+    "gemini-2.5-pro": "gemini-3.6-flash",
+    "gemini-2.0-flash-lite": "gemini-3.5-flash-lite",
+    "gemini-2.0-flash": "gemini-3.6-flash",
+}
 _GEMINI_BODY_CHARS = 6000
 
 
+def _normalize_gemini_model_id(model_id: str) -> str:
+    name = (model_id or "").strip()
+    if name.startswith("models/"):
+        name = name[len("models/") :]
+    return name
+
+
 def resolve_gemini_model(configured: str) -> str:
-    configured = (configured or "").strip()
-    if configured:
-        return configured
-    return DEFAULT_GEMINI_MODEL
+    """Map blank or 2.5-era env/UI values to a live Gemini 3.x model."""
+    configured = _normalize_gemini_model_id(configured)
+    if not configured:
+        return DEFAULT_GEMINI_MODEL
+    return _RETIRED_GEMINI_MODELS.get(configured, configured)
+
+
+def is_unavailable_model_error(message: str) -> bool:
+    lowered = (message or "").lower()
+    return any(
+        token in lowered
+        for token in (
+            "404",
+            "not_found",
+            "not found",
+            "no longer available",
+            "is not found",
+        )
+    )
 
 
 def _parse_retry_after(value: str | None) -> float:
@@ -106,11 +137,28 @@ def _usage_total_tokens(response: Any) -> int:
     return prompt + candidates
 
 
+def _response_text(response: Any) -> str:
+    """Prefer response.text; fall back to concatenated part text (thought signatures)."""
+    text = (getattr(response, "text", None) or "").strip()
+    if text:
+        return text
+    chunks: list[str] = []
+    for candidate in getattr(response, "candidates", None) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", None) or []:
+            part_text = getattr(part, "text", None)
+            if part_text:
+                chunks.append(str(part_text))
+    return "".join(chunks).strip()
+
+
 class GeminiClient:
     def __init__(self, api_key: str, default_model: str):
         self.api_key = api_key.strip()
         self.default_model = resolve_gemini_model(default_model)
         self._client: genai.Client | None = None
+        self._cached_best_model: str | None = None
+        self._unavailable_models: set[str] = set()
         self.last_error: str = ""
         self.last_model_used: str = ""
         self.last_tokens_used: int = 0
@@ -127,13 +175,17 @@ class GeminiClient:
         return self._client
 
     def _models_to_try(self) -> list[str]:
-        ordered = [self.default_model, *PREFERRED_GEMINI_MODELS]
+        ordered = [self._cached_best_model, self.default_model, *PREFERRED_GEMINI_MODELS]
         seen: set[str] = set()
         result: list[str] = []
         for model_id in ordered:
-            if model_id and model_id not in seen:
-                seen.add(model_id)
-                result.append(model_id)
+            if not model_id:
+                continue
+            name = resolve_gemini_model(str(model_id))
+            if not name or name in seen or name in self._unavailable_models:
+                continue
+            seen.add(name)
+            result.append(name)
         return result
 
     def _cancelled(self) -> bool:
@@ -205,16 +257,18 @@ class GeminiClient:
                     if is_rate_limit_error(last_err):
                         retry_wait = max(retry_wait, _parse_retry_after(None))
                         continue
-                    if "404" in last_err or "not found" in last_err.lower():
+                    if is_unavailable_model_error(last_err):
+                        self._unavailable_models.add(model_name)
                         continue
                     continue
 
                 tokens_used = _usage_total_tokens(response)
-                text = (getattr(response, "text", None) or "").strip()
+                text = _response_text(response)
                 if not text:
                     last_err = "Gemini returned an empty response."
                     continue
 
+                self._cached_best_model = model_name
                 self.last_model_used = model_name
                 self.last_tokens_used = tokens_used
                 self.last_error = ""

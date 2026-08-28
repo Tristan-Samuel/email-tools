@@ -1,9 +1,27 @@
-"""Tests for GeminiClient JSON parsing."""
+"""Tests for GeminiClient JSON parsing and model fallback."""
 from __future__ import annotations
 
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
-from app.services.gemini_client import GeminiClient
+from app.services.gemini_client import (
+    DEFAULT_GEMINI_MODEL,
+    GeminiClient,
+    resolve_gemini_model,
+)
+
+
+def test_resolve_gemini_model_remaps_retired_2_5() -> None:
+    assert resolve_gemini_model("") == DEFAULT_GEMINI_MODEL
+    assert resolve_gemini_model("gemini-2.5-flash-lite") == "gemini-3.5-flash-lite"
+    assert resolve_gemini_model("models/gemini-2.5-flash") == "gemini-3.6-flash"
+    assert resolve_gemini_model("gemini-3.5-flash-lite") == "gemini-3.5-flash-lite"
+
+
+def test_retired_default_model_is_remapped() -> None:
+    client = GeminiClient(api_key="test-key", default_model="gemini-2.5-flash-lite")
+    assert client.default_model == "gemini-3.5-flash-lite"
+    assert "gemini-2.5-flash" not in client._models_to_try()
 
 
 @patch.object(GeminiClient, "_generate_json")
@@ -24,7 +42,7 @@ def test_analyze_emails_batch_parses_items(mock_generate) -> None:
         None,
         42,
     )
-    client = GeminiClient(api_key="test-key", default_model="gemini-2.5-flash-lite")
+    client = GeminiClient(api_key="test-key", default_model="gemini-3.5-flash-lite")
     result = client.analyze_emails_batch(
         [{"email_id": "abc", "sender": "a@b", "subject": "Invoice", "body": "Please pay"}],
         blocks=["ID: abc\nFrom: a@b\nSubject: Invoice\nFromMe: False\nBody:\nPlease pay"],
@@ -33,3 +51,26 @@ def test_analyze_emails_batch_parses_items(mock_generate) -> None:
     assert result["abc"]["intent"] == "deadline"
     assert "line" in result["abc"]
     assert "compact" in result["abc"]
+
+
+def test_generate_json_skips_404_model_on_retry() -> None:
+    client = GeminiClient(api_key="test-key", default_model="gemini-3.5-flash-lite")
+    models = MagicMock()
+    models.generate_content.side_effect = [
+        Exception("404 NOT_FOUND. This model models/gemini-3.5-flash-lite is no longer available"),
+        SimpleNamespace(
+            text='{"ok": true}',
+            usage_metadata=SimpleNamespace(total_token_count=9),
+        ),
+    ]
+    client._client = SimpleNamespace(models=models)
+
+    parsed, err, tokens = client._generate_json('{"prompt": true}')
+
+    assert err is None
+    assert parsed == {"ok": True}
+    assert tokens == 9
+    assert client.last_model_used == "gemini-3.1-flash-lite"
+    assert "gemini-3.5-flash-lite" in client._unavailable_models
+    assert client._models_to_try()[0] == "gemini-3.1-flash-lite"
+    assert models.generate_content.call_count == 2
