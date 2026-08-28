@@ -202,6 +202,41 @@ class AiClient:
             return self._groq.answer_about_emails(question, emails)
         return None
 
+    def classify_inbox_query(self, prompt: str) -> dict | None:
+        self._sync_cancel()
+        if self.gemini_enabled:
+            result = self._gemini.classify_inbox_query(prompt)
+            if result:
+                self.last_provider = "gemini"
+                return result
+            if self._gemini_failed(self._gemini.last_error):
+                self.disable_gemini_for_job(self._gemini.last_error)
+        if self._groq.enabled:
+            self.last_provider = "groq"
+            return self._groq.classify_inbox_query(prompt)
+        return None
+
+    def extract_action_items(
+        self,
+        prompt: str,
+        action_type: str,
+        emails: list[dict],
+        today: str = "",
+    ) -> tuple[list[dict], str | None]:
+        self._sync_cancel()
+        if self.gemini_enabled:
+            items, err = self._gemini.extract_action_items(
+                prompt, action_type, emails, today=today
+            )
+            if items or not self._gemini_failed(err or self._gemini.last_error):
+                self.last_provider = "gemini"
+                return items, err
+            self.disable_gemini_for_job(err or self._gemini.last_error or "Gemini failed.")
+        if self._groq.enabled:
+            self.last_provider = "groq"
+            return self._groq.extract_action_items(prompt, action_type, emails, today=today)
+        return [], "No AI provider configured."
+
     def classify_email_for_tag(
         self,
         tag_name: str,

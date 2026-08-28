@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}Assignments — Inbox Tools{% endblock %}
+
+{% block content %}
+<main class="page-main">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">Assignments</h1>
+            <p class="page-subtitle">Due dates, school mail, and AI-extracted tasks.</p>
+        </div>
+        <div class="page-header-actions">
+            <a href="{{ url_for('main.search_page', ai=1, query='List assignments I need to get done') }}" class="btn btn-teal">Ask AI</a>
+            <a href="{{ url_for('main.today') }}" class="btn btn-ghost">Today</a>
+        </div>
+    </div>
+
+    <div class="ai-chips-row">
+        {% for chip in ai_chips %}
+        <button type="button" class="ai-prompt-chip" data-ai-prompt-go="{{ chip.prompt }}">{{ chip.label }}</button>
+        {% endfor %}
+    </div>
+
+    <section class="panel reveal">
+        {% if items %}
+        <ul class="action-items-list">
+            {% for item in items %}
+            <li class="action-item-row">
+                <div>
+                    <a href="{{ url_for('main.email_detail', email_id=item.email_id) }}" style="font-weight:700;color:var(--text)">
+                        {{ item.title }}
+                    </a>
+                    <p class="email-meta" style="margin:4px 0">
+                        {% if item.due_at %}<strong>Due</strong> {{ item.due_at }} · {% endif %}
+                        {{ item.sender or 'Unknown' }}
+                        {% if item.subject %} · {{ item.subject }}{% endif %}
+                    </p>
+                </div>
+                <div style="display:flex;gap:6px;flex-shrink:0;align-items:flex-start">
+                    {% if item.id %}
+                    <form action="{{ url_for('main.assignments_done', item_id=item.id) }}" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-ghost" style="font-size:.78rem">Done</button>
+                    </form>
+                    {% endif %}
+                    <a href="{{ url_for('main.email_detail', email_id=item.email_id) }}" class="btn btn-teal" style="font-size:.78rem">Open</a>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="empty-state">
+            <h3>No assignments yet</h3>
+            <p>Ask AI: <a href="{{ url_for('main.search_page', ai=1, query='List assignments I need to get done') }}">List assignments I need to get done</a></p>
+        </div>
+        {% endif %}
+    </section>
+</main>
+{% endblock %}

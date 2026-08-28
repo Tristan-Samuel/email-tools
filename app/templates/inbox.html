@@ -330,7 +330,9 @@ btns.forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
     let idx = rows.findIndex(r => r.querySelector('.inbox-row--selected'));
     if (idx < 0) idx = 0;
     const csrf = document.querySelector('input[name="csrf_token"]')?.value;
+    const shortcutsOn = document.body.dataset.keyboardShortcuts !== '0';
     document.addEventListener('keydown', (e) => {
+        if (!shortcutsOn) return;
         if (e.target.matches('input, textarea, select')) return;
         const row = rows[idx];
         if (!row) return;

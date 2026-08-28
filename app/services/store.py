@@ -454,6 +454,28 @@ class EmailStore:
                 "ALTER TABLE emails ADD COLUMN compact_summary TEXT NOT NULL DEFAULT ''"
             )
 
+    def _migrate_v14(self, connection: sqlite3.Connection) -> None:
+        """AI-extracted assignment items for the assignments board."""
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS assignment_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_email TEXT NOT NULL,
+                email_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                due_at TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                source TEXT NOT NULL DEFAULT 'ai',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_email, email_id, title)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_assignment_user ON assignment_items(user_email, status)"
+        )
+
     def initialize(self) -> None:
         with self._connect() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -509,6 +531,10 @@ class EmailStore:
                 self._migrate_v13(connection)
                 connection.execute("PRAGMA user_version = 13")
                 version = 13
+            if version < 14:
+                self._migrate_v14(connection)
+                connection.execute("PRAGMA user_version = 14")
+                version = 14
             try:
                 connection.execute("SELECT email_id FROM email_search LIMIT 0")
                 self.fts_enabled = True
@@ -2878,3 +2904,170 @@ class EmailStore:
                 row["intent"] = state.get("intent") or row.get("intent") or "fyi"
                 row["urgency"] = state.get("urgency") or row.get("urgency") or 0
         return page, total
+
+    def get_imap_account_by_email(self, user_email: str, account_email: str) -> dict | None:
+        acct = (account_email or "").strip().lower()
+        if not acct:
+            return None
+        for row in self.list_imap_accounts(user_email):
+            if (row.get("account_email") or "").strip().lower() == acct:
+                return row
+        return None
+
+    def list_ai_intent_candidates(
+        self,
+        user_email: str,
+        *,
+        action_type: str = "find_topic",
+        source_account: str | None = None,
+        limit: int = 80,
+    ) -> list[dict]:
+        """Heuristic candidate pool for AI search/actions."""
+        rows: list[dict] = []
+        school_tag = next(
+            (t for t in self.list_tags(user_email) if (t.get("name") or "").lower() == "school"),
+            None,
+        )
+        if school_tag:
+            rows.extend(
+                self.list_emails(
+                    limit=limit,
+                    user_email=user_email,
+                    source_account=source_account,
+                    tag_filter=school_tag["id"],
+                    sort="urgency",
+                )
+            )
+        if action_type in ("list_assignments", "this_week", "find_topic"):
+            with self._connect() as connection:
+                q = """
+                    SELECT * FROM emails
+                    WHERE user_email = ? AND is_hidden = 0
+                    AND (intent = 'deadline' OR due_at IS NOT NULL AND due_at != '')
+                """
+                params: list[object] = [user_email]
+                if source_account:
+                    q += " AND source_account = ?"
+                    params.append(source_account)
+                q += " ORDER BY urgency DESC, COALESCE(received_at, created_at) DESC LIMIT ?"
+                params.append(limit)
+                deadline_rows = connection.execute(q, params).fetchall()
+            rows.extend(self._deserialize_row(r) for r in deadline_rows if r)
+        if action_type in ("waiting_on_me", "this_week", "find_topic"):
+            with self._connect() as connection:
+                q = """
+                    SELECT * FROM emails
+                    WHERE user_email = ? AND is_hidden = 0 AND intent = 'i_owe'
+                """
+                params = [user_email]
+                if source_account:
+                    q += " AND source_account = ?"
+                    params.append(source_account)
+                q += " ORDER BY urgency DESC, COALESCE(received_at, created_at) DESC LIMIT ?"
+                params.append(limit)
+                owe_rows = connection.execute(q, params).fetchall()
+            rows.extend(self._deserialize_row(r) for r in owe_rows if r)
+        seen: set[str] = set()
+        out: list[dict] = []
+        for row in rows:
+            if not row:
+                continue
+            eid = row.get("email_id")
+            if eid and eid not in seen:
+                seen.add(eid)
+                out.append(row)
+        return out[:limit]
+
+    def upsert_assignment_items(self, user_email: str, items: list[dict]) -> int:
+        saved = 0
+        with self._connect() as connection:
+            for item in items:
+                eid = str(item.get("email_id") or "").strip()
+                title = str(item.get("title") or item.get("reason") or "").strip()
+                if not eid or not title:
+                    continue
+                due = str(item.get("due_at") or item.get("due_date") or "")[:10] or None
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO assignment_items (user_email, email_id, title, due_at, status, source)
+                    VALUES (?, ?, ?, ?, 'open', 'ai')
+                    """,
+                    (user_email, eid, title, due),
+                )
+                saved += 1
+        return saved
+
+    def list_assignment_board(self, user_email: str, *, include_done: bool = False) -> list[dict]:
+        """Merge AI items with due-date / school / deadline emails."""
+        items: list[dict] = []
+        with self._connect() as connection:
+            status_clause = "" if include_done else " AND status = 'open'"
+            rows = connection.execute(
+                f"""
+                SELECT assignment_items.*, emails.subject, emails.sender, emails.source_account,
+                       emails.thread_id, emails.message_id, emails.received_at
+                FROM assignment_items
+                LEFT JOIN emails ON emails.email_id = assignment_items.email_id
+                WHERE assignment_items.user_email = ?{status_clause}
+                ORDER BY COALESCE(assignment_items.due_at, '9999-12-31'), assignment_items.updated_at DESC
+                """,
+                (user_email,),
+            ).fetchall()
+            for row in rows:
+                items.append(dict(row))
+
+        school_tag = next(
+            (t for t in self.list_tags(user_email) if (t.get("name") or "").lower() == "school"),
+            None,
+        )
+        seen_ids = {i.get("email_id") for i in items}
+        extra: list[dict] = []
+        if school_tag:
+            for email in self.list_emails(
+                limit=60,
+                user_email=user_email,
+                tag_filter=school_tag["id"],
+                sort="urgency",
+            ):
+                if email.get("due_at") or email.get("intent") == "deadline":
+                    eid = email.get("email_id")
+                    if eid and eid not in seen_ids:
+                        seen_ids.add(eid)
+                        extra.append(
+                            {
+                                "id": None,
+                                "email_id": eid,
+                                "title": email.get("line_summary") or email.get("subject") or "Assignment",
+                                "due_at": email.get("due_at"),
+                                "status": "open",
+                                "source": "email",
+                                "subject": email.get("subject"),
+                                "sender": email.get("sender"),
+                                "source_account": email.get("source_account"),
+                                "thread_id": email.get("thread_id"),
+                                "message_id": email.get("message_id"),
+                                "received_at": email.get("received_at"),
+                            }
+                        )
+        items.extend(extra)
+        items.sort(
+            key=lambda r: (r.get("due_at") or "9999-12-31", r.get("received_at") or ""),
+        )
+        return items
+
+    def set_assignment_status(self, user_email: str, item_id: int, status: str) -> bool:
+        with self._connect() as connection:
+            cur = connection.execute(
+                """
+                UPDATE assignment_items SET status = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_email = ?
+                """,
+                (status, item_id, user_email),
+            )
+            return cur.rowcount > 0
+
+    def gemini_tokens_used_today(self, user_email: str) -> int:
+        from .token_budget import GeminiQuotaTracker, BudgetLimits
+
+        tracker = GeminiQuotaTracker(self, user_email, BudgetLimits.from_env())
+        return tracker.tokens_used_today()

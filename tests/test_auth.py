@@ -245,9 +245,18 @@ def test_help_page_public() -> None:
     app = create_app()
     app.config.update(TESTING=True)
     with app.test_client() as client:
-        response = client.get("/help")
+        response = client.get("/guide")
         assert response.status_code == 200
         assert b"App Password" in response.data
+
+
+def test_help_redirects_to_guide() -> None:
+    app = create_app()
+    app.config.update(TESTING=True)
+    with app.test_client() as client:
+        response = client.get("/help", follow_redirects=False)
+        assert response.status_code == 302
+        assert "guide" in (response.headers.get("Location") or "")
 
 
 def test_guess_imap_port_proton() -> None:
@@ -261,7 +270,7 @@ def test_help_page_mentions_workspace_imap_host() -> None:
     app = create_app()
     app.config.update(TESTING=True)
     with app.test_client() as client:
-        response = client.get("/help")
+        response = client.get("/guide")
         assert response.status_code == 200
         assert b"imap.gmail.com" in response.data
         assert b"imap.yourschool.org" in response.data

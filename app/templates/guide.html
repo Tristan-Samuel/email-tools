@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}Guide — Inbox Tools{% endblock %}
+
+{% block content %}
+<main class="page-main help-page">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">Guide</h1>
+            <p class="page-subtitle">How Inbox Tools works — triage, search, AI, and connecting mail.</p>
+        </div>
+        <div class="page-header-actions">
+            {% if current_user_email %}
+            <a href="{{ url_for('main.today') }}" class="btn btn-primary">Today</a>
+            {% else %}
+            <a href="{{ url_for('main.signup') }}" class="btn btn-primary">Create account</a>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if current_user_email %}
+    <section class="panel help-panel reveal">
+        <h2 class="panel-title">Today</h2>
+        <p>Your home surface: <strong>Do now</strong> (replies and deadlines), a curated <strong>FYI digest</strong>, and <strong>Waiting on them</strong>. Done, Snooze, and Draft reply without opening every message.</p>
+    </section>
+
+    <section class="panel help-panel reveal">
+        <h2 class="panel-title">Search vs AI</h2>
+        <p>The header search box has two modes. Press <kbd>Tab</kbd> or click <strong>AI</strong> to switch.</p>
+        <ul>
+            <li><strong>Keyword search</strong> — finds mail by words (same as the Search page filters).</li>
+            <li><strong>AI mode</strong> — ask questions (<em>emails about assignments</em>) or run <strong>actions</strong> (<em>list assignments I need to get done</em>). AI searches your summaries even when exact keywords are missing.</li>
+        </ul>
+        <p>Quick action chips appear in AI mode. Try <a href="{{ url_for('main.assignments') }}">Assignments</a> for a persistent due-work board.</p>
+    </section>
+
+    <section class="panel help-panel reveal">
+        <h2 class="panel-title">All mail &amp; keyboard</h2>
+        <p>Browse archive with tags and split-pane preview. On All mail: <kbd>j</kbd>/<kbd>k</kbd> move, <kbd>e</kbd> hide, <kbd>u</kbd> unread. Press <kbd>?</kbd> for shortcuts; <kbd>Ctrl</kbd>+<kbd>K</kbd> opens the command palette.</p>
+    </section>
+
+    <section class="panel help-panel reveal">
+        <h2 class="panel-title">Tags &amp; hidden mail</h2>
+        <p>Tags filter your inbox. Marketing/Newsletters can auto-hide; School never auto-hides. Review buried mail on <a href="{{ url_for('main.hidden') }}">Hidden</a>.</p>
+    </section>
+
+    <section class="panel help-panel reveal">
+        <h2 class="panel-title">Open in Gmail / Outlook</h2>
+        <p>Inbox Tools triages and summarizes — you reply in your real mail app. Use <strong>Open in Gmail</strong> (or Outlook) on a message or AI draft; compose opens in your <em>current browser</em>, not a separate mail handler.</p>
+    </section>
+    {% endif %}
+
+    <section class="panel help-panel reveal" id="app-passwords">
+        <h2 class="panel-title">Connecting your inbox</h2>
+        {% include "_app_password_help.html" %}
+    </section>
+</main>
+{% endblock %}

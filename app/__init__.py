@@ -85,7 +85,7 @@ def create_app() -> Flask:
         SMTP_PASSWORD=os.environ.get("SMTP_PASSWORD", ""),
         SMTP_FROM=os.environ.get("SMTP_FROM", "").strip(),
         SMTP_USE_TLS=os.environ.get("SMTP_USE_TLS", "true").lower() in ("1", "true", "yes"),
-        STATIC_VERSION="29",
+        STATIC_VERSION="30",
     )
 
     app.config["UPLOAD_FOLDER"].mkdir(parents=True, exist_ok=True)
@@ -115,6 +115,18 @@ def create_app() -> Flask:
         ai_pending = 0
         ai_analyzed = 0
         groq_available = False
+        profile_initials = "?"
+        profile_name = ""
+        keyboard_shortcuts = True
+        if user_email:
+            try:
+                from .services import user_prefs
+
+                profile_initials = user_prefs.initials(store, user_email)
+                profile_name = user_prefs.display_name(store, user_email)
+                keyboard_shortcuts = user_prefs.keyboard_shortcuts_enabled(store, user_email)
+            except Exception:
+                profile_initials = user_email[:2].upper() if user_email else "?"
         if user_email:
             try:
                 activity_job = store.get_latest_job(user_email)
@@ -139,6 +151,9 @@ def create_app() -> Flask:
             "ai_pending": ai_pending,
             "ai_analyzed": ai_analyzed,
             "groq_available": groq_available,
+            "profile_initials": profile_initials,
+            "profile_name": profile_name,
+            "keyboard_shortcuts": keyboard_shortcuts,
         }
 
     @app.template_filter("datetimeformat")

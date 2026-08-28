@@ -503,6 +503,107 @@ class GroqClient:
         )
         return parsed if isinstance(parsed, str) and parsed else None
 
+    def classify_inbox_query(self, prompt: str) -> dict | None:
+        if not self.enabled or not (prompt or "").strip():
+            return None
+        parsed, _err = self._complete(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Classify an inbox assistant query. Return JSON only: "
+                        '{"mode": "search"|"action", "action_type": "list_assignments"|"waiting_on_me"|'
+                        '"this_week"|"find_topic"|"custom", "keywords": ["word1", "word2"]}. '
+                        "mode=search when finding emails; mode=action when extracting a task list."
+                    ),
+                },
+                {"role": "user", "content": f"User query: {prompt.strip()}"},
+            ],
+            temperature=0.1,
+            timeout=20,
+        )
+        if not isinstance(parsed, dict):
+            return None
+        mode = str(parsed.get("mode") or "search").strip().lower()
+        action_type = str(parsed.get("action_type") or "find_topic").strip().lower()
+        raw_kw = parsed.get("keywords") or []
+        keywords = [str(k).strip() for k in raw_kw if str(k).strip()] if isinstance(raw_kw, list) else []
+        if mode not in ("search", "action"):
+            mode = "search"
+        if action_type not in (
+            "list_assignments", "waiting_on_me", "this_week", "find_topic", "custom",
+        ):
+            action_type = "find_topic"
+        return {"mode": mode, "action_type": action_type, "keywords": keywords[:8]}
+
+    def extract_action_items(
+        self,
+        prompt: str,
+        action_type: str,
+        emails: list[dict],
+        today: str = "",
+    ) -> tuple[list[dict], str | None]:
+        if not self.enabled or not emails:
+            return [], self.last_error or "No emails to analyze."
+        context_parts = []
+        for e in emails[:30]:
+            bullets = e.get("bullet_summary") or []
+            summary = " ".join(bullets) if bullets else (e.get("preview") or "")
+            context_parts.append(
+                f"ID: {e['email_id']}\n"
+                f"Date: {e.get('received_at', 'unknown')}\n"
+                f"Due: {e.get('due_at') or 'unknown'}\n"
+                f"From: {e.get('sender', '?')}\n"
+                f"Subject: {e.get('subject', '?')}\n"
+                f"Summary: {summary}"
+            )
+        context = "\n\n---\n\n".join(context_parts)
+        today_line = f"Today's date: {today}\n" if today else ""
+        parsed, err = self._complete(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Extract actionable items from emails for the user's request. "
+                        'Return JSON: {"items": [{"email_id": "...", "title": "short task title", '
+                        '"due_at": "YYYY-MM-DD or empty", "status": "open"}]}.'
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"{today_line}Action type: {action_type}\n"
+                        f"User request: {prompt}\n\nEmails:\n\n{context}"
+                    ),
+                },
+            ],
+            temperature=0.1,
+            timeout=40,
+        )
+        if not isinstance(parsed, dict):
+            return [], err
+        raw = parsed.get("items") or []
+        if not isinstance(raw, list):
+            return [], err
+        cleaned: list[dict] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            eid = str(item.get("email_id") or "").strip()
+            title = str(item.get("title") or item.get("reason") or "").strip()
+            if not eid or not title:
+                continue
+            due = str(item.get("due_at") or item.get("due_date") or "")[:10]
+            cleaned.append(
+                {
+                    "email_id": eid,
+                    "title": title,
+                    "due_at": due or None,
+                    "status": "open",
+                }
+            )
+        return cleaned, None
+
     def classify_email_for_tag(
         self,
         tag_name: str,

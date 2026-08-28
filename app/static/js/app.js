@@ -305,3 +305,163 @@ function escapeHtml(value) {
 }
 
 initActivityPanel();
+
+function initHeaderSearch() {
+    const form = document.getElementById("header-search-form");
+    const input = document.getElementById("nav-search");
+    const inner = document.getElementById("searchbar-inner");
+    const aiFlag = document.getElementById("nav-search-ai-flag");
+    const toggle = document.getElementById("search-mode-toggle");
+    const hint = document.getElementById("searchbar-hint");
+    const chips = document.getElementById("search-ai-chips");
+    if (!form || !input || !inner || !aiFlag) return;
+
+    const storageKey = "searchMode";
+    let aiMode = localStorage.getItem(storageKey) === "ai";
+
+    const applyMode = () => {
+        inner.classList.toggle("searchbar-inner--ai", aiMode);
+        aiFlag.value = aiMode ? "1" : "0";
+        input.placeholder = aiMode
+            ? input.dataset.placeholderAi || "Ask a question or run an action…"
+            : input.dataset.placeholderKeyword || "Search…";
+        if (toggle) {
+            toggle.setAttribute("aria-pressed", aiMode ? "true" : "false");
+            toggle.textContent = aiMode ? "Keywords" : "AI";
+        }
+        if (hint) {
+            hint.textContent = aiMode
+                ? "Tab for keyword search · AI finds mail and runs actions"
+                : "Tab to ask AI · search and actions";
+        }
+        if (chips) chips.hidden = !aiMode;
+        localStorage.setItem(storageKey, aiMode ? "ai" : "keyword");
+    };
+
+    const flipMode = () => {
+        aiMode = !aiMode;
+        applyMode();
+    };
+
+    if (toggle) toggle.addEventListener("click", flipMode);
+    input.addEventListener("keydown", (e) => {
+        if (e.key === "Tab" && !e.shiftKey) {
+            e.preventDefault();
+            flipMode();
+        } else if (e.key === "Tab" && e.shiftKey) {
+            e.preventDefault();
+            flipMode();
+        }
+    });
+
+    document.querySelectorAll(".search-ai-chip").forEach((chip) => {
+        chip.addEventListener("click", () => {
+            aiMode = true;
+            applyMode();
+            input.value = chip.dataset.aiPrompt || "";
+            input.focus();
+        });
+    });
+
+    applyMode();
+}
+
+function initAiPromptChips() {
+    document.querySelectorAll("[data-ai-prompt-go]").forEach((chip) => {
+        chip.addEventListener("click", () => {
+            const prompt = chip.dataset.aiPromptGo || "";
+            if (!prompt) return;
+            const url = new URL("/search", window.location.origin);
+            url.searchParams.set("query", prompt);
+            url.searchParams.set("ai", "1");
+            window.location.href = url.toString();
+        });
+    });
+}
+
+function initCommandPalette() {
+    const palette = document.getElementById("command-palette");
+    const input = document.getElementById("command-palette-input");
+    const results = document.getElementById("command-palette-results");
+    if (!palette || !input || !results) return;
+
+    const commands = [
+        { label: "Today", href: "/today", type: "nav" },
+        { label: "All mail", href: "/inbox", type: "nav" },
+        { label: "Search", href: "/search", type: "nav" },
+        { label: "Assignments", href: "/assignments", type: "nav" },
+        { label: "Settings", href: "/settings", type: "nav" },
+        { label: "Guide", href: "/guide", type: "nav" },
+        { label: "AI: List assignments", href: "/search?ai=1&query=List+assignments+I+need+to+get+done", type: "ai" },
+        { label: "AI: Waiting on me", href: "/search?ai=1&query=What+emails+are+waiting+on+me", type: "ai" },
+        { label: "AI: This week", href: "/search?ai=1&query=What+do+I+need+to+handle+this+week", type: "ai" },
+    ];
+
+    const render = (filter) => {
+        const q = (filter || "").trim().toLowerCase();
+        const matches = commands.filter((c) => !q || c.label.toLowerCase().includes(q));
+        results.innerHTML = matches
+            .map(
+                (c) =>
+                    `<li><button type="button" data-href="${escapeHtml(c.href)}">${escapeHtml(c.label)}</button></li>`
+            )
+            .join("");
+        results.querySelectorAll("button").forEach((btn) => {
+            btn.addEventListener("click", () => {
+                window.location.href = btn.dataset.href;
+            });
+        });
+    };
+
+    const open = () => {
+        palette.hidden = false;
+        input.value = "";
+        render("");
+        input.focus();
+    };
+    const close = () => {
+        palette.hidden = true;
+    };
+
+    document.addEventListener("keydown", (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+            if (e.target.matches("input, textarea, select") && e.target.id !== "command-palette-input") return;
+            e.preventDefault();
+            open();
+        }
+        if (e.key === "Escape" && !palette.hidden) close();
+    });
+
+    palette.querySelectorAll("[data-close-palette]").forEach((el) => {
+        el.addEventListener("click", close);
+    });
+    input.addEventListener("input", () => render(input.value));
+}
+
+function initKeyboardSheet() {
+    const sheet = document.getElementById("keyboard-sheet");
+    if (!sheet) return;
+    const enabled = document.body.dataset.keyboardShortcuts !== "0";
+    const open = () => {
+        sheet.hidden = false;
+    };
+    const close = () => {
+        sheet.hidden = true;
+    };
+    document.addEventListener("keydown", (e) => {
+        if (!enabled) return;
+        if (e.key === "?" && !e.target.matches("input, textarea, select")) {
+            e.preventDefault();
+            open();
+        }
+        if (e.key === "Escape" && !sheet.hidden) close();
+    });
+    sheet.querySelectorAll("[data-close-keyboard]").forEach((el) => {
+        el.addEventListener("click", close);
+    });
+}
+
+initHeaderSearch();
+initAiPromptChips();
+initCommandPalette();
+initKeyboardSheet();

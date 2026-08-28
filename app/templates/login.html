@@ -28,7 +28,7 @@
                    placeholder="App Password from your email provider" autocomplete="current-password" autofocus required>
             <p class="panel-hint" style="margin-top:.5rem">
                 Your account password was removed. Verify with the App Password from any connected inbox.
-                <a href="{{ url_for('main.help_page') }}#app-passwords">How to get an App Password</a>
+                <a href="{{ url_for('main.guide_page') }}#app-passwords">How to get an App Password</a>
             </p>
             {% if show_set_password %}
             <label for="new-app-password">Set a new account password (optional)</label>
@@ -48,7 +48,7 @@
         </form>
         <p class="panel-hint auth-footer-hint">
             New here? <a href="{{ url_for('main.signup') }}">Create an account</a>
-            · <a href="{{ url_for('main.help_page') }}">App Password help</a>
+            · <a href="{{ url_for('main.guide_page') }}#app-passwords">App Password help</a>
         </p>
     </section>
 </main>

@@ -119,7 +119,7 @@
         <h2 class="panel-title">Add an IMAP Account</h2>
         <p class="panel-hint">
             Paste your mailbox <strong>App Password</strong> below — not your Inbox Tools login password.
-            <a href="{{ url_for('main.help_page') }}#app-passwords">Step-by-step help</a>
+            <a href="{{ url_for('main.guide_page') }}#app-passwords">Step-by-step help</a>
         </p>
         {% include "_app_password_help.html" %}
         <form action="{{ url_for('main.accounts_add') }}" method="post" class="add-account-form">

@@ -30,7 +30,7 @@ from .services.groq_client import (
     resolve_chat_model,
 )
 from .services.summary import build_digest, build_email_record, build_important_items, fill_summary_fields
-from .services import sync_worker, triage
+from .services import sync_worker, triage, ai_query, user_prefs, webmail
 from .services.triage import build_today_view, rebuild_thread_states, analyze_heuristic_batch
 from .services.sync_worker import JobCancelled, check_cancelled, current_job_is_cancelled
 
@@ -236,10 +236,93 @@ def _search_sort(store, user_email: str) -> str:
     return sort
 
 
-def _mailto_draft(email: dict, draft: str) -> str:
+def _load_fyi_brief(store, user_email: str, fyi_digest: list, ai: AiClient) -> dict | None:
+    from .services.token_budget import pacific_today
+
+    today = pacific_today()
+    cached = user_prefs.get_json_pref(store, user_email, user_prefs.FYI_BRIEF_CACHE, {})
+    if isinstance(cached, dict) and cached.get("date") == today and cached.get("headline"):
+        return cached
+    if not ai.enabled or not fyi_digest:
+        return cached if isinstance(cached, dict) else None
+    email_ids = [str(item.get("email_id") or "") for item in fyi_digest if item.get("email_id")]
+    emails = [store.get_email(eid, user_email=user_email) for eid in email_ids[:20]]
+    emails = [e for e in emails if e]
+    if not emails:
+        return None
+    digest = ai.build_inbox_digest(emails)
+    if not digest:
+        return None
+    payload = {"date": today, **digest}
+    user_prefs.set_json_pref(store, user_email, user_prefs.FYI_BRIEF_CACHE, payload)
+    return payload
+
+
+def _onboarding_state(store, user_email: str, ai: AiClient) -> dict:
+    if user_prefs.get_pref(store, user_email, user_prefs.ONBOARDING_DISMISSED) == "1":
+        return {"show": False}
+    accounts = store.list_imap_accounts(user_email)
+    has_ai = ai.enabled
+    has_mail = bool(store.list_emails(limit=1, user_email=user_email))
+    complete = bool(accounts) and has_ai and has_mail
+    return {
+        "show": not complete,
+        "has_account": bool(accounts),
+        "has_ai": has_ai,
+        "has_mail": has_mail,
+    }
+
+
+def _mailto_draft(email: dict, draft: str, store=None, user_email: str = "") -> str:
     sender = email.get("sender") or ""
     subject = email.get("subject") or ""
-    return f"mailto:{quote(sender)}?subject={quote('Re: ' + subject)}&body={quote(draft)}"
+    re_subject = f"Re: {subject}"
+    account = (email.get("source_account") or "").strip()
+    imap_host = ""
+    if store and user_email and account:
+        acct = store.get_imap_account_by_email(user_email, account)
+        imap_host = (acct or {}).get("imap_host") or ""
+    pref = user_prefs.open_in_provider(store, user_email) if store and user_email else "auto"
+    provider = webmail.resolve_provider(imap_host, pref)
+    links = webmail.compose_links(
+        provider=provider,
+        account_email=account,
+        to_addr=sender,
+        subject=re_subject,
+        body=draft,
+    )
+    return links.get("primary") or webmail.mailto_url(sender, re_subject, draft)
+
+
+def _compose_context(email: dict, draft: str, store, user_email: str) -> dict:
+    sender = email.get("sender") or ""
+    subject = email.get("subject") or ""
+    re_subject = f"Re: {subject}"
+    account = (email.get("source_account") or "").strip()
+    acct = store.get_imap_account_by_email(user_email, account) if account else None
+    imap_host = (acct or {}).get("imap_host") or ""
+    pref = user_prefs.open_in_provider(store, user_email)
+    provider = webmail.resolve_provider(imap_host, pref)
+    links = webmail.compose_links(
+        provider=provider,
+        account_email=account,
+        to_addr=sender,
+        subject=re_subject,
+        body=draft,
+    )
+    open_url = webmail.open_message_url(
+        provider=provider,
+        account_email=account,
+        message_id=email.get("message_id") or "",
+        subject=subject,
+    )
+    return {
+        "compose_url": links.get("primary"),
+        "compose_secondary": links.get("secondary"),
+        "compose_label": links.get("label") or "Open in mail app",
+        "open_in_webmail_url": open_url,
+        "webmail_provider": provider,
+    }
 
 
 def _invalidate_needs_reply_cache(store=None, user_email: str = "") -> None:
@@ -933,7 +1016,12 @@ def signup():
 
 @bp.get("/help")
 def help_page():
-    return render_template("help.html")
+    return redirect(url_for("main.guide_page", _anchor="app-passwords"))
+
+
+@bp.get("/guide")
+def guide_page():
+    return render_template("guide.html")
 
 
 @bp.post("/logout")
@@ -947,6 +1035,10 @@ def logout():
 @bp.get("/")
 def index():
     if getattr(g, "current_user_email", ""):
+        store = get_store()
+        page = user_prefs.start_page(store, g.current_user_email)
+        if page == "inbox":
+            return redirect(url_for("main.inbox"))
         return redirect(url_for("main.today"))
     return redirect(url_for("main.login"))
 
@@ -975,12 +1067,18 @@ def today():
     draft_reply = None
     draft_email = None
     mailto_link = None
+    compose_ctx: dict = {}
     if session.get("today_draft"):
         draft_payload = session.pop("today_draft")
         draft_reply = draft_payload.get("draft")
         draft_email = store.get_email(draft_payload.get("email_id", ""), user_email=user_email)
         if draft_email and draft_reply:
-            mailto_link = _mailto_draft(draft_email, draft_reply)
+            mailto_link = _mailto_draft(draft_email, draft_reply, store, user_email)
+            compose_ctx = _compose_context(draft_email, draft_reply, store, user_email)
+
+    fyi_brief = _load_fyi_brief(store, user_email, view.get("fyi_digest") or [], ai)
+    onboarding = _onboarding_state(store, user_email, ai)
+    ai_chips = user_prefs.saved_ai_prompts(store, user_email)
 
     if ai.enabled and ai_pending > 0 and store.get_active_job(user_email) is None:
         _queue_job(user_email, "reanalyze", f"Analyze {ai_pending} email(s) with AI")
@@ -1002,6 +1100,10 @@ def today():
         draft_reply=draft_reply,
         draft_email=draft_email,
         mailto_link=mailto_link,
+        compose_ctx=compose_ctx,
+        fyi_brief=fyi_brief,
+        onboarding=onboarding,
+        ai_chips=ai_chips,
     )
 
 
@@ -1242,6 +1344,18 @@ def email_detail(email_id: str):
         _cache_ai_model(ai)
     if not email.get("is_read"):
         store.set_email_read(email_id, user_email, True)
+    compose_ctx = {}
+    if draft_reply:
+        compose_ctx = _compose_context(email, draft_reply, store, user_email)
+    acct = store.get_imap_account_by_email(user_email, account) if account else None
+    pref = user_prefs.open_in_provider(store, user_email)
+    provider = webmail.resolve_provider((acct or {}).get("imap_host") or "", pref)
+    open_in_webmail_url = webmail.open_message_url(
+        provider=provider,
+        account_email=account,
+        message_id=email.get("message_id") or "",
+        subject=email.get("subject") or "",
+    )
     return render_template(
         "email_detail.html",
         email=email,
@@ -1252,7 +1366,10 @@ def email_detail(email_id: str):
         assigned_tag_ids=assigned_tag_ids,
         thread_emails=thread_emails,
         draft_reply=draft_reply,
-        mailto_link=_mailto_draft(email, draft_reply) if draft_reply else "",
+        mailto_link=_mailto_draft(email, draft_reply, store, user_email) if draft_reply else "",
+        compose_ctx=compose_ctx,
+        open_in_webmail_url=open_in_webmail_url,
+        webmail_provider=provider,
     )
 
 
@@ -1426,6 +1543,17 @@ def email_draft_reply(email_id: str):
         flash("Could not generate a draft reply.", "error")
         return redirect(url_for("main.email_detail", email_id=email_id))
 
+    compose_ctx = _compose_context(email, draft, store, user_email)
+    account = (email.get("source_account") or "").strip()
+    acct = store.get_imap_account_by_email(user_email, account) if account else None
+    pref = user_prefs.open_in_provider(store, user_email)
+    provider = webmail.resolve_provider((acct or {}).get("imap_host") or "", pref)
+    open_in_webmail_url = webmail.open_message_url(
+        provider=provider,
+        account_email=account,
+        message_id=email.get("message_id") or "",
+        subject=email.get("subject") or "",
+    )
     return render_template(
         "email_detail.html",
         email=email,
@@ -1436,7 +1564,10 @@ def email_draft_reply(email_id: str):
         assigned_tag_ids={t["id"] for t in store.get_email_tags(email_id)},
         thread_emails=store.list_thread_emails(email.get("thread_id", ""), user_email),
         draft_reply=draft,
-        mailto_link=_mailto_draft(email, draft),
+        mailto_link=_mailto_draft(email, draft, store, user_email),
+        compose_ctx=compose_ctx,
+        open_in_webmail_url=open_in_webmail_url,
+        webmail_provider=provider,
     )
 
 
@@ -1695,6 +1826,8 @@ def search_page():
     emails: list = []
     ai_answer: str | None = None
     ai_no_candidates = False
+    ai_result: dict | None = None
+    action_items: list = []
     searched = bool(
         query or sender_filter or recipient_filter or subject_filter
         or category or date_from or date_to or tag_filter
@@ -1713,22 +1846,35 @@ def search_page():
     )
 
     if searched:
-        if query:
+        if ai_mode and query:
+            ai = get_ai_client()
+            if ai.enabled:
+                ai_result = ai_query.run_inbox_query(
+                    store,
+                    ai,
+                    user_email,
+                    query,
+                    source_account=source_account,
+                )
+                emails = ai_result.get("emails") or []
+                ai_answer = ai_result.get("answer")
+                action_items = ai_result.get("action_items") or []
+                if ai_result.get("empty") and ai_result.get("mode") == "search":
+                    ai_no_candidates = not emails
+                elif ai_result.get("error"):
+                    flash(f"AI query failed — {ai_result['error']}", "error")
+            else:
+                flash("Add a Gemini or Groq API key in Settings to use AI search.", "error")
+        elif query:
             emails = store.search(query, sort=sort, **common_kwargs)
+            if ai_mode:
+                ai = get_ai_client()
+                if ai.enabled and emails:
+                    ai_answer = ai.answer_about_emails(query, emails)
+                elif ai_mode and not emails:
+                    ai_no_candidates = True
         else:
             emails = store.list_emails(sort=sort, **common_kwargs)
-
-        if ai_mode and query:
-            if not emails:
-                ai_no_candidates = True
-            else:
-                ai = get_ai_client()
-                if ai.enabled:
-                    ai_answer = ai.answer_about_emails(query, emails)
-                    if ai_answer is None:
-                        flash("AI search failed — check your Groq key.", "error")
-                else:
-                    flash("Add a Gemini or Groq API key in Settings to use AI search.", "error")
 
     categories = store.get_categories(user_email=user_email)
     tags = store.list_tags(user_email)
@@ -1746,6 +1892,8 @@ def search_page():
         ai_mode=ai_mode,
         ai_answer=ai_answer,
         ai_no_candidates=ai_no_candidates,
+        ai_result=ai_result,
+        action_items=action_items,
         searched=searched,
         groq_available=groq_available,
         date_from=date_from or "",
@@ -1754,6 +1902,56 @@ def search_page():
         selected_tag=tag_filter,
         sort=sort,
     )
+
+
+@bp.get("/assignments")
+def assignments():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    store = get_store()
+    user_email = g.current_user_email
+    items = store.list_assignment_board(user_email)
+    ai = get_ai_client(user_email)
+    return render_template(
+        "assignments.html",
+        items=items,
+        groq_available=ai.enabled,
+        ai_chips=user_prefs.saved_ai_prompts(store, user_email),
+    )
+
+
+@bp.post("/assignments/done/<int:item_id>")
+def assignments_done(item_id: int):
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    store = get_store()
+    user_email = g.current_user_email
+    if store.set_assignment_status(user_email, item_id, "done"):
+        flash("Assignment marked done.", "success")
+    return redirect(url_for("main.assignments"))
+
+
+@bp.post("/onboarding/dismiss")
+def onboarding_dismiss():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    user_prefs.set_pref(get_store(), g.current_user_email, user_prefs.ONBOARDING_DISMISSED, "1")
+    return redirect(request.referrer or url_for("main.today"))
+
+
+@bp.post("/today/fyi-brief/regenerate")
+def today_fyi_brief_regenerate():
+    login_redirect = require_login()
+    if login_redirect is not None:
+        return login_redirect
+    store = get_store()
+    user_email = g.current_user_email
+    user_prefs.set_json_pref(store, user_email, user_prefs.FYI_BRIEF_CACHE, {})
+    flash("FYI brief will refresh on next Today load.", "success")
+    return redirect(url_for("main.today"))
 
 
 @bp.post("/search/save-tag")
@@ -2012,7 +2210,55 @@ def settings():
                         f"Rescan started for {cleared} email(s) — watch the activity panel.",
                         "success",
                     )
-            return redirect(url_for("main.settings"))
+            return redirect(url_for("main.settings", section=request.form.get("section") or "ai"))
+
+        if action == "save_profile_prefs":
+            user_prefs.set_pref(store, user_email, user_prefs.DISPLAY_NAME, (request.form.get("display_name") or "").strip())
+            start = (request.form.get("start_page") or "today").strip().lower()
+            if start not in user_prefs.VALID_START_PAGES:
+                start = "today"
+            user_prefs.set_pref(store, user_email, user_prefs.START_PAGE, start)
+            user_prefs.set_pref(store, user_email, user_prefs.FYI_CAP, (request.form.get("fyi_cap") or "12").strip())
+            user_prefs.set_pref(store, user_email, user_prefs.SNOOZE_DEFAULT_DAYS, (request.form.get("snooze_default_days") or "3").strip())
+            shortcuts = "1" if request.form.get("keyboard_shortcuts") == "1" else "0"
+            user_prefs.set_pref(store, user_email, user_prefs.KEYBOARD_SHORTCUTS, shortcuts)
+            user_prefs.set_pref(store, user_email, user_prefs.TIMEZONE, (request.form.get("timezone") or "").strip())
+            fmt = (request.form.get("date_format") or "mdy").strip().lower()
+            if fmt not in user_prefs.VALID_DATE_FORMATS:
+                fmt = "mdy"
+            user_prefs.set_pref(store, user_email, user_prefs.DATE_FORMAT, fmt)
+            user_prefs.set_pref(store, user_email, user_prefs.DEFAULT_SYNC_DAYS, (request.form.get("default_sync_days") or "90").strip())
+            user_prefs.set_pref(store, user_email, user_prefs.DEFAULT_SYNC_MAX, (request.form.get("default_sync_max") or "200").strip())
+            flash("Profile and inbox preferences saved.", "success")
+            return redirect(url_for("main.settings", section="profile"))
+
+        if action == "save_ai_models":
+            gemini_model = (request.form.get("gemini_model") or "").strip()
+            groq_model_val = (request.form.get("groq_model") or "").strip()
+            if gemini_model in user_prefs.ALLOWED_GEMINI_MODELS:
+                user_prefs.set_pref(store, user_email, user_prefs.GEMINI_MODEL, gemini_model)
+            if groq_model_val in user_prefs.ALLOWED_GROQ_MODELS:
+                user_prefs.set_pref(store, user_email, user_prefs.GROQ_MODEL, groq_model_val)
+            flash("AI model preferences saved.", "success")
+            return redirect(url_for("main.settings", section="ai"))
+
+        if action == "save_mail_prefs":
+            open_in = (request.form.get("open_in_provider") or "auto").strip().lower()
+            if open_in not in user_prefs.VALID_OPEN_IN:
+                open_in = "auto"
+            user_prefs.set_pref(store, user_email, user_prefs.OPEN_IN_PROVIDER, open_in)
+            flash("Mail app preferences saved.", "success")
+            return redirect(url_for("main.settings", section="mail"))
+
+        if action == "save_ai_prompt":
+            label = (request.form.get("chip_label") or "").strip()
+            prompt = (request.form.get("chip_prompt") or "").strip()
+            if label and prompt:
+                chips = user_prefs.saved_ai_prompts(store, user_email)
+                chips.append({"label": label, "prompt": prompt})
+                user_prefs.set_json_pref(store, user_email, user_prefs.SAVED_AI_PROMPTS, chips[-12:])
+                flash("AI prompt saved.", "success")
+            return redirect(url_for("main.settings", section="ai"))
 
         groq_key = (request.form.get("groq_api_key") or "").strip()
         if groq_key:
@@ -2030,12 +2276,17 @@ def settings():
     has_app_password = bool(store.get_app_password_hash(user_email))
     ai_analyzed, ai_pending = store.count_ai_stats(user_email)
     sender_rules = store.list_sender_rule_rows(user_email)
+    from .services.token_budget import BudgetLimits
+
+    limits = BudgetLimits.from_env()
+    tokens_used = store.gemini_tokens_used_today(user_email)
+    section = (request.args.get("section") or "appearance").strip().lower()
     return render_template(
         "settings.html",
         has_groq_key=has_groq_key,
         has_gemini_key=has_gemini_key,
-        active_model=active_model,
-        groq_model=groq_model,
+        active_model=user_prefs.get_pref(store, user_email, user_prefs.GEMINI_MODEL) or active_model,
+        groq_model=user_prefs.get_pref(store, user_email, user_prefs.GROQ_MODEL) or groq_model,
         has_app_password=has_app_password,
         ai_analyzed=ai_analyzed,
         ai_pending=ai_pending,
@@ -2044,6 +2295,22 @@ def settings():
         inbox_summary_size=_inbox_summary_size(store, user_email),
         search_sort=_search_sort(store, user_email),
         sender_rules=sender_rules,
+        section=section,
+        display_name=user_prefs.display_name(store, user_email),
+        start_page=user_prefs.start_page(store, user_email),
+        fyi_cap=user_prefs.fyi_cap(store, user_email),
+        snooze_default_days=user_prefs.snooze_default_days(store, user_email),
+        keyboard_shortcuts=user_prefs.keyboard_shortcuts_enabled(store, user_email),
+        timezone_pref=user_prefs.get_pref(store, user_email, user_prefs.TIMEZONE),
+        date_format=user_prefs.get_pref(store, user_email, user_prefs.DATE_FORMAT, "mdy"),
+        default_sync_days=user_prefs.get_pref(store, user_email, user_prefs.DEFAULT_SYNC_DAYS, "90"),
+        default_sync_max=user_prefs.get_pref(store, user_email, user_prefs.DEFAULT_SYNC_MAX, "200"),
+        open_in_provider=user_prefs.open_in_provider(store, user_email),
+        gemini_tpd=limits.tpd,
+        gemini_tokens_used=tokens_used,
+        allowed_gemini_models=user_prefs.ALLOWED_GEMINI_MODELS,
+        allowed_groq_models=user_prefs.ALLOWED_GROQ_MODELS,
+        saved_ai_prompts=user_prefs.saved_ai_prompts(store, user_email),
     )
 
 

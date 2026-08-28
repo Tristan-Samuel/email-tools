@@ -8,6 +8,11 @@
         <div class="detail-nav" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
             <a href="{{ url_for('main.today') }}" class="back-link">&#8592; Back to Today</a>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                {% if open_in_webmail_url %}
+                <a href="{{ open_in_webmail_url }}" class="btn btn-teal" style="padding:5px 12px;font-size:.8rem" target="_blank" rel="noopener">
+                    {% if webmail_provider == 'outlook' %}Open in Outlook{% else %}Open in Gmail{% endif %}
+                </a>
+                {% endif %}
                 {% if tags %}
                 <div style="display:flex;gap:6px;flex-wrap:wrap">
                     {% for tag in tags %}
@@ -77,8 +82,13 @@
         <pre class="draft-reply-text">{{ draft_reply }}</pre>
         <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
             <button type="button" class="btn btn-primary" onclick="navigator.clipboard.writeText(document.querySelector('.draft-reply-text').textContent)">Copy</button>
-            {% if mailto_link %}
+            {% if compose_ctx.compose_url %}
+            <a href="{{ compose_ctx.compose_url }}" class="btn btn-teal" target="_blank" rel="noopener">{{ compose_ctx.compose_label }}</a>
+            {% elif mailto_link %}
             <a href="{{ mailto_link }}" class="btn btn-teal">Open in mail app</a>
+            {% endif %}
+            {% if compose_ctx.compose_secondary %}
+            <a href="{{ compose_ctx.compose_secondary }}" class="btn btn-ghost" target="_blank" rel="noopener">Mail app</a>
             {% endif %}
             {% if groq_available %}
             <form action="{{ url_for('main.email_draft_reply', email_id=email.email_id) }}" method="post">

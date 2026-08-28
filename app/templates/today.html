@@ -34,9 +34,54 @@
                 <button type="submit" class="btn btn-ghost">Rescan all summaries</button>
             </form>
             {% endif %}
+            <a href="{{ url_for('main.assignments') }}" class="btn btn-ghost">Assignments</a>
             <a href="{{ url_for('main.inbox') }}" class="btn btn-ghost">All mail →</a>
         </div>
     </div>
+
+    {% if onboarding and onboarding.show %}
+    <section class="onboarding-banner panel reveal">
+        <p class="eyebrow">Getting started</p>
+        <div class="onboarding-checklist">
+            <span>{% if onboarding.has_account %}✓{% else %}○{% endif %} Connect IMAP — <a href="{{ url_for('main.accounts_add') }}">Add account</a></span>
+            <span>{% if onboarding.has_ai %}✓{% else %}○{% endif %} Add AI key — <a href="{{ url_for('main.settings', section='ai') }}">Settings</a></span>
+            <span>{% if onboarding.has_mail %}✓{% else %}○{% endif %} Sync mail</span>
+            <span><a href="{{ url_for('main.guide_page') }}">Read the guide</a></span>
+        </div>
+        <form action="{{ url_for('main.onboarding_dismiss') }}" method="post" style="margin-top:8px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-ghost" style="font-size:.78rem">Dismiss checklist</button>
+        </form>
+    </section>
+    {% endif %}
+
+    <div class="ai-chips-row reveal">
+        {% for chip in ai_chips %}
+        <button type="button" class="ai-prompt-chip" data-ai-prompt-go="{{ chip.prompt }}">{{ chip.label }}</button>
+        {% endfor %}
+    </div>
+
+    {% if fyi_brief and fyi_brief.headline %}
+    <section class="panel fyi-brief-panel reveal" style="padding:16px 20px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+            <div>
+                <p class="eyebrow">This week's FYI</p>
+                <p style="margin:0;font-weight:700">{{ fyi_brief.headline }}</p>
+                {% if fyi_brief.bullets %}
+                <ul style="margin:8px 0 0;padding-left:18px;font-size:.88rem">
+                    {% for b in fyi_brief.bullets %}
+                    <li>{% if b.email_id %}<a href="{{ url_for('main.email_detail', email_id=b.email_id) }}">{{ b.text }}</a>{% else %}{{ b.text }}{% endif %}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
+            <form action="{{ url_for('main.today_fyi_brief_regenerate') }}" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-ghost" style="font-size:.78rem">Regenerate</button>
+            </form>
+        </div>
+    </section>
+    {% endif %}
 
     {% if draft_reply and draft_email %}
     <section class="panel" style="padding:20px;margin-bottom:16px">
@@ -44,8 +89,13 @@
         <pre class="draft-reply-text">{{ draft_reply }}</pre>
         <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
             <button type="button" class="btn btn-primary" onclick="navigator.clipboard.writeText(document.querySelector('.draft-reply-text').textContent)">Copy draft</button>
-            {% if mailto_link %}
+            {% if compose_ctx.compose_url %}
+            <a href="{{ compose_ctx.compose_url }}" class="btn btn-teal" target="_blank" rel="noopener">{{ compose_ctx.compose_label }}</a>
+            {% elif mailto_link %}
             <a href="{{ mailto_link }}" class="btn btn-teal">Open in mail app</a>
+            {% endif %}
+            {% if compose_ctx.compose_secondary %}
+            <a href="{{ compose_ctx.compose_secondary }}" class="btn btn-ghost" target="_blank" rel="noopener">Mail app</a>
             {% endif %}
             <a href="{{ url_for('main.today') }}" class="btn btn-ghost">← Back to Today</a>
         </div>
