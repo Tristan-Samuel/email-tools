@@ -10,6 +10,7 @@ from pathlib import Path
 from flask import Flask, g, request, session
 from flask_wtf.csrf import CSRFProtect
 from markupsafe import Markup
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .routes import register_routes
 from .services.gemini_client import DEFAULT_GEMINI_MODEL, resolve_gemini_model
@@ -69,10 +70,14 @@ def create_app() -> Flask:
     secret_key = _load_secret_key(Path(app.instance_path))
     groq_model = resolve_chat_model(os.environ.get("GROQ_DEFAULT_MODEL", DEFAULT_CHAT_MODEL))
     gemini_model = resolve_gemini_model(os.environ.get("GEMINI_DEFAULT_MODEL", DEFAULT_GEMINI_MODEL))
+    is_production = os.environ.get("FLASK_ENV") == "production" or os.environ.get("ENV") == "production"
+    database = os.environ.get("EMAIL_TOOLS_DATABASE", "").strip()
+    db_path = Path(database) if database else Path(app.instance_path) / "email_tools.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     app.config.from_mapping(
         SECRET_KEY=secret_key,
         CREDENTIAL_ENCRYPTION_KEY=_credential_encryption_key(secret_key),
-        DATABASE=Path(app.instance_path) / "email_tools.db",
+        DATABASE=db_path,
         UPLOAD_FOLDER=Path(app.instance_path) / "uploads",
         MAX_CONTENT_LENGTH=50 * 1024 * 1024,
         GROQ_API_KEY=os.environ.get("GROQ_API_KEY", ""),
@@ -86,7 +91,13 @@ def create_app() -> Flask:
         SMTP_FROM=os.environ.get("SMTP_FROM", "").strip(),
         SMTP_USE_TLS=os.environ.get("SMTP_USE_TLS", "true").lower() in ("1", "true", "yes"),
         STATIC_VERSION="32",
+        SESSION_COOKIE_SECURE=is_production,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_HTTPONLY=True,
+        PREFERRED_URL_SCHEME="https" if is_production else "http",
     )
+
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
     app.config["UPLOAD_FOLDER"].mkdir(parents=True, exist_ok=True)
 
@@ -154,6 +165,7 @@ def create_app() -> Flask:
             "profile_initials": profile_initials,
             "profile_name": profile_name,
             "keyboard_shortcuts": keyboard_shortcuts,
+            "signup_invite_required": bool(os.environ.get("SIGNUP_INVITE_TOKEN", "").strip()),
         }
 
     @app.template_filter("datetimeformat")
@@ -295,6 +307,10 @@ def create_app() -> Flask:
                 content = _linkify_body_paragraph(para)
                 result.append(f"<p>{content}</p>")
         return Markup("\n".join(result) or "<p><em>No body content.</em></p>")
+
+    @app.get("/health")
+    def health() -> dict:
+        return {"ok": True}
 
     register_routes(app)
     return app

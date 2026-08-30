@@ -21,6 +21,9 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="action" value="confirm">
             <input type="hidden" name="email" value="{{ prefill_email }}">
+            {% if signup_invite_required %}
+            <input type="hidden" name="invite_token" value="{{ session.get('signup_invite_token', '') }}">
+            {% endif %}
 
             <label for="verification-code">Verification code</label>
             <input id="verification-code" name="verification_code" type="text" inputmode="numeric"
@@ -42,6 +45,9 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="action" value="resend_code">
             <input type="hidden" name="email" value="{{ prefill_email }}">
+            {% if signup_invite_required %}
+            <input type="hidden" name="invite_token" value="{{ session.get('signup_invite_token', '') }}">
+            {% endif %}
             <button type="submit" class="btn btn-ghost btn-sm">Resend code</button>
         </form>
         {% else %}
@@ -55,6 +61,12 @@
             <label for="signup-email">Email address</label>
             <input id="signup-email" name="email" type="email" required placeholder="you@gmail.com"
                    value="{{ prefill_email or '' }}" autocomplete="email" autofocus>
+
+            {% if signup_invite_required %}
+            <label for="invite-token" style="margin-top:1.2rem">Invite token</label>
+            <input id="invite-token" name="invite_token" type="password" required
+                   autocomplete="off" placeholder="Required on this server">
+            {% endif %}
 
             <button type="submit" style="margin-top:1.5rem">Send verification code →</button>
         </form>

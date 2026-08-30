@@ -2,6 +2,11 @@
 __pycache__/
 *.pyc
 instance/email_tools.db
+instance/email_tools.db-*
+instance/secret_key
 instance/uploads/*
 !.gitkeep
 .env
+graphify-out/
+.pytest_cache/
+.DS_Store

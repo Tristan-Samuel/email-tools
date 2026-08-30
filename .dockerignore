@@ -1,0 +1,16 @@
+.venv
+.git
+.gitignore
+.pytest_cache
+.cursor
+graphify-out
+tests
+instance/*.db
+instance/*.db-*
+instance/secret_key
+.env
+__pycache__
+*.pyc
+.DS_Store
+*.md
+!README.md

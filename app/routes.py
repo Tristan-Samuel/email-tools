@@ -978,6 +978,34 @@ def login():
     return render_template("login.html")
 
 
+def _consteq(left: str, right: str) -> bool:
+    return secrets.compare_digest(
+        hashlib.sha256(left.encode("utf-8")).digest(),
+        hashlib.sha256(right.encode("utf-8")).digest(),
+    )
+
+
+def _signup_blocked(user_email: str) -> str | None:
+    """Return an error message if signup is not allowed on this server."""
+    allowed = os.environ.get("SIGNUP_ALLOWED_EMAIL", "").strip()
+    invite = os.environ.get("SIGNUP_INVITE_TOKEN", "").strip()
+    is_production = os.environ.get("FLASK_ENV") == "production" or os.environ.get("ENV") == "production"
+    if is_production and not allowed and not invite:
+        return "Signup is disabled on this server."
+    if allowed:
+        emails = {item.strip().lower() for item in allowed.split(",") if item.strip()}
+        if user_email not in emails:
+            return "This email is not allowed to create an account."
+    if invite:
+        provided = (
+            request.form.get("invite_token") or session.get("signup_invite_token") or ""
+        ).strip()
+        if not _consteq(provided, invite):
+            return "Invalid invite token."
+        session["signup_invite_token"] = provided
+    return None
+
+
 @bp.route("/signup", methods=["GET", "POST"])
 def signup():
     if getattr(g, "current_user_email", ""):
@@ -996,6 +1024,10 @@ def signup():
             if not _valid_email(user_email):
                 flash("Enter a valid email address.", "error")
                 return render_template("signup.html", step="email")
+            blocked = _signup_blocked(user_email)
+            if blocked:
+                flash(blocked, "error")
+                return render_template("signup.html", step="email", prefill_email=user_email)
             if store.get_app_password_hash(user_email):
                 flash("An account already exists for this email. Log in instead.", "error")
                 return redirect(url_for("main.login"))
@@ -1018,6 +1050,10 @@ def signup():
             if not _valid_email(user_email):
                 flash("Enter a valid email address.", "error")
                 return render_template("signup.html", step="email")
+            blocked = _signup_blocked(user_email)
+            if blocked:
+                flash(blocked, "error")
+                return render_template("signup.html", step="email", prefill_email=user_email)
             if store.get_app_password_hash(user_email):
                 flash("An account already exists for this email. Log in instead.", "error")
                 return redirect(url_for("main.login"))
@@ -1045,6 +1081,10 @@ def signup():
             if not _valid_email(user_email):
                 flash("Enter a valid email address.", "error")
                 return render_template("signup.html", step="email")
+            blocked = _signup_blocked(user_email)
+            if blocked:
+                flash(blocked, "error")
+                return render_template("signup.html", step="email", prefill_email=user_email)
             if store.get_app_password_hash(user_email):
                 flash("An account already exists for this email. Log in instead.", "error")
                 return redirect(url_for("main.login"))
@@ -2892,6 +2932,8 @@ def tags_apply_ai_background():
 
 def register_routes(app):
     app.register_blueprint(bp)
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return
     from .services.sync_worker import start_sync_worker
 
     start_sync_worker(

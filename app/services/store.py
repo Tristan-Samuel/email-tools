@@ -35,9 +35,11 @@ class EmailStore:
         self.fts_enabled = False
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
+        connection = sqlite3.connect(self.database_path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout=5000")
         return connection
 
     def _table_columns(self, connection: sqlite3.Connection, table: str) -> set[str]:
