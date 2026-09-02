@@ -100,6 +100,9 @@ If you **remove your account password** in Settings, the next login requires the
 | `GROQ_DEFAULT_MODEL` | Model when automatic discovery fails (default: `openai/gpt-oss-20b`). Groq retired `llama-3.3-70b-versatile` on 2026-08-16. |
 | `FLASK_SECRET_KEY` | Flask session secret. **Required in production.** In development, a random key is persisted in `instance/secret_key` if unset. |
 | `CREDENTIAL_ENCRYPTION_KEY` | Optional dedicated key for encrypting IMAP, Groq, and Gemini credentials at rest. If unset, derived separately from `FLASK_SECRET_KEY`. |
+| `SIGNUP_OPEN` | Set to `true` to allow anyone to create an account. Production requires this, `SIGNUP_ALLOWED_EMAIL`, or `SIGNUP_INVITE_TOKEN`. |
+| `SIGNUP_ALLOWED_EMAIL` | Optional comma-separated allowlist. If set, only these emails can sign up (even when `SIGNUP_OPEN` is true). |
+| `SIGNUP_INVITE_TOKEN` | Optional shared invite token. If set, signup requires that token. |
 | `SMTP_HOST` | Outbound SMTP host for signup verification emails. Required in production; if unset in development, the code is shown on the signup page. |
 | `SMTP_PORT` | SMTP port (default: `587`). |
 | `SMTP_USERNAME` | SMTP login username (often the sending mailbox address). |

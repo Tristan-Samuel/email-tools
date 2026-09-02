@@ -13,6 +13,7 @@ def isolate_email_tools_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     monkeypatch.setenv("EMAIL_TOOLS_DATABASE", str(db_path))
     monkeypatch.delenv("SIGNUP_ALLOWED_EMAIL", raising=False)
     monkeypatch.delenv("SIGNUP_INVITE_TOKEN", raising=False)
+    monkeypatch.delenv("SIGNUP_OPEN", raising=False)
     monkeypatch.delenv("FLASK_ENV", raising=False)
     monkeypatch.delenv("ENV", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)

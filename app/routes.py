@@ -99,6 +99,10 @@ def _is_production_app() -> bool:
     return os.environ.get("FLASK_ENV") == "production" or os.environ.get("ENV") == "production"
 
 
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _valid_email(email: str) -> bool:
     return "@" in email and "." in email.split("@")[-1]
 
@@ -989,8 +993,8 @@ def _signup_blocked(user_email: str) -> str | None:
     """Return an error message if signup is not allowed on this server."""
     allowed = os.environ.get("SIGNUP_ALLOWED_EMAIL", "").strip()
     invite = os.environ.get("SIGNUP_INVITE_TOKEN", "").strip()
-    is_production = os.environ.get("FLASK_ENV") == "production" or os.environ.get("ENV") == "production"
-    if is_production and not allowed and not invite:
+    open_signup = _env_flag("SIGNUP_OPEN")
+    if _is_production_app() and not allowed and not invite and not open_signup:
         return "Signup is disabled on this server."
     if allowed:
         emails = {item.strip().lower() for item in allowed.split(",") if item.strip()}
