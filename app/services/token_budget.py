@@ -40,6 +40,7 @@ class BudgetLimits:
     output_reserve: int = 16_384
     max_output_tokens: int = 65_536
     tokens_per_email_output: int = 180
+    thinking_reserve: int = 4096
     max_emails_per_batch: int = 130
     body_chars: int = 6000
     tpm_safety: float = 0.7
@@ -156,7 +157,7 @@ def pack_email_batch(
                 block_tokens = counter.count(block)
 
         next_count = len(packed) + 1
-        output_budget = next_count * limits.tokens_per_email_output
+        output_budget = next_count * limits.tokens_per_email_output + limits.thinking_reserve
         if output_budget > limits.max_output_budget():
             break
 

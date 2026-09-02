@@ -153,48 +153,44 @@ class AiClient:
                     total,
                     phase="summarize",
                 )
-            tracker.wait_for_rpm_slot()
-            tracker.mark_request_started()
-            results = self._gemini.analyze_emails_batch(packed, blocks=blocks)
-            tokens = self._gemini.last_tokens_used
-            tracker.record_tokens(tokens)
-            self.last_error = self._gemini.last_error
-            self.last_model_used = self._gemini.last_model_used
-            self.last_provider = "gemini"
+            while packed:
+                tracker.wait_for_rpm_slot()
+                tracker.mark_request_started()
+                results = self._gemini.analyze_emails_batch(packed, blocks=blocks)
+                tokens = self._gemini.last_tokens_used
+                tracker.record_tokens(tokens)
+                self.last_error = self._gemini.last_error
+                self.last_model_used = self._gemini.last_model_used
+                self.last_provider = "gemini"
 
-            if not results:
+                if results:
+                    yield (packed, results, tokens)
+                    remaining = remaining[len(packed) :]
+                    processed += len(packed)
+                    break
+
                 err = self._gemini.last_error or ""
                 if err == "Cancelled.":
-                    break
-                if err and len(packed) > 1:
-                    half = max(1, len(packed) // 2)
-                    packed = packed[:half]
-                    blocks = blocks[:half]
+                    return
+                if self._gemini_failed(err):
+                    self.disable_gemini_for_job(err)
                     if on_progress:
-                        on_progress(
-                            f"Retrying with {len(packed)} email(s)…",
-                            processed,
-                            total,
-                            phase="summarize",
-                        )
-                    tracker.wait_for_rpm_slot()
-                    tracker.mark_request_started()
-                    results = self._gemini.analyze_emails_batch(packed, blocks=blocks)
-                    tokens = self._gemini.last_tokens_used
-                    tracker.record_tokens(tokens)
-                    self.last_error = self._gemini.last_error
-                    self.last_model_used = self._gemini.last_model_used
-                    err = self._gemini.last_error or ""
-                if not results:
-                    if err:
-                        self.disable_gemini_for_job(err)
-                        if on_progress:
-                            on_progress(f"Gemini error: {err}")
+                        on_progress(f"Gemini error: {err}")
+                    return
+                if len(packed) <= 1:
+                    yield (packed, {}, tokens)
+                    remaining = remaining[1:]
+                    processed += 1
                     break
-
-            yield (packed, results, tokens)
-            remaining = remaining[len(packed) :]
-            processed += len(packed)
+                packed = packed[: max(1, len(packed) // 2)]
+                blocks = blocks[: len(packed)]
+                if on_progress:
+                    on_progress(
+                        f"Retrying with {len(packed)} email(s)…",
+                        processed,
+                        total,
+                        phase="summarize",
+                    )
 
     def summarize_email(self, sender: str, subject: str, body: str) -> dict[str, object] | None:
         self._sync_cancel()

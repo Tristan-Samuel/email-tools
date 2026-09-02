@@ -66,3 +66,24 @@ def test_format_analyze_email_block_includes_id() -> None:
     )
     assert "ID: abc" in block
     assert "FromMe: True" in block
+
+
+def test_pack_email_batch_reserves_thinking_tokens() -> None:
+    counter = _CharCounter()
+    limits = BudgetLimits(tpm=250_000, tpd=1_000_000, body_chars=40, max_emails_per_batch=130)
+    emails = [
+        {
+            "email_id": f"id-{i}",
+            "sender": "a@b.com",
+            "subject": "S",
+            "body": "Hi",
+            "from_me": False,
+        }
+        for i in range(120)
+    ]
+    packed, blocks = pack_email_batch(emails, counter, limits, remaining_tpd=500_000)
+    assert packed
+    assert len(packed) == len(blocks)
+    max_by_output = (limits.max_output_budget() - limits.thinking_reserve) // limits.tokens_per_email_output
+    assert len(packed) <= max_by_output
+    assert len(packed) < 91

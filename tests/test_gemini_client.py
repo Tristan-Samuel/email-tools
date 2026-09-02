@@ -7,8 +7,11 @@ from unittest.mock import MagicMock, patch
 from app.services.gemini_client import (
     DEFAULT_GEMINI_MODEL,
     GeminiClient,
+    _response_text,
     resolve_gemini_model,
 )
+from app.services.groq_client import _parse_json_content
+from app.services.token_budget import BudgetLimits
 
 
 def test_resolve_gemini_model_remaps_retired_2_5() -> None:
@@ -101,3 +104,71 @@ def test_generate_json_stops_on_invalid_argument() -> None:
     assert tokens == 0
     assert err is not None and "INVALID_ARGUMENT" in err
     assert models.generate_content.call_count == 1
+
+
+def test_response_text_skips_thought_parts() -> None:
+    response = SimpleNamespace(
+        text='thinking{"ok": true}',
+        candidates=[
+            SimpleNamespace(
+                content=SimpleNamespace(
+                    parts=[
+                        SimpleNamespace(thought=True, text="thinking"),
+                        SimpleNamespace(thought=False, text='{"ok": true}'),
+                    ]
+                )
+            )
+        ],
+    )
+    assert _response_text(response) == '{"ok": true}'
+
+
+def test_parse_json_content_extracts_object_and_list() -> None:
+    assert _parse_json_content('Sure.\n{"ok": true}\n') == {"ok": True}
+    assert _parse_json_content('[{"id": "abc"}]') == {"items": [{"id": "abc"}]}
+    assert _parse_json_content('```json\n{"ok": true}\n```\ntrailer') == {"ok": True}
+
+
+def test_generate_json_parses_thought_prefixed_payload() -> None:
+    client = GeminiClient(api_key="test-key", default_model="gemini-3.5-flash-lite")
+    models = MagicMock()
+    models.generate_content.return_value = SimpleNamespace(
+        text='reasoning{"ok": true}',
+        usage_metadata=SimpleNamespace(total_token_count=4),
+        candidates=[
+            SimpleNamespace(
+                content=SimpleNamespace(
+                    parts=[
+                        SimpleNamespace(thought=True, text="reasoning"),
+                        SimpleNamespace(thought=None, text='{"ok": true}'),
+                    ]
+                )
+            )
+        ],
+    )
+    client._client = SimpleNamespace(models=models)
+    parsed, err, tokens = client._generate_json('{"prompt": true}')
+    assert err is None
+    assert parsed == {"ok": True}
+    assert tokens == 4
+
+
+def test_analyze_emails_batch_requests_output_headroom() -> None:
+    client = GeminiClient(api_key="test-key", default_model="gemini-3.5-flash-lite")
+    models = MagicMock()
+    models.generate_content.return_value = SimpleNamespace(
+        text='{"items": []}',
+        usage_metadata=SimpleNamespace(total_token_count=1),
+        candidates=[],
+    )
+    client._client = SimpleNamespace(models=models)
+    emails = [
+        {"email_id": str(i), "sender": "a@b", "subject": "S", "body": "B"}
+        for i in range(45)
+    ]
+    client.analyze_emails_batch(emails, blocks=["x"] * 45)
+    config = models.generate_content.call_args.kwargs["config"]
+    limits = BudgetLimits()
+    assert config.max_output_tokens >= limits.max_output_budget()
+    assert config.max_output_tokens >= 45 * limits.tokens_per_email_output
+

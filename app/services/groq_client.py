@@ -45,14 +45,36 @@ _JSON_MAX_TOKENS = 800
 _MAX_SUMMARY_BATCH = 8
 
 
-def _parse_json_content(content: str | dict) -> dict:
+def _parse_json_content(content: str | dict | list) -> dict:
     if isinstance(content, dict):
         return content
-    text = content.strip()
-    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, re.DOTALL | re.I)
+    if isinstance(content, list):
+        return {"items": content}
+    text = str(content).strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL | re.I)
     if fence:
         text = fence.group(1).strip()
-    return json.loads(text)
+    parsed: object
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        parsed = None
+        for i, ch in enumerate(text):
+            if ch not in "{[":
+                continue
+            try:
+                parsed, _end = decoder.raw_decode(text[i:])
+                break
+            except json.JSONDecodeError:
+                continue
+        if parsed is None:
+            raise ValueError("invalid JSON")
+    if isinstance(parsed, list):
+        return {"items": parsed}
+    if not isinstance(parsed, dict):
+        raise ValueError("JSON was not an object")
+    return parsed
 
 
 def _parse_tag_verdict(value: object) -> str:

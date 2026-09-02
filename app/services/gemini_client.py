@@ -35,6 +35,7 @@ from .llm_text import (
 from .token_budget import (
     _ANALYZE_PROMPT_OVERHEAD,
     _SEPARATOR,
+    BudgetLimits,
     format_analyze_email_block,
 )
 
@@ -151,18 +152,19 @@ def _usage_total_tokens(response: Any) -> int:
 
 
 def _response_text(response: Any) -> str:
-    """Prefer response.text; fall back to concatenated part text (thought signatures)."""
-    text = (getattr(response, "text", None) or "").strip()
-    if text:
-        return text
+    """Join answer text only. response.text also concatenates thought parts and breaks JSON."""
     chunks: list[str] = []
     for candidate in getattr(response, "candidates", None) or []:
         content = getattr(candidate, "content", None)
         for part in getattr(content, "parts", None) or []:
+            if getattr(part, "thought", None):
+                continue
             part_text = getattr(part, "text", None)
             if part_text:
                 chunks.append(str(part_text))
-    return "".join(chunks).strip()
+    if chunks:
+        return "".join(chunks).strip()
+    return (getattr(response, "text", None) or "").strip()
 
 
 class GeminiClient:
@@ -278,20 +280,21 @@ class GeminiClient:
                     continue
 
                 tokens_used = _usage_total_tokens(response)
+                self.last_tokens_used = tokens_used
                 text = _response_text(response)
                 if not text:
                     last_err = "Gemini returned an empty response."
                     continue
 
-                self._cached_best_model = model_name
-                self.last_model_used = model_name
-                self.last_tokens_used = tokens_used
-                self.last_error = ""
                 try:
-                    return _parse_json_content(text), None, tokens_used
+                    parsed = _parse_json_content(text)
                 except (ValueError, TypeError):
                     last_err = "Gemini returned invalid JSON."
                     continue
+                self._cached_best_model = model_name
+                self.last_model_used = model_name
+                self.last_error = ""
+                return parsed, None, tokens_used
 
         self.last_error = last_err or "Gemini request failed."
         return None, self.last_error, 0
@@ -329,7 +332,14 @@ class GeminiClient:
             f"{_ANALYZE_PROMPT_OVERHEAD} {_SUMMARY_TRIAGE_HINT} "
             "Emails:\n\n" + _SEPARATOR.join(blocks)
         )
-        max_out = min(16_384, max(_JSON_MAX_TOKENS, len(emails) * 120))
+        limits = BudgetLimits()
+        max_out = min(
+            limits.max_output_tokens,
+            max(
+                limits.max_output_budget(),
+                len(emails) * limits.tokens_per_email_output + limits.thinking_reserve,
+            ),
+        )
         parsed, _err, _tokens = self._generate_json(
             prompt,
             system="You produce strict JSON for email triage.",
