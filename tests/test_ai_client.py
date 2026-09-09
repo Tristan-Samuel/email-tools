@@ -146,3 +146,55 @@ def test_packing_disables_gemini_on_rate_limit(mock_pack, _mock_counter) -> None
     assert batches == []
     assert not ai.gemini_enabled
 
+
+@patch("app.services.ai_client.TokenCounter")
+@patch("app.services.ai_client.pack_email_batch")
+def test_packing_shrinks_on_invalid_argument_instead_of_groq(mock_pack, _mock_counter) -> None:
+    emails = [
+        {"email_id": f"id-{i}", "sender": "a@b", "subject": "S", "body": "B"}
+        for i in range(4)
+    ]
+    mock_pack.side_effect = lambda remaining, *_args, **_kwargs: (
+        remaining[:4],
+        [f"block-{e['email_id']}" for e in remaining[:4]],
+    )
+    gemini = GeminiClient(api_key="gemini-key", default_model="gemini-3.5-flash-lite")
+    groq = GroqClient(api_key="gsk_test", default_model="openai/gpt-oss-20b")
+    ai = AiClient(gemini=gemini, groq=groq)
+    store = MagicMock()
+    store.get_kv.return_value = "0"
+
+    def fake_batch(packed, blocks=None, batch_size=8):
+        if len(packed) > 1:
+            gemini.last_error = "400 INVALID_ARGUMENT. Request contains an invalid argument."
+            gemini.last_tokens_used = 0
+            return {}
+        gemini.last_error = ""
+        gemini.last_tokens_used = 4
+        return {
+            packed[0]["email_id"]: {
+                "bullets": ["ok"],
+                "line": "ok",
+                "compact": "ok",
+                "intent": "fyi",
+                "reason": "",
+                "due_at": "",
+                "tags": [],
+            }
+        }
+
+    with patch.object(GeminiClient, "analyze_emails_batch", side_effect=fake_batch):
+        batches = list(
+            ai.analyze_with_token_packing(
+                emails,
+                store,
+                "me@example.com",
+                limits=BudgetLimits(rpm=10_000),
+            )
+        )
+
+    analyzed_ids = {eid for _chunk, results, _tokens in batches for eid in results}
+    assert analyzed_ids
+    assert ai.gemini_enabled
+    assert ai.last_provider == "gemini"
+

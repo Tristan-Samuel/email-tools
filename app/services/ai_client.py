@@ -172,6 +172,18 @@ class AiClient:
                 err = self._gemini.last_error or ""
                 if err == "Cancelled.":
                     return
+                # Oversized Gemini 3.x batches 400 INVALID_ARGUMENT; shrink before Groq.
+                if is_invalid_argument_error(err) and len(packed) > 1:
+                    packed = packed[: max(1, len(packed) // 2)]
+                    blocks = blocks[: len(packed)]
+                    if on_progress:
+                        on_progress(
+                            f"Retrying with {len(packed)} email(s)…",
+                            processed,
+                            total,
+                            phase="summarize",
+                        )
+                    continue
                 if self._gemini_failed(err):
                     self.disable_gemini_for_job(err)
                     if on_progress:

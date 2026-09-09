@@ -8,10 +8,18 @@ from app.services.gemini_client import (
     DEFAULT_GEMINI_MODEL,
     GeminiClient,
     _response_text,
+    is_fatal_gemini_auth_error,
     resolve_gemini_model,
 )
 from app.services.groq_client import _parse_json_content
 from app.services.token_budget import BudgetLimits
+
+
+def test_fatal_auth_does_not_match_generic_api_key_mentions() -> None:
+    assert is_fatal_gemini_auth_error("API key not valid. Please pass a valid API key.")
+    assert not is_fatal_gemini_auth_error(
+        "429 RESOURCE_EXHAUSTED. See https://ai.google.dev/gemini-api/docs/api-key"
+    )
 
 
 def test_resolve_gemini_model_remaps_retired_2_5() -> None:
@@ -79,7 +87,7 @@ def test_generate_json_skips_404_model_on_retry() -> None:
     assert models.generate_content.call_count == 2
 
 
-def test_generate_json_omits_thinking_config() -> None:
+def test_generate_json_omits_gemini3_rejected_config() -> None:
     client = GeminiClient(api_key="test-key", default_model="gemini-3.5-flash-lite")
     models = MagicMock()
     models.generate_content.return_value = SimpleNamespace(
@@ -87,9 +95,11 @@ def test_generate_json_omits_thinking_config() -> None:
         usage_metadata=SimpleNamespace(total_token_count=1),
     )
     client._client = SimpleNamespace(models=models)
-    client._generate_json('{"prompt": true}')
+    client._generate_json('{"prompt": true}', temperature=0.2)
     config = models.generate_content.call_args.kwargs["config"]
-    assert getattr(config, "thinking_config", None) is None
+    assert getattr(config, "temperature", None) is None
+    thinking = getattr(config, "thinking_config", None)
+    assert thinking is None or getattr(thinking, "thinking_budget", None) is None
 
 
 def test_generate_json_stops_on_invalid_argument() -> None:

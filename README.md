@@ -50,7 +50,7 @@ Log in → account menu → **Settings** → **Gemini AI (primary)**. Paste your
 **Option 2 — server-level key:**
 Set `GEMINI_API_KEY` or `GOOGLE_API_KEY` before starting the app (used when no per-user Gemini key is set).
 
-Default model: `gemini-3.5-flash-lite` (1M-token context, high-volume JSON). Google now 404s Gemini 2.5 for new API keys; leftover `gemini-2.5-flash-lite` / `gemini-2.5-flash` values are remapped automatically. Override with `GEMINI_DEFAULT_MODEL` (`gemini-3.1-flash-lite` and `gemini-3.6-flash` are tried if the default is unavailable). Flash-Lite does not support Gemini thinking config; the client omits it so requests are not rejected with `INVALID_ARGUMENT`.
+Default model: `gemini-3.5-flash-lite` (1M-token context, high-volume JSON). Google now 404s Gemini 2.5 for new API keys; leftover `gemini-2.5-flash-lite` / `gemini-2.5-flash` values are remapped automatically. Override with `GEMINI_DEFAULT_MODEL` (`gemini-3.1-flash-lite` and `gemini-3.6-flash` are tried if the default is unavailable). Gemini 3.x Flash-Lite rejects `temperature` and `thinking_budget` with `INVALID_ARGUMENT`; the client omits both.
 
 Without a Gemini key, the app falls back to Groq (if configured) or local heuristic summaries.
 

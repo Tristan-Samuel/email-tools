@@ -111,7 +111,15 @@ def is_fatal_gemini_auth_error(message: str) -> bool:
     lowered = (message or "").lower()
     return any(
         token in lowered
-        for token in ("401", "403", "invalid api", "api key", "permission denied", "unauthenticated")
+        for token in (
+            "401",
+            "403",
+            "invalid api key",
+            "api key not valid",
+            "api_key_invalid",
+            "permission denied",
+            "unauthenticated",
+        )
     )
 
 
@@ -222,7 +230,7 @@ class GeminiClient:
         user_content: str,
         *,
         system: str = "You produce strict JSON.",
-        temperature: float = 0.2,
+        temperature: float = 0.2,  # accepted for callers; omitted from the request
         max_output_tokens: int = _JSON_MAX_TOKENS,
         timeout_ms: int = 120_000,
     ) -> tuple[dict | str | None, str | None, int]:
@@ -248,9 +256,9 @@ class GeminiClient:
                 if self._cancelled():
                     self.last_error = "Cancelled."
                     return None, self.last_error, 0
+                # Gemini 3.x Flash-Lite 400s if temperature or thinking_budget is sent.
                 config = types.GenerateContentConfig(
                     system_instruction=system,
-                    temperature=temperature,
                     max_output_tokens=max_output_tokens,
                     response_mime_type="application/json",
                     http_options=types.HttpOptions(timeout=timeout_ms),
