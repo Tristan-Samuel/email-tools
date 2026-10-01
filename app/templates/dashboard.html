@@ -33,13 +33,13 @@
                 </li>
                 {% endfor %}
             </ul>
-            {% if groq_available and ai_pending > 0 %}
+            {% if groq_available and ai_auto_pending > 0 %}
             <form action="{{ url_for('main.analyze_now') }}" method="post" style="margin-top:14px">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <button type="submit" class="btn btn-teal">Analyze {{ ai_pending }} emails with AI</button>
+                <button type="submit" class="btn btn-teal">Analyze {{ ai_auto_pending }} recent</button>
             </form>
             <p class="panel-hint" style="margin-top:8px">
-                {{ ai_analyzed }} already have AI summaries. Sync downloads mail first; analysis runs automatically afterward.
+                {{ ai_analyzed }} already have AI summaries. The download finishes first; recent mail is analyzed after that.
             </p>
             {% elif not groq_available %}
             <p class="panel-hint" style="margin-top:12px">
@@ -70,15 +70,15 @@
                             <button type="submit" class="btn btn-primary" style="font-size:.8rem;padding:.35rem .75rem">Save &amp; sync</button>
                         </form>
                         {% endif %}
-                        <p class="panel-hint" style="margin-bottom:.4rem">Sync downloads new mail. AI summaries start automatically after.</p>
+                        <p class="panel-hint" style="margin-bottom:.4rem">Sync saves mail page by page. Leave the date empty for the whole folder. Recent mail is analyzed after the download.</p>
                         <form action="{{ url_for('main.accounts_sync', account_id=acct.id) }}" method="post" class="sync-form-row">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <label>
                                 Since
-                                <input type="date" name="sync_since" value="{{ acct.sync_since_date or default_sync_since }}">
+                                <input type="date" name="sync_since" value="{{ acct.sync_since_date or '' }}">
                             </label>
                             <label>
-                                Max
+                                Per page
                                 <input type="number" name="sync_max" min="1" max="2000" value="{{ acct.sync_max_count or default_sync_max }}" style="width:72px">
                             </label>
                             <button type="submit" class="btn btn-teal" style="font-size:.8rem;padding:.35rem .75rem">Sync</button>
@@ -86,7 +86,7 @@
                         {% if acct.has_older_mail %}
                         <form action="{{ url_for('main.accounts_load_older', account_id=acct.id) }}" method="post" class="sync-form-row" style="margin-top:6px">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <input type="hidden" name="sync_since" value="{{ acct.sync_since_date or default_sync_since }}">
+                            <input type="hidden" name="sync_since" value="{{ acct.sync_since_date or '' }}">
                             <input type="hidden" name="sync_max" value="{{ acct.sync_max_count or default_sync_max }}">
                             <button type="submit" class="btn btn-ghost" style="font-size:.78rem;padding:.3rem .6rem">Load older mail</button>
                         </form>

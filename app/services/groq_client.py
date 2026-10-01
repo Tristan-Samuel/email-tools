@@ -17,6 +17,7 @@ from .llm_text import (
     compact_for_llm,
     format_action_email_blocks,
 )
+from .token_budget import _ANALYZE_PROMPT_OVERHEAD
 
 # Groq retired llama-3.3-70b-versatile (free/dev) on 2026-08-16.
 # Prefer smaller chat models first: on-demand TPM is per-model, so a 429 on
@@ -972,16 +973,7 @@ class GroqClient:
                 f"FromMe: {bool(email.get('from_me'))}\n"
                 f"Body:\n{body}"
             )
-        prompt = (
-            "Analyze each email for inbox triage. Return JSON only: "
-            '{"items": [{"id": "...", "line": "one-sentence list summary", "compact": "6-10 word clip", '
-            '"bullets": ["..."], "intent": "i_owe|waiting_on_them|deadline|fyi|noise", '
-            '"reason": "short why", "due_at": "YYYY-MM-DD or empty", "tags": ["optional tag names"]}]}. '
-            f"{_SUMMARY_LINE_HINT} "
-            "Up to 3 bullets as distinct facts, dates, or asks. intent=i_owe when the user must reply; waiting_on_them when user sent last; "
-            "deadline when a real due date exists; fyi for informational; noise for promos/newsletters. "
-            f"{_SUMMARY_TRIAGE_HINT} Use the given ID values exactly."
-        )
+        prompt = f"{_ANALYZE_PROMPT_OVERHEAD} {_SUMMARY_TRIAGE_HINT}"
         parsed, _err = self._complete(
             [
                 {"role": "system", "content": "You produce strict JSON for email triage."},

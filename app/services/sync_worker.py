@@ -30,6 +30,32 @@ class JobFailed(Exception):
     """Unrecoverable worker error — stop and keep the message in the job log."""
 
 
+def _drain_analysis(
+    store: Any,
+    user_email: str,
+    ai: Any,
+    analyze_fn: AnalyzeFn | None,
+    report: ProgressFn,
+    scope: str,
+) -> int:
+    """Run analysis in pages. A provider outage stops the API and leaves mail cached."""
+    from .ai_client import is_unreachable
+
+    if analyze_fn is None:
+        report("No analyze handler configured.")
+        return 0
+    report("Starting AI analysis…", 0, 1, phase="summarize")
+    total = 0
+    while True:
+        check_cancelled(store)
+        analyzed = analyze_fn(store, user_email, ai, report, scope=scope, limit=80)
+        total += int(analyzed or 0)
+        err = str(getattr(ai, "last_error", "") or "")
+        if not analyzed or is_unreachable(err):
+            break
+    return total
+
+
 def enqueue_job(
     job_id: str,
     job_type: str,
@@ -251,26 +277,27 @@ def _run_job_inner(
                     report(msg)
             report(f"Mail fetch finished — {total_imported} message(s) saved.", 1, 1, phase="fetch")
 
-            if groq.enabled and analyze_fn:
-                report("Starting automatic AI analysis…", 0, 1, phase="summarize")
-                analyzed = analyze_fn(store, user_email, groq, report)
-                if analyzed == 0 and getattr(groq, "last_error", ""):
-                    raise JobFailed(groq.last_error)
-                report(f"AI analysis finished — {analyzed} email(s) summarized.", 1, 1, phase="summarize")
-            elif not groq.enabled:
-                report("No AI key — mail is cached with quick local summaries. Add Gemini or Groq in Settings for a real AI brief.")
-
-            if tag_apply_fn:
-                report("Applying tags…", 0, 1, phase="tag")
-                tagged = tag_apply_fn(store, user_email, on_progress=report)
-                report(f"Tagging finished — {tagged} assignment(s).", 1, 1, phase="tag")
+            try:
+                manual = store.apply_all_manual_tags(user_email)
+                if manual:
+                    report(f"Applied {manual} manual tag assignment(s).")
+            except Exception as exc:
+                report(f"Manual tags skipped: {exc}")
 
             if digest_fn:
                 report("Refreshing inbox brief…", 0, 1, phase="brief")
-                digest_fn(store, user_email, groq if groq.enabled else None)
+                digest_fn(store, user_email, None)
                 report("Inbox brief updated.", 1, 1, phase="brief")
 
-        elif job_type == "reanalyze":
+            if not groq.enabled:
+                report(
+                    "No AI key — mail is cached with local summaries. "
+                    "Add Gemini or Groq in Settings for AI triage."
+                )
+            elif not errors:
+                report("Mail is saved. AI analysis of recent mail will follow.")
+
+        elif job_type in ("reanalyze", "analyze_recent"):
             if not groq.enabled:
                 store.update_job(
                     job_id,
@@ -280,19 +307,16 @@ def _run_job_inner(
                 )
                 report("Stopped — no Gemini or Groq API key.")
                 return
-            if analyze_fn:
-                report("Starting AI analysis…", 0, 1, phase="summarize")
-                analyzed = analyze_fn(store, user_email, groq, report)
-                if analyzed == 0 and getattr(groq, "last_error", ""):
-                    raise JobFailed(groq.last_error)
-                report(f"AI analysis finished — {analyzed} email(s) summarized.", 1, 1, phase="summarize")
+            scope = "all" if job_type == "reanalyze" else "recent"
+            analyzed = _drain_analysis(store, user_email, groq, analyze_fn, report, scope)
+            report(f"AI analysis finished — {analyzed} email(s) summarized.", 1, 1, phase="summarize")
             if tag_apply_fn:
                 report("Applying tags…", 0, 1, phase="tag")
                 tagged = tag_apply_fn(store, user_email, on_progress=report)
                 report(f"Tagging finished — {tagged} assignment(s).", 1, 1, phase="tag")
             if digest_fn:
                 report("Refreshing inbox brief…", 0, 1, phase="brief")
-                digest_fn(store, user_email, groq)
+                digest_fn(store, user_email, None)
                 report("Inbox brief updated.", 1, 1, phase="brief")
         else:
             report(f"Unknown job type: {job_type}")
@@ -308,6 +332,18 @@ def _run_job_inner(
         else:
             store.update_job(job_id, status="done", message="Finished.")
             store.append_job_log(job_id, "Finished.")
+            if (
+                job_type in ("sync", "backfill")
+                and groq.enabled
+                and analyze_fn is not None
+            ):
+                follow_id = store.create_job(
+                    user_email,
+                    "analyze_recent",
+                    "Analyze recent mail",
+                )
+                store.append_job_log(follow_id, "Queued after mail download.")
+                enqueue_job(follow_id, "analyze_recent", user_email, None)
     except JobCancelled:
         store.append_job_log(job_id, "Stopped after cancel.")
     except JobFailed as exc:

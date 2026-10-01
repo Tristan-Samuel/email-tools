@@ -100,7 +100,7 @@
                 <button type="submit" class="btn btn-teal" style="padding:5px 12px;font-size:.82rem">Sync</button>
             </form>
             <form action="{{ url_for('main.accounts_resync_all') }}" method="post"
-                  onsubmit="return confirm('Re-download mail in your current date/count window and regenerate summaries?');">
+                  onsubmit="return confirm('Re-download mail through the current date (the whole folder if the date is empty) and regenerate summaries?');">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-ghost" style="padding:5px 12px;font-size:.82rem">Resync all</button>
             </form>
@@ -112,10 +112,10 @@
                 <button type="submit" class="btn btn-ghost" style="padding:5px 12px;font-size:.82rem">Rescan summaries</button>
             </form>
             {% endif %}
-            {% if groq_available and ai_pending > 0 %}
+            {% if groq_available and ai_auto_pending > 0 %}
             <form action="{{ url_for('main.analyze_now') }}" method="post">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <button type="submit" class="btn btn-teal" style="padding:5px 12px;font-size:.82rem">Analyze {{ ai_pending }}</button>
+                <button type="submit" class="btn btn-teal" style="padding:5px 12px;font-size:.82rem">Analyze {{ ai_auto_pending }} recent</button>
             </form>
             {% endif %}
             {% if imap_accounts %}

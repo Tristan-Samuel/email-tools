@@ -119,7 +119,7 @@
                         {% if activity_job %}
                             {{ activity_job.message }}
                         {% elif groq_available and ai_pending %}
-                            Sync downloads mail quickly. AI summaries run automatically after sync, or click Analyze now.
+                            Recent mail is analyzed in the background. Older mail keeps its local summary until you rescan.
                         {% elif not groq_available %}
                             Add a Groq API key in Settings for a real inbox brief.
                         {% endif %}

@@ -122,6 +122,7 @@ def test_today_route_with_ai_reads_fyi_digest_dict() -> None:
         source_account=user,
     )
     rec["intent"] = "fyi"
+    rec["intent_reason"] = "Informational"
     rec["ai_analyzed"] = 1
     store.bulk_upsert([rec])
     rebuild_thread_states(store, user)
@@ -137,7 +138,7 @@ def test_today_route_with_ai_reads_fyi_digest_dict() -> None:
                 response = client.get("/today")
         assert response.status_code == 200
         assert b"FYI digest" in response.data
-        assert b"Today skim" in response.data
+        fake_ai.build_inbox_digest.assert_not_called()
 
 
 def test_fyi_digest_curated_cap() -> None:
@@ -161,6 +162,8 @@ def test_fyi_digest_curated_cap() -> None:
                 source_account=user,
             )
             rec["intent"] = "fyi"
+            rec["intent_reason"] = "Informational"
+            rec["ai_analyzed"] = 1
             rec["urgency"] = 20 + i
             rec["is_read"] = 1 if i > 2 else 0
             records.append(rec)
@@ -176,7 +179,7 @@ def test_fyi_digest_curated_cap() -> None:
 
 
 def test_load_fyi_brief_reads_digest_dict() -> None:
-    from app.routes import _load_fyi_brief
+    from app.routes import _generate_fyi_brief, _load_fyi_brief
 
     class _FakeAI:
         def __init__(self) -> None:
@@ -203,16 +206,23 @@ def test_load_fyi_brief_reads_digest_dict() -> None:
             source_account=user,
         )
         rec["intent"] = "fyi"
+        rec["intent_reason"] = "Informational"
+        rec["ai_analyzed"] = 1
         rec["urgency"] = 20
         rec["is_read"] = 0
         store.bulk_upsert([rec])
         rebuild_thread_states(store, user)
         view = build_today_view(store, user)
         ai = _FakeAI()
-        brief = _load_fyi_brief(store, user, view["fyi_digest"], ai)
+        assert _load_fyi_brief(store, user, view["fyi_digest"], ai) is None
+        assert ai.seen == []
+        brief = _generate_fyi_brief(store, user, view["fyi_digest"], ai)
         assert brief is not None
         assert brief["headline"] == "Skim these"
         assert ai.seen and ai.seen[0]
+        cached = _load_fyi_brief(store, user, view["fyi_digest"], ai)
+        assert cached is not None
+        assert cached["headline"] == "Skim these"
 
 
 def test_add_todo_survives_rebuild() -> None:
@@ -253,6 +263,8 @@ def test_remove_todo_blocks_vip_repromote() -> None:
             source_account=user,
         )
         record["intent"] = "fyi"
+        record["intent_reason"] = "Informational"
+        record["ai_analyzed"] = 1
         store.bulk_upsert([record])
         rebuild_thread_states(store, user)
         thread_id = record["thread_id"]
@@ -287,3 +299,80 @@ def test_search_sort_urgency() -> None:
         assert len(results) == 2
         assert results[0]["urgency"] >= results[1]["urgency"]
         assert results[0]["subject"] == "High"
+
+
+def test_do_now_keeps_important_mail_and_overflow() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = EmailStore(Path(tmp) / "do-now.db")
+        store.initialize()
+        user = "me@example.com"
+        specs = [
+            ("school", "Problem set 3", "The problem set is due Friday.", "professor@school.edu", 0),
+            ("bill", "Invoice", "Your invoice is past due. Amount due $40.", "billing@vendor.com", 0),
+            ("ask", "Form", "Can you send the signed form?", "alex@friends.com", 0),
+            ("receipt", "Receipt", "Your receipt from the store. Payment received.", "receipts@store.com", 0),
+        ]
+        records = []
+        for eid, subject, body, sender, mailing in specs:
+            rec = build_email_record(
+                _sample_message(
+                    email_id=eid,
+                    message_id=f"<{eid}@b>",
+                    subject=subject,
+                    body=body,
+                    sender=sender,
+                    is_mailing_list=mailing,
+                ),
+                source_name=user,
+                user_email=user,
+                source_account=user,
+            )
+            records.append(rec)
+        news = build_email_record(
+            _sample_message(
+                email_id="news",
+                message_id="<news@b>",
+                subject="Weekly digest",
+                body="Unsubscribe from this newsletter.",
+                sender="news@lists.example",
+                is_mailing_list=1,
+            ),
+            source_name=user,
+            user_email=user,
+            source_account=user,
+        )
+        news["category"] = "Newsletters"
+        news["is_mailing_list"] = 1
+        records.append(news)
+        for i in range(14):
+            rec = build_email_record(
+                _sample_message(
+                    email_id=f"extra-{i}",
+                    message_id=f"<extra-{i}@b>",
+                    subject=f"Extra ask {i}",
+                    body="Please review this note.",
+                    sender=f"person{i}@example.com",
+                ),
+                source_name=user,
+                user_email=user,
+                source_account=user,
+            )
+            rec["intent"] = "i_owe"
+            rec["intent_reason"] = "Needs you"
+            rec["ai_analyzed"] = 1
+            rec["urgency"] = 70
+            records.append(rec)
+        store.bulk_upsert(records)
+        rebuild_thread_states(store, user)
+        view = build_today_view(store, user)
+        shown = view["do_now"] + view["do_now_more"]
+        subjects = {row["subject"] for row in shown}
+        assert "Problem set 3" in subjects
+        assert "Invoice" in subjects
+        assert "Form" in subjects
+        assert "Receipt" not in subjects
+        assert "Weekly digest" not in subjects
+        assert len(shown) > 8
+        assert len(view["do_now"]) == 12
+        assert view["do_now_more"]
+        assert len(shown) == len(view["do_now"]) + len(view["do_now_more"])

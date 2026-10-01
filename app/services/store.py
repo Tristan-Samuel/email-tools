@@ -1356,6 +1356,51 @@ class EmailStore:
             ).fetchall()
         return [self._deserialize_row(row) for row in rows if row]
 
+    def list_auto_analyze_emails(
+        self,
+        user_email: str,
+        *,
+        days: int = 21,
+        limit: int = 80,
+    ) -> list[dict]:
+        """Inbound mail that can change Today: recent, or already marked as an action."""
+        cutoff = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM emails
+                WHERE user_email = ?
+                  AND ai_analyzed = 0
+                  AND from_me = 0
+                  AND (
+                    substr(received_at, 1, 10) >= ?
+                    OR intent IN ('i_owe', 'deadline')
+                  )
+                ORDER BY received_at DESC
+                LIMIT ?
+                """,
+                (user_email, cutoff, limit),
+            ).fetchall()
+        return [self._deserialize_row(row) for row in rows if row]
+
+    def count_auto_analyze_emails(self, user_email: str, *, days: int = 21) -> int:
+        cutoff = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) FROM emails
+                WHERE user_email = ?
+                  AND ai_analyzed = 0
+                  AND from_me = 0
+                  AND (
+                    substr(received_at, 1, 10) >= ?
+                    OR intent IN ('i_owe', 'deadline')
+                  )
+                """,
+                (user_email, cutoff),
+            ).fetchone()
+        return int(row[0] if row else 0)
+
     def clear_ai_analyzed(self, user_email: str, source_account: str | None = None) -> int:
         """Mark mail as needing a fresh AI pass so list-line summaries can be regenerated."""
         query = "UPDATE emails SET ai_analyzed = 0 WHERE user_email = ?"

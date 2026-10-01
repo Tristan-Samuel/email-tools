@@ -142,10 +142,11 @@
                             <option value="iso" {% if date_format == 'iso' %}selected{% endif %}>YYYY-MM-DD</option>
                         </select>
                     </label>
-                    <label class="form-label">Default sync window (days)
+                    <label class="form-label">Saved sync window (days)
                         <input type="number" name="default_sync_days" class="form-input" min="7" max="365" value="{{ default_sync_days }}">
                     </label>
-                    <label class="form-label">Default max messages
+                    <p class="panel-hint">New accounts download every message in the enabled folders. Set Mail since on an account to limit that mailbox. Per page on Accounts is how many messages each download step fetches.</p>
+                    <label class="form-label">Default page size
                         <input type="number" name="default_sync_max" class="form-input" min="50" max="2000" value="{{ default_sync_max }}">
                     </label>
                     <label class="form-label form-label-inline">

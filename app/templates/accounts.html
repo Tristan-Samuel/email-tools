@@ -75,19 +75,20 @@
                 <div class="sync-form-row">
                     <label>
                         Mail since
-                        <input type="date" name="sync_since" value="{{ acct.sync_since_date or default_sync_since }}">
+                        <input type="date" name="sync_since" value="{{ acct.sync_since_date or '' }}">
                     </label>
                     <label>
-                        Max messages
+                        Per page
                         <input type="number" name="sync_max" min="1" max="2000" value="{{ acct.sync_max_count or default_sync_max }}" style="width:88px">
                     </label>
                     <button type="submit" class="btn btn-teal">Sync now</button>
                     <button type="submit" formaction="{{ url_for('main.accounts_resync', account_id=acct.id) }}"
                             class="btn btn-ghost"
-                            onclick="return confirm('Re-download this mailbox in the current date/count window and regenerate summaries?');">
+                            onclick="return confirm('Re-download this mailbox through the current date (the whole folder if the date is empty) and regenerate summaries?');">
                         Resync from server
                     </button>
                 </div>
+                <p class="panel-hint" style="margin:8px 0 0">Leave the date empty to download the whole folder. Per page is one download step; sync keeps going until that range is saved.</p>
                 {% if acct.folder_sync %}
                 <p style="font-size:.8rem;color:var(--muted);margin:10px 0 6px">Folders to sync</p>
                 <div class="folder-checklist">
@@ -104,7 +105,7 @@
             {% if acct.has_older_mail %}
             <form action="{{ url_for('main.accounts_load_older', account_id=acct.id) }}" method="post" class="sync-form-row">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <input type="hidden" name="sync_since" value="{{ acct.sync_since_date or default_sync_since }}">
+                <input type="hidden" name="sync_since" value="{{ acct.sync_since_date or '' }}">
                 <input type="hidden" name="sync_max" value="{{ acct.sync_max_count or default_sync_max }}">
                 <button type="submit" class="btn btn-ghost">Load older mail</button>
             </form>

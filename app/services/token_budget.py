@@ -22,8 +22,14 @@ _ANALYZE_PROMPT_OVERHEAD = (
     '"line" is a dedicated one-sentence overview for a message list (what this is and whether action is needed); '
     "do not copy the first bullet. "
     '"compact" is 6–10 words for dense lists. '
-    "Up to 3 bullets as distinct facts, dates, or asks. intent=i_owe when the user must reply; waiting_on_them when user sent last; "
-    "deadline when a real due date exists; fyi for informational; noise for promos/newsletters. "
+    "Up to 3 bullets as distinct facts, dates, or asks. "
+    "intent=i_owe when a person needs a reply, a decision, a payment, attendance, or a completed task, "
+    "including security steps they must finish. "
+    "intent=deadline for school work or exams with a date, bills or invoices that are due, or appointments they must act on. "
+    "intent=waiting_on_them when the user sent the last message. "
+    "intent=noise for receipts, newsletters, and promotions. "
+    "intent=fyi only when nothing is asked. "
+    "If the sender is a real person and you are unsure, choose i_owe rather than fyi. "
     "Use the given ID values exactly."
 )
 _SEPARATOR = "\n\n---\n\n"

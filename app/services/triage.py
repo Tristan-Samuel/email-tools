@@ -11,10 +11,84 @@ if TYPE_CHECKING:
     from .store import EmailStore
 
 VALID_INTENTS = frozenset({"i_owe", "waiting_on_them", "deadline", "fyi", "noise"})
-DO_NOW_CAP = 8
+DO_NOW_VISIBLE = 12
 FYI_BULLET_CAP = 6
 FYI_RANKED_CAP = 15
 FYI_RECENT_DAYS = 14
+AUTO_ANALYZE_DAYS = 21
+
+_NOREPLY_LOCAL = (
+    "noreply",
+    "no-reply",
+    "donotreply",
+    "do-not-reply",
+    "notifications",
+    "mailer-daemon",
+)
+_SCHOOL_MARKERS = (
+    "assignment",
+    "homework",
+    "exam",
+    "quiz",
+    "problem set",
+    "coursework",
+)
+_DUE_MARKERS = (
+    "due",
+    "deadline",
+    "submit",
+    "turn in",
+    "tomorrow",
+    "by monday",
+    "by tuesday",
+    "by wednesday",
+    "by thursday",
+    "by friday",
+)
+_BILL_MARKERS = (
+    "invoice",
+    "amount due",
+    "payment due",
+    "past due",
+    "please pay",
+    "balance due",
+    "bill is due",
+)
+_RECEIPT_MARKERS = (
+    "receipt",
+    "payment received",
+    "order confirmation",
+    "thanks for your order",
+    "paid in full",
+)
+_APPOINTMENT_MARKERS = (
+    "appointment",
+    "rsvp",
+    "please attend",
+    "you're invited",
+    "you are invited",
+)
+_SECURITY_MARKERS = (
+    "verify your",
+    "confirm your identity",
+    "unusual sign-in",
+    "unusual sign in",
+    "suspicious sign",
+    "reset your password",
+    "action required",
+    "confirm it's you",
+    "confirm it is you",
+)
+_ASK_PHRASES = (
+    "can you",
+    "could you",
+    "would you",
+    "please",
+    "let me know",
+    "need you",
+    "waiting on you",
+    "get back to me",
+)
 
 
 _EMAIL_IN_SENDER_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
@@ -41,6 +115,34 @@ def sender_is_account(sender: str, account_email: str) -> bool:
     return addr == account_email.strip().lower() or account_email.strip().lower() in sender.lower()
 
 
+def _lower_blob(email: dict) -> str:
+    bullets = email.get("bullet_summary") or []
+    bullet_text = " ".join(str(b) for b in bullets)
+    return f"{email.get('subject', '')} {email.get('body', '')} {bullet_text}".lower()
+
+
+def _sender_is_noreply(sender: str) -> bool:
+    local = extract_sender_email(sender).split("@")[0]
+    return any(token in local for token in _NOREPLY_LOCAL)
+
+
+def _has_any(text: str, markers: tuple[str, ...]) -> bool:
+    return any(marker in text for marker in markers)
+
+
+def _looks_like_person(email: dict, text: str) -> bool:
+    """A direct sender, not a list, receipt, or bulk mailbox."""
+    if email.get("is_mailing_list") or email.get("is_hidden"):
+        return False
+    if _sender_is_noreply(email.get("sender") or ""):
+        return False
+    if "unsubscribe" in text:
+        return False
+    if _has_any(text, _RECEIPT_MARKERS) and not _has_any(text, _BILL_MARKERS):
+        return False
+    return bool(extract_sender_email(email.get("sender") or ""))
+
+
 def infer_intent_heuristic(
     email: dict,
     *,
@@ -50,42 +152,60 @@ def infer_intent_heuristic(
     vip: bool,
     always_hide: bool,
 ) -> tuple[str, str, str | None]:
-    """Return (intent, reason, due_at)."""
+    """Return (intent, reason, due_at).
+
+    Prefer recall: a real person's ask, a due date, school work, or a bill
+    lands in Do now. Receipts, newsletters, and promotions do not.
+    """
     if always_hide or email.get("is_hidden"):
         return "noise", "Sender rule: always hide", None
 
     if from_me:
         return "waiting_on_them", "You sent the last message in this thread", None
 
+    if last_from_me_at and last_inbound_at and last_from_me_at >= last_inbound_at:
+        return "waiting_on_them", "You already replied — waiting on them", None
+
+    text = _lower_blob(email)
     if email.get("is_mailing_list"):
         cat = (email.get("category") or "").lower()
-        if cat in ("marketing", "newsletters"):
+        if cat in ("marketing", "newsletters") or "unsubscribe" in text:
             return "noise", "Mailing list / promotional", None
         return "fyi", "Mailing list — no reply expected", None
 
-    haystack = f"{email.get('subject', '')} {email.get('body', '')}"
-    if any(contains_keyword(haystack, kw) for kw in CATEGORY_RULES.get("Marketing", [])):
-        if "unsubscribe" in haystack.lower():
-            return "noise", "Promotional bulk mail", None
+    if "unsubscribe" in text and any(
+        contains_keyword(text, kw) for kw in CATEGORY_RULES.get("Marketing", [])
+    ):
+        return "noise", "Promotional bulk mail", None
+
+    if _has_any(text, _RECEIPT_MARKERS) and not _has_any(text, _BILL_MARKERS):
+        return "fyi", "Receipt or confirmation — nothing to do", None
+
+    if _has_any(text, _SECURITY_MARKERS):
+        return "i_owe", "Security step you need to finish", None
+
+    if _has_any(text, _SCHOOL_MARKERS) and _has_any(text, _DUE_MARKERS):
+        return "deadline", "School work with a due date", None
+
+    if _has_any(text, _BILL_MARKERS):
+        return "deadline", "Bill or invoice is due", None
+
+    if _has_any(text, _APPOINTMENT_MARKERS):
+        return "deadline", "Appointment or invitation you need to act on", None
 
     if vip:
         return "i_owe", "VIP sender — reply expected", None
 
-    bullets = email.get("bullet_summary") or []
-    bullet_text = " ".join(str(b) for b in bullets).lower()
-    body = (email.get("body") or "").lower()
-    asks_reply = any(w in bullet_text or w in body for w in ACTION_WORDS)
-    asks_reply = asks_reply or "?" in (email.get("subject") or "")
-
-    if last_from_me_at and last_inbound_at and last_from_me_at >= last_inbound_at:
-        return "waiting_on_them", "You already replied — waiting on them", None
-
-    if asks_reply and not from_me:
+    asks = _has_any(text, _ASK_PHRASES) or any(word in text for word in ACTION_WORDS)
+    asks = asks or "?" in (email.get("subject") or "") or "?" in (email.get("body") or "")[:500]
+    if asks:
         return "i_owe", "Message asks for a response or action", None
 
-    due_at = None
-    if any(contains_keyword(haystack, kw) for kw in CATEGORY_RULES.get("Urgent", [])):
-        return "deadline", "Deadline or time-sensitive language detected", due_at
+    if any(contains_keyword(text, kw) for kw in CATEGORY_RULES.get("Urgent", [])):
+        return "deadline", "Deadline or time-sensitive language detected", None
+
+    if _looks_like_person(email, text):
+        return "i_owe", "Direct message from a person — treated as needing you", None
 
     return "fyi", "Informational — no reply required", None
 
@@ -253,7 +373,8 @@ def rebuild_thread_states(store: EmailStore, user_email: str) -> int:
             snooze_until = existing.get("snooze_until")
         else:
             stored_intent = (source_email.get("intent") or "").strip()
-            if stored_intent in VALID_INTENTS:
+            ai_done = bool(source_email.get("ai_analyzed"))
+            if ai_done and stored_intent in VALID_INTENTS:
                 intent = stored_intent
                 reason = source_email.get("intent_reason") or ""
                 due_at = source_email.get("due_at") or None
@@ -391,11 +512,17 @@ def build_today_view(
             today,
         )
     ]
-    do_now_ai.sort(key=lambda r: (-int(r.get("urgency") or 0), r.get("last_inbound_at") or ""))
-    do_now = todo_pinned + do_now_ai[:DO_NOW_CAP]
-    do_now_hidden_count = max(0, len(do_now_ai) - DO_NOW_CAP)
 
-    do_now_ids = {d["thread_id"] for d in do_now}
+    def _action_sort_key(row: dict) -> tuple:
+        due = row.get("due_at") or "9999-12-31"
+        return (-int(row.get("urgency") or 0), due, row.get("last_inbound_at") or "")
+
+    do_now_ai.sort(key=_action_sort_key)
+    ordered = todo_pinned + do_now_ai
+    do_now = ordered[:DO_NOW_VISIBLE]
+    do_now_more = ordered[DO_NOW_VISIBLE:]
+
+    do_now_ids = {d["thread_id"] for d in ordered}
 
     waiting = [
         r
@@ -433,18 +560,87 @@ def build_today_view(
     fyi_ranked_visible = fyi_ranked[:FYI_RANKED_CAP]
     fyi_ranked_more = fyi_ranked[FYI_RANKED_CAP:]
 
-    for row in do_now + waiting + fyi_ranked_visible:
+    for row in do_now + do_now_more + waiting + fyi_ranked_visible:
         row["days_waiting"] = days_waiting(row.get("last_inbound_at") or row.get("received_at"))
 
     return {
         "do_now": do_now,
-        "do_now_hidden_count": do_now_hidden_count,
+        "do_now_more": do_now_more,
+        "do_now_hidden_count": len(do_now_more),
         "waiting": waiting,
         "fyi_digest": fyi_digest,
         "fyi_ranked": fyi_ranked_visible,
         "fyi_ranked_more": fyi_ranked_more,
         "open_action_count": len(todo_pinned) + len(do_now_ai),
     }
+
+
+def apply_heuristic_emails(
+    store: EmailStore,
+    user_email: str,
+    emails: list[dict],
+    *,
+    ai_analyzed: bool = True,
+) -> int:
+    """Store local intent for specific messages. Used when an AI batch fails."""
+    if not emails:
+        return 0
+    vip_patterns = store.list_sender_rules(user_email, "vip")
+    hide_patterns = store.list_sender_rules(user_email, "always_hide")
+    today = datetime.date.today()
+    count = 0
+    for email in emails:
+        thread_id = email.get("thread_id") or email["email_id"]
+        existing = store.get_thread_state(user_email, thread_id)
+        if existing and store.thread_user_lock_active(
+            existing,
+            last_inbound_at=email.get("received_at"),
+            last_from_me_at=None,
+            today=today,
+        ):
+            continue
+        sender = email.get("sender") or ""
+        vip = any(sender_matches_pattern(sender, pattern) for pattern in vip_patterns)
+        always_hide = any(sender_matches_pattern(sender, pattern) for pattern in hide_patterns)
+        intent, reason, due_at = infer_intent_heuristic(
+            email,
+            from_me=bool(email.get("from_me")),
+            last_from_me_at=None,
+            last_inbound_at=email.get("received_at"),
+            vip=vip,
+            always_hide=always_hide,
+        )
+        urgency = compute_urgency(
+            intent=intent,
+            due_at=due_at,
+            received_at=email.get("received_at"),
+            vip=vip,
+            today=today,
+        )
+        line, compact, bullets = fill_summary_fields(
+            line=email.get("line_summary") or "",
+            compact=email.get("compact_summary") or "",
+            bullets=email.get("bullet_summary") or [],
+            preview=email.get("preview") or "",
+            sender=sender,
+            subject=email.get("subject") or "",
+        )
+        store.update_email_analysis(
+            email["email_id"],
+            user_email,
+            bullet_summary=bullets,
+            line_summary=line,
+            compact_summary=compact,
+            intent=intent,
+            intent_reason=reason,
+            due_at=due_at,
+            urgency=urgency,
+            ai_analyzed=ai_analyzed,
+        )
+        count += 1
+    if count:
+        rebuild_thread_states(store, user_email)
+    return count
 
 
 def analyze_heuristic_batch(store: EmailStore, user_email: str, limit: int = 400) -> int:

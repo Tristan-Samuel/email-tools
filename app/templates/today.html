@@ -12,8 +12,8 @@
                 Draft reply ready to copy or send.
                 {% elif do_now %}
                 {{ do_now|length }} thread{{ 's' if do_now|length != 1 else '' }} need you now
-                {% if do_now_hidden_count > 0 %}
-                · {{ do_now_hidden_count }} lower-urgency item{{ 's' if do_now_hidden_count != 1 else '' }} hidden
+                {% if do_now_more %}
+                · {{ do_now_more|length }} more in Also needs you
                 {% endif %}
                 {% else %}
                 Nothing urgent — skim FYI below or clear it in one click.
@@ -21,10 +21,10 @@
             </p>
         </div>
         <div class="page-header-actions" style="display:flex;gap:8px;flex-wrap:wrap">
-            {% if groq_available and ai_pending > 0 %}
+            {% if groq_available and ai_auto_pending > 0 %}
             <form action="{{ url_for('main.analyze_now') }}" method="post">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <button type="submit" class="btn btn-teal">Analyze {{ ai_pending }}</button>
+                <button type="submit" class="btn btn-teal">Analyze {{ ai_auto_pending }} recent</button>
             </form>
             {% endif %}
             {% if groq_available %}
@@ -179,6 +179,24 @@
             <h3>You're caught up on replies</h3>
             <p>No threads need your response right now.</p>
         </div>
+        {% endif %}
+        {% if do_now_more %}
+        <details class="also-needs-you" style="margin-top:16px">
+            <summary style="cursor:pointer;font-weight:650">Also needs you ({{ do_now_more|length }})</summary>
+            <div class="respond-list" style="margin-top:12px">
+                {% for row in do_now_more %}
+                {% set eid = row.latest_email_id %}
+                <div class="respond-card">
+                    <div class="respond-card-body">
+                        <a class="inbox-row-subject" href="{{ url_for('main.email_detail', email_id=eid) }}">{{ row.subject }}</a>
+                        <p class="email-meta" style="margin:4px 0">{{ row.sender or 'Unknown sender' }}</p>
+                        <p class="respond-reason">{{ row.summary or row.intent_reason }}</p>
+                    </div>
+                    <a href="{{ url_for('main.email_detail', email_id=eid) }}" class="btn btn-ghost">Open</a>
+                </div>
+                {% endfor %}
+            </div>
+        </details>
         {% endif %}
     </section>
 

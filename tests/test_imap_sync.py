@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from app.services import imap_service
+from app.services.store import EmailStore
 
 
 def _mock_fetch(ok: bool, uids: list[int] | None = None) -> tuple[str, list]:
@@ -165,6 +168,60 @@ def test_resolve_imap_host_replaces_unresolved_guess(
         imap_service.resolve_imap_host("me@ghcdsstudent.org", "imap.ghcdsstudent.org")
         == "imap.gmail.com"
     )
+
+
+def _raw_message(uid: str) -> dict:
+    return {
+        "email_id": f"uid-{uid}",
+        "message_id": f"<{uid}@example>",
+        "subject": f"Message {uid}",
+        "sender": "a@b.com",
+        "recipient": "me@example.com",
+        "cc": "",
+        "body": "Hello",
+        "received_at": "2026-09-01T00:00:00+00:00",
+        "in_reply_to": "",
+        "is_mailing_list": 0,
+    }
+
+
+@patch("app.routes._imap_password_for_account", return_value=("pw", None))
+@patch("app.routes.imap_service.fetch_emails")
+def test_sync_pages_until_backfill_exhausted(mock_fetch: MagicMock, _password: MagicMock) -> None:
+    from app.routes import sync_one_account
+
+    pages = {"n": 0}
+
+    def fake_fetch(**kwargs: object) -> tuple:
+        pages["n"] += 1
+        if pages["n"] == 1:
+            assert kwargs["since_uid"] == 0
+            assert kwargs["backfill_uid"] == 0
+            assert kwargs["limit"] == 2
+            return ([_raw_message("1")], 5, 3, 9)
+        if pages["n"] == 2:
+            assert kwargs["since_uid"] == 5
+            assert kwargs["backfill_uid"] == 3
+            return ([_raw_message("2")], 5, 0, 9)
+        raise AssertionError("sync kept fetching after the backfill cursor was exhausted")
+
+    mock_fetch.side_effect = fake_fetch
+    with tempfile.TemporaryDirectory() as tmp:
+        store = EmailStore(Path(tmp) / "sync.db")
+        store.initialize()
+        user = "me@example.com"
+        account_id = store.save_imap_account(user, "acct@example.com", "imap.example.com", 993, "cipher")
+        store.update_imap_sync_prefs(account_id, "", 2)
+        account = store.get_imap_account(account_id, user)
+        assert account is not None
+        imported, err = sync_one_account(store, account, user, MagicMock(), limit=2)
+        assert err is None
+        assert imported == 2
+        assert pages["n"] == 2
+        folder = store.get_folder_sync(account_id, "INBOX")
+        assert folder is not None
+        assert folder["backfill_uid"] == 0
+        assert len(store.list_emails(user_email=user, limit=10)) == 2
 
 
 @patch("app.services.imap_service.host_resolves", return_value=True)

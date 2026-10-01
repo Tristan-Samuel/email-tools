@@ -124,6 +124,7 @@ def create_app() -> Flask:
         query = request.args.get("query", "") if request else ""
         activity_job = None
         ai_pending = 0
+        ai_auto_pending = 0
         ai_analyzed = 0
         groq_available = False
         profile_initials = "?"
@@ -142,6 +143,7 @@ def create_app() -> Flask:
             try:
                 activity_job = store.get_latest_job(user_email)
                 ai_analyzed, ai_pending = store.count_ai_stats(user_email)
+                ai_auto_pending = store.count_auto_analyze_emails(user_email)
             except Exception:
                 pass
             try:
@@ -160,6 +162,7 @@ def create_app() -> Flask:
             "static_version": app.config.get("STATIC_VERSION", "1"),
             "activity_job": activity_job,
             "ai_pending": ai_pending,
+            "ai_auto_pending": ai_auto_pending,
             "ai_analyzed": ai_analyzed,
             "groq_available": groq_available,
             "profile_initials": profile_initials,

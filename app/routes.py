@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import secrets
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -32,7 +33,13 @@ from .services.groq_client import (
 from .services.llm_text import clean_inbox_digest
 from .services.summary import build_digest, build_email_record, build_important_items, fill_summary_fields
 from .services import sync_worker, triage, ai_query, user_prefs, webmail
-from .services.triage import build_today_view, rebuild_thread_states, analyze_heuristic_batch
+from .services.triage import (
+    AUTO_ANALYZE_DAYS,
+    analyze_heuristic_batch,
+    apply_heuristic_emails,
+    build_today_view,
+    rebuild_thread_states,
+)
 from .services.sync_worker import JobCancelled, JobFailed, check_cancelled, current_job_is_cancelled
 
 logger = logging.getLogger(__name__)
@@ -192,7 +199,9 @@ _NEEDS_REPLY_KV = "needs_reply_cache_v1"
 _INBOX_ROW_ORDER_KEY = "inbox_row_order"
 _INBOX_SUMMARY_SIZE_KEY = "inbox_summary_size"
 _SEARCH_SORT_KEY = "search_sort"
-_BODY_HTML_REFETCH_KEY = "body_html_refetch_v1"
+_AI_BACKOFF_KEY = "ai_analyze_backoff_until"
+_AI_BACKOFF_SECONDS = 15 * 60
+_SYNC_PAGE_GUARD = 5000
 _VALID_INBOX_ROW_ORDERS = ("summary", "subject", "sender")
 _VALID_INBOX_SUMMARY_SIZES = ("normal", "large")
 _VALID_SEARCH_SORTS = ("urgency", "date_desc", "date_asc", "priority")
@@ -269,17 +278,25 @@ def _normalize_fyi_brief(payload: dict | None) -> dict | None:
 
 
 def _load_fyi_brief(store, user_email: str, fyi_digest: dict | list | None, ai: AiClient) -> dict | None:
+    """Cached brief only. Generating a new one is the Regenerate action."""
+    del fyi_digest, ai
     from .services.token_budget import pacific_today
 
     today = pacific_today()
     cached = user_prefs.get_json_pref(store, user_email, user_prefs.FYI_BRIEF_CACHE, {})
     if isinstance(cached, dict) and cached.get("date") == today and cached.get("headline"):
-        normalized = _normalize_fyi_brief(cached)
-        if normalized:
-            return normalized
+        return _normalize_fyi_brief(cached)
+    return None
+
+
+def _generate_fyi_brief(store, user_email: str, fyi_digest: dict | list | None, ai: AiClient) -> dict | None:
+    """Call the model for today's FYI brief and store it."""
+    from .services.token_budget import pacific_today
+
+    today = pacific_today()
     email_ids = _fyi_digest_email_ids(fyi_digest)
     if not ai.enabled or not email_ids:
-        return _normalize_fyi_brief(cached if isinstance(cached, dict) else None)
+        return None
     emails = [store.get_email(eid, user_email=user_email) for eid in email_ids[:20]]
     emails = [e for e in emails if e]
     if not emails:
@@ -496,6 +513,28 @@ def _parse_since_date(since_str: str | None) -> datetime.date | None:
         return None
 
 
+def _sync_page_size(account: dict, limit: int | None = None) -> int:
+    """Messages per IMAP page. The sync keeps paging until the window is saved."""
+    raw = limit if limit is not None else account.get("sync_max_count")
+    return _parse_sync_max(raw, default=200)
+
+
+def _ai_backoff_active(store, user_email: str) -> bool:
+    raw = store.get_kv(user_email, _AI_BACKOFF_KEY)
+    try:
+        return float(raw or 0) > time.time()
+    except (TypeError, ValueError):
+        return False
+
+
+def _set_ai_backoff(store, user_email: str) -> None:
+    store.set_kv(user_email, _AI_BACKOFF_KEY, str(time.time() + _AI_BACKOFF_SECONDS))
+
+
+def _clear_ai_backoff(store, user_email: str) -> None:
+    store.set_kv(user_email, _AI_BACKOFF_KEY, "0")
+
+
 def _credential_keys() -> list[str]:
     """Current and legacy secrets so IMAP passwords survive a key change."""
     keys: list[str] = []
@@ -565,6 +604,52 @@ def _enrich_imap_accounts(store, accounts: list[dict]) -> list[dict]:
     return enriched
 
 
+def _record_with_heuristic(
+    msg: dict,
+    *,
+    account: dict,
+    user_email: str,
+    folder: str,
+    vip_patterns: list[str],
+    hide_patterns: list[str],
+    today: datetime.date,
+) -> dict:
+    """Local summary plus heuristic intent so Today works before AI runs."""
+    from_me = imap_service.is_sent_folder(folder) or triage.sender_is_account(
+        msg.get("sender") or "", account["account_email"]
+    )
+    record = build_email_record(
+        msg,
+        source_name=account["account_email"],
+        user_email=user_email,
+        source_account=account["account_email"],
+        groq_client=None,
+        from_me=from_me,
+    )
+    sender = record.get("sender") or ""
+    vip = any(triage.sender_matches_pattern(sender, pattern) for pattern in vip_patterns)
+    always_hide = any(triage.sender_matches_pattern(sender, pattern) for pattern in hide_patterns)
+    intent, reason, due_at = triage.infer_intent_heuristic(
+        record,
+        from_me=from_me,
+        last_from_me_at=None,
+        last_inbound_at=record.get("received_at"),
+        vip=vip,
+        always_hide=always_hide,
+    )
+    record["intent"] = intent
+    record["intent_reason"] = reason
+    record["due_at"] = due_at
+    record["urgency"] = triage.compute_urgency(
+        intent=intent,
+        due_at=due_at,
+        received_at=record.get("received_at"),
+        vip=vip,
+        today=today,
+    )
+    return record
+
+
 def sync_one_account(
     store,
     account: dict,
@@ -600,61 +685,84 @@ def sync_one_account(
     if decrypt_err:
         return 0, decrypt_err
 
-    sync_max = _parse_sync_max(limit or account.get("sync_max_count"))
-    since_str = account.get("sync_since_date")
+    page_size = _sync_page_size(account, limit)
     if since_date is None:
-        since_date = _parse_since_date(since_str)
-    if since_date is None and not backfill_only:
-        since_date = _parse_since_date(_default_sync_since())
+        since_date = _parse_since_date(account.get("sync_since_date"))
 
     folders = store.get_enabled_folders(account["id"])
     total_imported = 0
     inbox_last_uid = account.get("last_uid") or 0
     inbox_backfill = account.get("backfill_uid") or 0
     inbox_uidvalidity = account.get("uidvalidity") or 0
+    window = since_date.isoformat() if since_date else "all mail"
+    vip_patterns = store.list_sender_rules(user_email, "vip")
+    hide_patterns = store.list_sender_rules(user_email, "always_hide")
+    today = datetime.date.today()
 
     log(f"Connecting to {account['imap_host']} as {account['account_email']}…")
     for folder in folders:
-        log(f"Fetching {folder} (since {since_date or 'cursor'}, max {sync_max})…", phase="fetch")
+        log(
+            f"Fetching {folder} ({window}, {page_size} per page)…",
+            phase="fetch",
+        )
         folder_state = store.get_folder_sync(account["id"], folder)
         since_uid = (folder_state or {}).get("last_uid", account.get("last_uid") or 0)
         backfill_uid = (folder_state or {}).get("backfill_uid", account.get("backfill_uid") or 0)
         stored_uidvalidity = (folder_state or {}).get("uidvalidity", account.get("uidvalidity") or 0)
+        pages = 0
 
-        emails_raw, last_uid, new_backfill, uidvalidity = imap_service.fetch_emails(
-            host=account["imap_host"],
-            port=account["imap_port"],
-            username=account["account_email"],
-            password=password,
-            folder=folder,
-            since_uid=since_uid,
-            backfill_uid=backfill_uid,
-            stored_uidvalidity=stored_uidvalidity,
-            limit=sync_max,
-            since_date=since_date,
-            backfill_only=backfill_only,
-            on_progress=fetch_progress,
-        )
-        log(f"{folder}: downloaded {len(emails_raw)} message(s).")
-        records = [
-            build_email_record(
-                msg,
-                source_name=account["account_email"],
-                user_email=user_email,
-                source_account=account["account_email"],
-                groq_client=None,
-                from_me=imap_service.is_sent_folder(folder)
-                or triage.sender_is_account(msg.get("sender") or "", account["account_email"]),
+        while pages < _SYNC_PAGE_GUARD:
+            check_cancelled(store)
+            pages += 1
+            prev_since = since_uid
+            prev_backfill = backfill_uid
+            emails_raw, last_uid, new_backfill, uidvalidity = imap_service.fetch_emails(
+                host=account["imap_host"],
+                port=account["imap_port"],
+                username=account["account_email"],
+                password=password,
+                folder=folder,
+                since_uid=since_uid,
+                backfill_uid=backfill_uid,
+                stored_uidvalidity=stored_uidvalidity,
+                limit=page_size,
+                since_date=since_date,
+                backfill_only=backfill_only,
+                on_progress=fetch_progress,
             )
-            for msg in emails_raw
-        ]
-        total_imported += store.bulk_upsert(records)
-        store.update_folder_sync(account["id"], folder, last_uid, new_backfill, uidvalidity)
-        if folder.upper() == "INBOX":
-            inbox_last_uid = last_uid
-            inbox_backfill = new_backfill
-            inbox_uidvalidity = uidvalidity
-        log(f"{folder}: saved {len(records)}.")
+            records = [
+                _record_with_heuristic(
+                    msg,
+                    account=account,
+                    user_email=user_email,
+                    folder=folder,
+                    vip_patterns=vip_patterns,
+                    hide_patterns=hide_patterns,
+                    today=today,
+                )
+                for msg in emails_raw
+            ]
+            saved = store.bulk_upsert(records) if records else 0
+            total_imported += saved
+            store.update_folder_sync(account["id"], folder, last_uid, new_backfill, uidvalidity)
+            if records:
+                rebuild_thread_states(store, user_email)
+            since_uid = last_uid
+            backfill_uid = new_backfill
+            stored_uidvalidity = uidvalidity
+            if folder.upper() == "INBOX":
+                inbox_last_uid = last_uid
+                inbox_backfill = new_backfill
+                inbox_uidvalidity = uidvalidity
+            log(f"{folder}: saved page {pages} ({len(records)} message(s)).")
+            if new_backfill <= 0:
+                break
+            if (
+                not emails_raw
+                and new_backfill == prev_backfill
+                and last_uid == prev_since
+            ):
+                break
 
     store.update_imap_last_sync(
         account["id"],
@@ -662,44 +770,6 @@ def sync_one_account(
         backfill_uid=inbox_backfill,
         uidvalidity=inbox_uidvalidity,
     )
-    if total_imported > 0:
-        rebuild_thread_states(store, user_email)
-
-    if not store.get_kv(user_email, _BODY_HTML_REFETCH_KEY):
-        log("Backfilling HTML bodies for recent mail…", phase="fetch")
-        refetched = 0
-        for folder in folders:
-            try:
-                recent_raw = imap_service.fetch_recent_emails(
-                    host=account["imap_host"],
-                    port=account["imap_port"],
-                    username=account["account_email"],
-                    password=password,
-                    folder=folder,
-                    limit=sync_max,
-                    on_progress=fetch_progress,
-                )
-            except Exception:
-                continue
-            if not recent_raw:
-                continue
-            records = [
-                build_email_record(
-                    msg,
-                    source_name=account["account_email"],
-                    user_email=user_email,
-                    source_account=account["account_email"],
-                    groq_client=None,
-                )
-                for msg in recent_raw
-                if msg.get("body_html")
-            ]
-            if records:
-                refetched += store.bulk_upsert(records)
-        if refetched:
-            log(f"Refreshed HTML for {refetched} message(s).", phase="fetch")
-        store.set_kv(user_email, _BODY_HTML_REFETCH_KEY, "1")
-
     return total_imported, None
 
 
@@ -753,13 +823,18 @@ def analyze_pending_emails(
     user_email: str,
     ai: AiClient,
     on_progress: Callable[..., None],
-    limit: int = 400,
+    limit: int = 80,
+    scope: str = "recent",
 ) -> int:
-    """Write AI summaries + intent for unanalyzed mail. Return how many succeeded."""
-    emails = store.list_unanalyzed_emails(user_email, limit)
+    """Write AI summaries + intent. A failed batch is stored locally instead of aborting sync."""
+    if scope == "all":
+        emails = store.list_unanalyzed_emails(user_email, limit)
+    else:
+        emails = store.list_auto_analyze_emails(
+            user_email, days=AUTO_ANALYZE_DAYS, limit=limit
+        )
     if not emails:
-        on_progress("All cached emails already have AI summaries.")
-        rebuild_thread_states(store, user_email)
+        on_progress("Nothing new to analyze.")
         return 0
     if not ai.enabled:
         count = analyze_heuristic_batch(store, user_email, limit)
@@ -767,6 +842,7 @@ def analyze_pending_emails(
         return count
 
     total = len(emails)
+    batch_total = total
     model_name = ai.select_max_context_model()
     provider = "Gemini" if ai.gemini_enabled else "Groq"
     on_progress(f"Using {provider} model {model_name}…", 0, total, phase="summarize")
@@ -774,43 +850,79 @@ def analyze_pending_emails(
     analyzed = 0
     vip_patterns = store.list_sender_rules(user_email, "vip")
     today = datetime.date.today()
+    stop_api = False
+    keep_backoff = False
 
-    def process_chunk(chunk: list[dict], results: dict[str, dict]) -> int:
+    def persist_hits(chunk: list[dict], results: dict[str, dict]) -> list[dict]:
         nonlocal analyzed
-        count = 0
-        batch_failed = not results and bool(ai.last_error)
+        missed: list[dict] = []
         for email in chunk:
             data = results.get(email["email_id"])
-            if not data:
-                if batch_failed:
-                    continue
-                result = ai.summarize_email(
-                    sender=email.get("sender") or "",
-                    subject=email.get("subject") or "",
-                    body=email.get("body") or "",
-                )
-                if result:
-                    data = {
-                        "bullets": result.get("bullets") or [],
-                        "line": result.get("line") or "",
-                        "compact": result.get("compact") or "",
-                        "intent": "fyi",
-                        "reason": "",
-                        "due_at": None,
-                        "tags": [],
-                    }
             if not data or not (data.get("bullets") or data.get("line")):
-                if ai.last_error and is_fatal_auth_error(ai.last_error):
-                    on_progress(f"AI error: {ai.last_error}")
-                    on_progress("Stopping analysis — API key rejected.")
-                    raise JobFailed(ai.last_error)
+                missed.append(email)
                 continue
             _persist_email_analysis(
                 store, user_email, email, data, vip_patterns=vip_patterns, today=today
             )
             analyzed += 1
-            count += 1
-        return count
+        return missed
+
+    def store_local(chunk: list[dict], err: str) -> None:
+        nonlocal analyzed
+        if not chunk:
+            return
+        saved = apply_heuristic_emails(store, user_email, chunk, ai_analyzed=True)
+        analyzed += saved
+        on_progress(f"AI error: {err}")
+        on_progress(f"Saved local triage for {saved} message(s).")
+
+    def fail_batch(chunk: list[dict]) -> str:
+        """Retry a failed batch once, then keep local triage. Return 'stop' or 'continue'."""
+        nonlocal keep_backoff
+        err = ai.last_error or "AI request failed."
+        if err == "Cancelled.":
+            raise JobCancelled()
+        if is_fatal_auth_error(err):
+            on_progress(f"AI error: {err}")
+            on_progress("Stopping analysis — API key rejected. Downloaded mail stays cached.")
+            _set_ai_backoff(store, user_email)
+            keep_backoff = True
+            raise JobFailed(err)
+        if len(chunk) > 1:
+            mid = max(1, len(chunk) // 2)
+            on_progress(f"Retrying {len(chunk)} email(s) in smaller batches…")
+            for part in (chunk[:mid], chunk[mid:]):
+                if not part:
+                    continue
+                check_cancelled(store)
+                results = ai.analyze_emails_batch(part, batch_size=max(1, len(part)))
+                if results:
+                    missed = persist_hits(part, results)
+                    if missed:
+                        store_local(missed, ai.last_error or err)
+                    continue
+                err = ai.last_error or err
+                if err == "Cancelled.":
+                    raise JobCancelled()
+                if is_fatal_auth_error(err):
+                    on_progress(f"AI error: {err}")
+                    _set_ai_backoff(store, user_email)
+                    keep_backoff = True
+                    raise JobFailed(err)
+                store_local(part, err)
+                if is_unreachable(err):
+                    _set_ai_backoff(store, user_email)
+                    keep_backoff = True
+                    on_progress("AI provider is unreachable. Analysis will retry later.")
+                    return "stop"
+            return "continue"
+        store_local(chunk, err)
+        if is_unreachable(err):
+            _set_ai_backoff(store, user_email)
+            keep_backoff = True
+            on_progress("AI provider is unreachable. Analysis will retry later.")
+            return "stop"
+        return "continue"
 
     if ai.gemini_enabled:
         processed = 0
@@ -830,65 +942,62 @@ def analyze_pending_emails(
             if ai.last_model_used and ai.last_model_used != model_name:
                 model_name = ai.last_model_used
                 on_progress(f"Using Gemini model {model_name}…")
-            if not results and ai.last_error:
-                on_progress(f"Gemini error: {ai.last_error}")
-                if ai.last_error == "Cancelled.":
-                    raise JobCancelled()
-            process_chunk(packed, results)
+            if results:
+                missed = persist_hits(packed, results)
+                if missed:
+                    if fail_batch(missed) == "stop":
+                        stop_api = True
+                        processed += len(packed)
+                        break
+            elif ai.last_error == "Cancelled.":
+                raise JobCancelled()
+            elif fail_batch(packed) == "stop":
+                stop_api = True
+                processed += len(packed)
+                break
             processed += len(packed)
             _cache_ai_model(ai)
+            if stop_api:
+                break
 
-        if ai.last_error == "Cancelled.":
-            raise JobCancelled()
-
-        if not ai.gemini_enabled and ai.groq_enabled:
-            remaining = emails[processed:]
-            if remaining:
-                on_progress("Switching to Groq for remaining mail…")
-                emails = remaining
-                total = len(emails)
-                processed = 0
-            else:
-                emails = []
+        if not stop_api and not ai.gemini_enabled and ai.groq_enabled:
+            emails = emails[processed:]
+            total = len(emails)
         else:
             emails = []
 
-    batch_size = 8
-    for start in range(0, len(emails), batch_size):
-        check_cancelled(store)
-        chunk = emails[start : start + batch_size]
-        on_progress(
-            f"AI analyzing {start + 1}–{min(start + batch_size, len(emails))} of {len(emails)}…",
-            min(start + batch_size, len(emails)),
-            len(emails),
-            phase="summarize",
-        )
-        results = ai.analyze_emails_batch(chunk, batch_size=batch_size)
-        if ai.last_model_used and ai.last_model_used != model_name:
-            model_name = ai.last_model_used
-            on_progress(f"Switched to {ai.last_provider} model {model_name}…")
-        if not results and ai.last_error:
-            on_progress(f"AI error: {ai.last_error}")
-            if is_fatal_auth_error(ai.last_error):
-                on_progress("Stopping analysis — API key rejected.")
-                raise JobFailed(ai.last_error)
-            if is_unreachable(ai.last_error):
-                on_progress("Stopping analysis — AI provider is unreachable (network/DNS).")
-                raise JobFailed(ai.last_error)
-            if is_rate_limit_error(ai.last_error):
-                on_progress("Rate limited — retrying with smaller batches or fallback provider.")
-            if ai.last_error == "Cancelled.":
-                raise JobCancelled()
-        process_chunk(chunk, results)
-        _cache_ai_model(ai)
+    if not stop_api:
+        batch_size = 8
+        for start in range(0, len(emails), batch_size):
+            check_cancelled(store)
+            chunk = emails[start : start + batch_size]
+            on_progress(
+                f"AI analyzing {start + 1}–{min(start + batch_size, len(emails))} of {len(emails)}…",
+                min(start + batch_size, len(emails)),
+                len(emails),
+                phase="summarize",
+            )
+            results = ai.analyze_emails_batch(chunk, batch_size=batch_size)
+            if ai.last_model_used and ai.last_model_used != model_name:
+                model_name = ai.last_model_used
+                on_progress(f"Switched to {ai.last_provider} model {model_name}…")
+            if results:
+                missed = persist_hits(chunk, results)
+                if missed and fail_batch(missed) == "stop":
+                    break
+            elif fail_batch(chunk) == "stop":
+                break
+            _cache_ai_model(ai)
 
     rebuild_thread_states(store, user_email)
-    if analyzed == 0 and ai.last_error:
-        if ai.last_error == "Cancelled.":
-            raise JobCancelled()
-        on_progress(f"No emails could be analyzed. {ai.last_error}")
+    if analyzed and not keep_backoff:
+        _clear_ai_backoff(store, user_email)
+    elif ai.last_error == "Cancelled.":
+        raise JobCancelled()
+    elif ai.last_error and is_fatal_auth_error(ai.last_error):
+        _set_ai_backoff(store, user_email)
         raise JobFailed(ai.last_error)
-    on_progress(f"Analyzed {analyzed} of {total}.", total, total, phase="summarize")
+    on_progress(f"Analyzed {analyzed} of {batch_total}.", batch_total, batch_total, phase="summarize")
     return analyzed
 
 
@@ -1160,10 +1269,10 @@ def today():
     store.ensure_default_tags(user_email)
     source_account = request.args.get("source_account") or None
 
-    rebuild_thread_states(store, user_email)
     view = build_today_view(store, user_email, source_account=source_account)
     ai = get_ai_client(user_email)
     ai_analyzed, ai_pending = store.count_ai_stats(user_email)
+    ai_auto_pending = store.count_auto_analyze_emails(user_email, days=AUTO_ANALYZE_DAYS)
 
     thread_ids = [row["thread_id"] for row in view["do_now"] + view["waiting"]]
     email_ids = [row.get("latest_email_id") or "" for row in view["do_now"] + view["waiting"]]
@@ -1186,12 +1295,18 @@ def today():
     onboarding = _onboarding_state(store, user_email, ai)
     ai_chips = user_prefs.saved_ai_prompts(store, user_email)
 
-    if ai.enabled and ai_pending > 0 and store.get_active_job(user_email) is None:
-        _queue_job(user_email, "reanalyze", f"Analyze {ai_pending} email(s) with AI")
+    if (
+        ai.enabled
+        and ai_auto_pending > 0
+        and store.get_active_job(user_email) is None
+        and not _ai_backoff_active(store, user_email)
+    ):
+        _queue_job(user_email, "analyze_recent", f"Analyze {ai_auto_pending} recent email(s)")
 
     return render_template(
         "today.html",
         do_now=view["do_now"],
+        do_now_more=view["do_now_more"],
         do_now_hidden_count=view["do_now_hidden_count"],
         waiting=view["waiting"],
         fyi_digest=view["fyi_digest"],
@@ -1202,6 +1317,7 @@ def today():
         groq_available=ai.enabled,
         ai_analyzed=ai_analyzed,
         ai_pending=ai_pending,
+        ai_auto_pending=ai_auto_pending,
         email_tags_map=email_tags_map,
         draft_reply=draft_reply,
         draft_email=draft_email,
@@ -1770,7 +1886,7 @@ def accounts_add():
             imap_port=imap_port,
             encrypted_password=encrypted,
         )
-        store.update_imap_sync_prefs(account_id, _default_sync_since(), 200)
+        store.update_imap_sync_prefs(account_id, "", 200)
         try:
             remote_folders = imap_service.list_folders(imap_host, imap_port, account_email, password)
             store.enable_default_folders(account_id, remote_folders)
@@ -1788,7 +1904,7 @@ def accounts_add():
                 flash(f"Account {account_email} connected. {queue_err}", "success")
             else:
                 flash(
-                    f"Account {account_email} connected. Fetching recent mail in the background — watch the activity panel.",
+                    f"Account {account_email} connected. Downloading your mailbox in the background — mail shows up as each page saves.",
                     "success",
                 )
         except Exception as exc:
@@ -1851,7 +1967,7 @@ def accounts_sync(account_id: int):
         flash("Account not found.", "error")
         return redirect(url_for("main.accounts"))
 
-    since = (request.form.get("sync_since") or "").strip() or _default_sync_since()
+    since = (request.form.get("sync_since") or "").strip()
     sync_max = _parse_sync_max(request.form.get("sync_max") or account.get("sync_max_count"))
     store.update_imap_sync_prefs(account_id, since, sync_max)
     account = store.get_imap_account(account_id, user_email)
@@ -1892,7 +2008,7 @@ def accounts_load_older(account_id: int):
         flash("Account not found.", "error")
         return redirect(url_for("main.accounts"))
 
-    since = (request.form.get("sync_since") or account.get("sync_since_date") or _default_sync_since()).strip()
+    since = (request.form.get("sync_since") or account.get("sync_since_date") or "").strip()
     sync_max = _parse_sync_max(request.form.get("sync_max") or account.get("sync_max_count"))
     store.update_imap_sync_prefs(account_id, since, sync_max)
     account = store.get_imap_account(account_id, user_email)
@@ -2043,8 +2159,13 @@ def today_fyi_brief_regenerate():
         return login_redirect
     store = get_store()
     user_email = g.current_user_email
-    user_prefs.set_json_pref(store, user_email, user_prefs.FYI_BRIEF_CACHE, {})
-    flash("FYI brief will refresh on next Today load.", "success")
+    ai = get_ai_client(user_email)
+    view = build_today_view(store, user_email)
+    brief = _generate_fyi_brief(store, user_email, view.get("fyi_digest"), ai)
+    if brief:
+        flash("FYI brief updated.", "success")
+    else:
+        flash("Could not refresh the FYI brief.", "error")
     return redirect(url_for("main.today"))
 
 
@@ -2479,15 +2600,15 @@ def analyze_now():
         flash("Add a Gemini or Groq API key in Settings to generate AI summaries.", "error")
         return redirect(url_for("main.settings"))
 
-    pending = store.count_ai_stats(user_email)[1]
+    pending = store.count_auto_analyze_emails(user_email, days=AUTO_ANALYZE_DAYS)
     if pending <= 0:
-        flash("All cached emails already have AI summaries.", "success")
+        flash("Recent mail already has AI summaries. Rescan all summaries to redo the whole cache.", "success")
         return redirect(request.referrer or url_for("main.today"))
 
     job_id, queue_err = _queue_job(
         user_email,
-        "reanalyze",
-        f"Analyze {pending} email(s) with AI",
+        "analyze_recent",
+        f"Analyze {pending} recent email(s)",
     )
     if queue_err:
         flash(queue_err, "error")
@@ -2573,7 +2694,7 @@ def accounts_resync(account_id: int):
         flash("Account not found.", "error")
         return redirect(url_for("main.accounts"))
 
-    since = (request.form.get("sync_since") or "").strip() or _default_sync_since()
+    since = (request.form.get("sync_since") or "").strip()
     sync_max = _parse_sync_max(request.form.get("sync_max") or account.get("sync_max_count"))
     store.update_imap_sync_prefs(account_id, since, sync_max)
     folder_names = request.form.getlist("folders")

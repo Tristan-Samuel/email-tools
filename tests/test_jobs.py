@@ -107,6 +107,82 @@ def test_run_job_records_decrypt_error() -> None:
         assert any("decrypt" in line for line in job["log"])
 
 
+def test_sync_job_finishes_when_download_saves() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = EmailStore(Path(tmp) / "t.db")
+        store.initialize()
+        job_id = store.create_job("me@example.com", "sync", "Sync inbox")
+
+        def analyze_fn(*_args, **_kwargs):
+            raise JobFailed("400 INVALID_ARGUMENT. Request contains an invalid argument.")
+
+        groq = MagicMock()
+        groq.enabled = True
+        groq.last_error = "400 INVALID_ARGUMENT. Request contains an invalid argument."
+        with patch("app.services.sync_worker.enqueue_job") as enqueue:
+            _run_job(
+                store,
+                job_id,
+                "sync",
+                None,
+                "me@example.com",
+                lambda *_a, **_k: (4, None),
+                lambda _email: groq,
+                None,
+                analyze_fn,
+                None,
+            )
+        job = store.get_job(job_id, "me@example.com")
+        assert job is not None
+        assert job["status"] == "done"
+        enqueue.assert_called_once()
+        assert enqueue.call_args.args[1] == "analyze_recent"
+
+
+def test_analyze_batch_error_stores_heuristic() -> None:
+    from app.routes import analyze_pending_emails
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = EmailStore(Path(tmp) / "t.db")
+        store.initialize()
+        message = {
+            "email_id": "raw-ask",
+            "message_id": "<ask@b>",
+            "subject": "Form",
+            "sender": "alex@friends.com",
+            "recipient": "me@example.com",
+            "cc": "",
+            "received_at": "2026-09-28T12:00:00+00:00",
+            "body": "Can you send the signed form?",
+            "is_mailing_list": 0,
+        }
+        record = build_email_record(
+            message, "me@example.com", "me@example.com", source_account="me@example.com"
+        )
+        store.bulk_upsert([record])
+        ai = MagicMock()
+        ai.enabled = True
+        ai.gemini_enabled = False
+        ai.last_error = "Gemini returned invalid JSON."
+        ai.last_model_used = "test-model"
+        ai.select_max_context_model.return_value = "test-model"
+        ai.analyze_emails_batch.return_value = {}
+        logs: list[str] = []
+        analyzed = analyze_pending_emails(
+            store,
+            "me@example.com",
+            ai,
+            lambda message, *_args, **_kwargs: logs.append(str(message)),
+            scope="recent",
+            limit=10,
+        )
+        assert analyzed == 1
+        saved = store.list_emails(user_email="me@example.com", limit=5)[0]
+        assert saved["ai_analyzed"] == 1
+        assert saved["intent"] == "i_owe"
+        assert any("local triage" in line for line in logs)
+
+
 def test_run_job_stops_on_analyze_failure() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = EmailStore(Path(tmp) / "t.db")
