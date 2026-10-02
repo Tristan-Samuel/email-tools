@@ -313,3 +313,22 @@ def test_accounts_add_rewrites_unresolved_workspace_host(
     assert accounts[0]["imap_host"] == "imap.gmail.com"
     mock_test.assert_called()
     assert mock_test.call_args.args[0] == "imap.gmail.com"
+
+
+def test_sso_identity_keeps_existing_owner_email() -> None:
+    app = create_app()
+    store: EmailStore = app.extensions["email_store"]
+    from werkzeug.security import generate_password_hash
+
+    email = "owner@example.com"
+    store.set_app_password(email, generate_password_hash("secret12", method="pbkdf2:sha256"))
+    from app.routes import _attach_inbox_sso
+
+    linked = _attach_inbox_sso(store, "sub-1", email)
+    assert linked == email
+    assert store.get_sso_email("sub-1") == email
+    again = _attach_inbox_sso(store, "sub-1", email)
+    assert again == email
+    other = _attach_inbox_sso(store, "sub-2", "fresh@example.com")
+    assert other == "fresh@example.com"
+    assert store.get_sso_email("sub-1") == email

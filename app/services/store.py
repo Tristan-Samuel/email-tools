@@ -488,6 +488,20 @@ class EmailStore:
                 "ALTER TABLE emails ADD COLUMN gmail_thrid TEXT NOT NULL DEFAULT ''"
             )
 
+    def _migrate_v16(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sso_identities (
+                sub TEXT PRIMARY KEY,
+                user_email TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sso_identities_email ON sso_identities (user_email)"
+        )
+
     def initialize(self) -> None:
         with self._connect() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -551,6 +565,10 @@ class EmailStore:
                 self._migrate_v15(connection)
                 connection.execute("PRAGMA user_version = 15")
                 version = 15
+            if version < 16:
+                self._migrate_v16(connection)
+                connection.execute("PRAGMA user_version = 16")
+                version = 16
             try:
                 connection.execute("SELECT email_id FROM email_search LIMIT 0")
                 self.fts_enabled = True
@@ -1809,6 +1827,33 @@ class EmailStore:
         if row and row["app_password_hash"]:
             return row["app_password_hash"]
         return ""
+
+    def get_sso_email(self, sub: str) -> str:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT user_email FROM sso_identities WHERE sub = ?",
+                (sub,),
+            ).fetchone()
+        return (row["user_email"] if row else "") or ""
+
+    def get_sso_sub(self, user_email: str) -> str:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT sub FROM sso_identities WHERE user_email = ?",
+                (user_email,),
+            ).fetchone()
+        return (row["sub"] if row else "") or ""
+
+    def set_sso_identity(self, sub: str, user_email: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO sso_identities (sub, user_email)
+                VALUES (?, ?)
+                ON CONFLICT(sub) DO UPDATE SET user_email=excluded.user_email
+                """,
+                (sub, user_email),
+            )
 
     def create_verification(
         self,

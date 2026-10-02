@@ -17,6 +17,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 from .services import crypto, imap_service, mail
+from .sso import SSOError, identity_from_callback, sso_enabled, start_authorize
 from .services.email_parser import parse_email_upload
 from .services.ai_client import (
     AiClient,
@@ -1017,6 +1018,11 @@ def refresh_cached_digest(store, user_email: str, ai: AiClient | None) -> None:
 
 @bp.route("/login", methods=["GET", "POST"])
 def login():
+    if request.method == "GET":
+        if getattr(g, "current_user_email", ""):
+            return redirect(url_for("main.today"))
+        if sso_enabled():
+            return start_authorize(next_url=url_for("main.today"))
     if request.method == "POST":
         user_email = (request.form.get("email") or "").strip().lower()
         if not _valid_email(user_email):
@@ -1123,6 +1129,8 @@ def _signup_blocked(user_email: str) -> str | None:
 def signup():
     if getattr(g, "current_user_email", ""):
         return redirect(url_for("main.today"))
+    if sso_enabled() and request.method == "GET":
+        return start_authorize(next_url=url_for("main.accounts_add"))
 
     store = get_store()
     step = "email"
@@ -1237,6 +1245,33 @@ def help_page():
 @bp.get("/guide")
 def guide_page():
     return render_template("guide.html")
+
+
+def _attach_inbox_sso(store, sub: str, email: str) -> str:
+    owned = store.get_sso_email(sub)
+    if owned:
+        return owned
+    other = store.get_sso_sub(email)
+    if other and other != sub:
+        raise ValueError("This email is already linked to a different account.")
+    store.set_sso_identity(sub, email)
+    return email
+
+
+@bp.get("/auth/sso/callback")
+def sso_callback():
+    try:
+        identity = identity_from_callback()
+        store = get_store()
+        user_email = _attach_inbox_sso(store, identity.sub, identity.email)
+    except (SSOError, ValueError) as err:
+        flash(getattr(err, "message", str(err)), "error")
+        return redirect(url_for("main.login"))
+    session["user_email"] = user_email
+    store.ensure_default_tags(user_email)
+    flash("Logged in.", "success")
+    nxt = session.pop("sso_next", None) or url_for("main.today")
+    return redirect(nxt)
 
 
 @bp.post("/logout")

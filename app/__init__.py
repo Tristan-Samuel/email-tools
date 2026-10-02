@@ -95,6 +95,14 @@ def create_app() -> Flask:
         SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_HTTPONLY=True,
         PREFERRED_URL_SCHEME="https" if is_production else "http",
+        LOGIN_URL=os.environ.get("LOGIN_URL", "").strip().rstrip("/"),
+        LOGIN_TOKEN_URL=os.environ.get("LOGIN_TOKEN_URL", "http://127.0.0.1:5111").strip().rstrip("/"),
+        LOGIN_CLIENT_ID=os.environ.get("LOGIN_CLIENT_ID", "inbox").strip(),
+        LOGIN_CLIENT_SECRET=os.environ.get("LOGIN_CLIENT_SECRET", "").strip(),
+        LOGIN_REDIRECT_URI=os.environ.get(
+            "LOGIN_REDIRECT_URI",
+            "https://inbox.tssamuel.com/auth/sso/callback" if is_production else "",
+        ).strip(),
     )
 
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)

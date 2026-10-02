@@ -4,7 +4,7 @@ Flask web application for triaging your inbox through AI summaries — see what 
 
 ## Features
 
-- **Verified signup** — new accounts require a 6-digit code sent to the email address so no one can claim an address they do not own.
+- **Verified signup** — new accounts require a 6-digit code sent to the email address so no one can claim an address they do not own. With `LOGIN_URL` set, signup and login bounce through `login.tssamuel.com` instead.
 - **Account login** — sign in with your Inbox Tools account password. If you remove the account password, the next login requires your mailbox **App Password** from a connected IMAP account (no email-only access).
 - **Multiple accounts per user** — connect as many IMAP accounts as you like. Filter with account pills in the nav bar, or view everything together.
 - **Background sync with a live activity panel** — Sync All / per-account sync runs in a background queue. The download saves each page (about 200 messages) into SQLite and Today updates as pages land. AI analysis is a follow-on job, so a model error does not throw away the download. **Cancel** stops a stuck job. A bad API key stops analysis and leaves mail cached. Other AI failures store a local triage result and retry later.
