@@ -176,8 +176,10 @@ def _response_text(response: Any) -> str:
 
 
 class GeminiClient:
-    def __init__(self, api_key: str, default_model: str):
+    def __init__(self, api_key: str, default_model: str, *, use_platform: bool = False, user_email: str = ""):
         self.api_key = api_key.strip()
+        self.use_platform = bool(use_platform)
+        self.user_email = (user_email or "").strip()
         self.default_model = resolve_gemini_model(default_model)
         self._client: genai.Client | None = None
         self._cached_best_model: str | None = None
@@ -189,7 +191,7 @@ class GeminiClient:
 
     @property
     def enabled(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.api_key) or self.use_platform
 
     @property
     def client(self) -> genai.Client:
@@ -256,6 +258,46 @@ class GeminiClient:
                 if self._cancelled():
                     self.last_error = "Cancelled."
                     return None, self.last_error, 0
+                if self.use_platform:
+                    from .platform_client import PlatformError, call_gemini
+
+                    try:
+                        result = call_gemini(
+                            model=model_name,
+                            system=system,
+                            contents=user_content,
+                            generation_config={
+                                "maxOutputTokens": max_output_tokens,
+                                "responseMimeType": "application/json",
+                            },
+                            user_email=self.user_email,
+                            timeout=max(5, timeout_ms / 1000),
+                        )
+                    except PlatformError as exc:
+                        last_err = exc.message
+                        if exc.code in {"rate_limited", "cap"}:
+                            retry_wait = max(retry_wait, 4.0)
+                            continue
+                        if exc.code == "bad_request":
+                            self._unavailable_models.add(model_name)
+                            continue
+                        self.last_error = exc.message
+                        return None, self.last_error, 0
+                    tokens_used = int(result.get("total_tokens") or 0)
+                    self.last_tokens_used = tokens_used
+                    text = str(result.get("text") or "").strip()
+                    if not text:
+                        last_err = "Gemini returned an empty response."
+                        continue
+                    try:
+                        parsed = _parse_json_content(text)
+                    except (ValueError, TypeError):
+                        last_err = "Gemini returned invalid JSON."
+                        continue
+                    self._cached_best_model = model_name
+                    self.last_model_used = model_name
+                    self.last_error = ""
+                    return parsed, None, tokens_used
                 # Gemini 3.x Flash-Lite 400s if temperature or thinking_budget is sent.
                 config = types.GenerateContentConfig(
                     system_instruction=system,

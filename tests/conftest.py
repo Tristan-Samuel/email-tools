@@ -19,4 +19,5 @@ def isolate_email_tools_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("LOGIN_CLIENT_SECRET", raising=False)
     return db_path

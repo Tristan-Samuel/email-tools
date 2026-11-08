@@ -26,6 +26,7 @@ from .services.ai_client import (
     is_unreachable,
 )
 from .services.gemini_client import DEFAULT_GEMINI_MODEL, GeminiClient
+from .services.platform_client import platform_configured
 from .services.groq_client import (
     DEFAULT_CHAT_MODEL,
     GroqClient,
@@ -458,9 +459,12 @@ def get_ai_client(user_email: str = "") -> AiClient:
         api_key=groq_key,
         default_model=groq_model,
     )
+    use_platform = platform_configured() and not user_gemini_key
     gemini = GeminiClient(
-        api_key=gemini_key,
+        api_key="" if use_platform else gemini_key,
         default_model=gemini_model,
+        use_platform=use_platform,
+        user_email=email or "",
     )
     if groq_key:
         cache_key = _groq_model_cache_key(groq_key)

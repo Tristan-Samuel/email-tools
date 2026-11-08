@@ -7,16 +7,26 @@ from email.message import EmailMessage
 
 from flask import current_app
 
+from .platform_client import PlatformError, platform_configured, send_platform_mail
+
 logger = logging.getLogger(__name__)
 
 
 def smtp_configured() -> bool:
-    """Return True when SMTP_HOST is set."""
+    """Return True when the shared mailbox or a local SMTP host is set."""
+    if platform_configured():
+        return True
     return bool((current_app.config.get("SMTP_HOST") or "").strip())
 
 
 def send_email(to: str, subject: str, body: str) -> tuple[bool, str]:
     """Return (ok, error_message)."""
+    if platform_configured():
+        try:
+            send_platform_mail(to, subject, body)
+        except PlatformError as exc:
+            return False, exc.message
+        return True, ""
     host = (current_app.config.get("SMTP_HOST") or "").strip()
     if not host:
         return False, "SMTP is not configured."

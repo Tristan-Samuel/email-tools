@@ -48,7 +48,7 @@ Gemini (Google AI Studio) is the **primary** AI provider. It packs as many email
 Log in → account menu → **Settings** → **Gemini AI (primary)**. Paste your key from [Google AI Studio](https://aistudio.google.com/apikey). It is stored **encrypted** in the database; the UI never redisplays the key.
 
 **Option 2 — server-level key:**
-Set `GEMINI_API_KEY` or `GOOGLE_API_KEY` before starting the app (used when no per-user Gemini key is set).
+Set `GEMINI_API_KEY` or `GOOGLE_API_KEY` before starting the app when it has no login client. With `LOGIN_CLIENT_SECRET` set, server Gemini calls and verification mail go to `LOGIN_TOKEN_URL`. A key saved in Settings still calls Google directly.
 
 Default model: `gemini-3.5-flash-lite` (1M-token context, high-volume JSON). Google now 404s Gemini 2.5 for new API keys; leftover `gemini-2.5-flash-lite` / `gemini-2.5-flash` values are remapped automatically. Override with `GEMINI_DEFAULT_MODEL` (`gemini-3.1-flash-lite` and `gemini-3.6-flash` are tried if the default is unavailable). Gemini 3.x Flash-Lite rejects `temperature` and `thinking_budget` with `INVALID_ARGUMENT`; the client omits both.
 
